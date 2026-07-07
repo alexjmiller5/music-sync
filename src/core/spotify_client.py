@@ -50,12 +50,18 @@ class SpotifyClient:
         log.info("spotify_token_refreshed")
 
     def _get(self, url: str, params: dict | None = None) -> dict:
+        return self._request("GET", url, params=params)
+
+    def _post(self, url: str, json: dict) -> dict:
+        return self._request("POST", url, json=json)
+
+    def _request(self, method: str, url: str, **kwargs) -> dict:
         if self._token is None:
             self._refresh_token()
         refreshed = False
         while True:
-            resp = self._http.get(
-                url, params=params, headers={"Authorization": f"Bearer {self._token}"}
+            resp = self._http.request(
+                method, url, headers={"Authorization": f"Bearer {self._token}"}, **kwargs
             )
             if resp.status_code == 401 and not refreshed:
                 self._refresh_token()

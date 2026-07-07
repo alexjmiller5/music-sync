@@ -55,6 +55,26 @@ rows. The client (token refresh, 401 refresh-retry, 429 Retry-After,
 pagination for followed artists / playlists / playlist tracks) is fully
 unit-tested against mocks and needs no code changes to go live.
 
+## Morning checklist: go live + build the 50s playlist
+
+The ~50-track list is staged for review as **"<decade-playlist> (draft)"** in the
+sandbox Notion Playlists DB (tracks related via the Songs DB) and committed as
+data-in-code in `scripts/create_50s_playlist.py`.
+
+1. Create the Spotify developer app (Manual setup step 1 below) and save
+   `client_id`/`client_secret` to the `Spotify API` item in OpenClaw.
+2. Mint the refresh token — opens a browser, then prints the exact
+   `op item create`/`op item edit` command to paste yourself (the token never
+   touches disk):
+   ```
+   op run --env-file=.env.tpl -- uv run scripts/spotify_auth.py
+   ```
+3. Build the playlist (creates ONE new private playlist, additive-only,
+   touches nothing existing):
+   ```
+   op run --env-file=.env.tpl -- uv run scripts/create_50s_playlist.py
+   ```
+
 ## Manual setup (the only steps that can't be codified)
 
 1. **Spotify developer app** — at
