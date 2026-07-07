@@ -24,6 +24,22 @@ at [spotify.com/account/privacy](https://www.spotify.com/account/privacy/) when
 current data matters. Followed artists come from `YourLibrary.json` `artists`
 (the export's `Follow.json` only contains follower *counts*).
 
+## Notion sandbox sync
+
+```
+op run --env-file=.env.tpl -- uv run scripts/sync_playlists_to_notion.py
+```
+
+Syncs `data/snapshot.json` into sandbox **Playlists**/**Songs** databases that
+live on the "Spotify Sync Sandbox" page under the Spotify Notion Sync project
+page — no pre-existing Notion pages are touched. `sandbox_config.json`
+(committed) pins the page/database/data-source ids; delete it to recreate the
+sandbox from scratch. Upserts are idempotent: playlists keyed by name (the
+GDPR export has no playlist ids — Spotify ID stays empty until live API sync),
+songs keyed by Spotify URI (fallback `artist|name`). A song in N playlists is
+one Songs page with N relation links; relations added by hand in Notion
+survive resyncs.
+
 ## Manual setup (the only steps that can't be codified)
 
 1. **Spotify developer app** — at
