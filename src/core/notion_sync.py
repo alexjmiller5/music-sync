@@ -34,18 +34,32 @@ class NotionClient:
         self._last_request = 0.0
 
     def request(self, method: str, path: str, json: dict | None = None) -> dict:
+        transient_failures = 0
         while True:
             time.sleep(max(0.0, MIN_INTERVAL - (time.monotonic() - self._last_request)))
             self._last_request = time.monotonic()
-            resp = self._http.request(method, path, json=json)
-            if resp.status_code == 429:
-                wait = float(resp.headers.get("Retry-After", "1"))
-                log.warning("rate_limited", retry_after=wait)
-                time.sleep(wait)
-                continue
-            # ponytail: transient 5xx not retried; rerun the script if Notion hiccups
-            resp.raise_for_status()
-            return resp.json()
+            try:
+                resp = self._http.request(method, path, json=json)
+            except httpx.TransportError as exc:  # timeouts, resets — safe to retry (upsert)
+                resp = None
+                reason = repr(exc)
+            if resp is not None:
+                if resp.status_code == 429:
+                    wait = float(resp.headers.get("Retry-After", "1"))
+                    log.warning("rate_limited", retry_after=wait)
+                    time.sleep(wait)
+                    continue
+                if resp.status_code < 500:
+                    resp.raise_for_status()
+                    return resp.json()
+                reason = f"HTTP {resp.status_code}"
+            transient_failures += 1
+            if transient_failures > 3:
+                if resp is not None:
+                    resp.raise_for_status()
+                raise httpx.TransportError(f"giving up after retries: {reason}")
+            log.warning("transient_error_retrying", reason=reason, attempt=transient_failures)
+            time.sleep(2**transient_failures)
 
     def query_all(self, data_source_id: str) -> list[dict]:
         results, cursor = [], None
