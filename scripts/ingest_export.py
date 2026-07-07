@@ -26,7 +26,7 @@ def main() -> None:
     snapshot = {
         "source": ZIP_PATH.name,
         "playlists": [p.model_dump(mode="json") for p in playlists],
-        "followed_artists": artists,
+        "followed_artists": [a.model_dump(mode="json") for a in artists],
     }
     SNAPSHOT_PATH.write_text(json.dumps(snapshot, indent=2, ensure_ascii=False))
     n_songs = sum(len(p.songs) for p in playlists)

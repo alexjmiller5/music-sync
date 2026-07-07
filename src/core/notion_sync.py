@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 import httpx
 import structlog
 
-from core.models import Playlist, Song
+from core.models import FollowedArtist, Playlist, Song
 
 log = structlog.get_logger()
 
@@ -220,6 +220,88 @@ def sync_snapshot(client: NotionClient, cfg: dict, playlists: list[Playlist]) ->
             )
             stats["songs_updated"] += 1
     return stats
+
+
+# --- followed artists -----------------------------------------------------------
+
+
+def artist_key(artist: FollowedArtist) -> str:
+    return artist.spotify_id or artist.name.lower()
+
+
+def fetch_artist_index(client: NotionClient, data_source_id: str) -> dict[str, str]:
+    index = {}
+    for pg in client.query_all(data_source_id):
+        props = pg["properties"]
+        index[_plain(props["Spotify ID"]) or _plain(props["Name"]).lower()] = pg["id"]
+    return index
+
+
+def _artist_props(artist: FollowedArtist, now_iso: str) -> dict:
+    props = {
+        "Name": {"title": [{"text": {"content": artist.name[:2000]}}]},
+        "Spotify ID": _rt(artist.spotify_id),
+        "Last Synced": {"date": {"start": now_iso}},
+    }
+    # export data has no genres/followers — omit rather than blank out live values
+    if artist.genres:
+        props["Genres"] = {"multi_select": [{"name": g} for g in artist.genres]}
+    if artist.followers is not None:
+        props["Followers"] = {"number": artist.followers}
+    return props
+
+
+def sync_followed_artists(client: NotionClient, cfg: dict, artists: list[FollowedArtist]) -> dict:
+    """Upsert followed artists keyed on Spotify ID (fallback name). Rerun-safe."""
+    now_iso = datetime.now(UTC).isoformat()
+    stats = {"artists_created": 0, "artists_updated": 0}
+    index = fetch_artist_index(client, cfg["followed_artists_data_source_id"])
+    for artist in artists:
+        props = _artist_props(artist, now_iso)
+        page_id = index.get(artist_key(artist))
+        if page_id:
+            client.request("PATCH", f"/v1/pages/{page_id}", json={"properties": props})
+            stats["artists_updated"] += 1
+        else:
+            client.request(
+                "POST",
+                "/v1/pages",
+                json={
+                    "parent": {
+                        "type": "data_source_id",
+                        "data_source_id": cfg["followed_artists_data_source_id"],
+                    },
+                    "properties": props,
+                },
+            )
+            stats["artists_created"] += 1
+        log.info("artist_synced", name=artist.name)
+    return stats
+
+
+def create_followed_artists_db(client: NotionClient, sandbox_page_id: str) -> dict:
+    """Create the Followed Artists DB under the sandbox page; ids for sandbox_config.json."""
+    db = client.request(
+        "POST",
+        "/v1/databases",
+        json={
+            "parent": {"type": "page_id", "page_id": sandbox_page_id},
+            "title": [{"text": {"content": "Followed Artists"}}],
+            "initial_data_source": {
+                "properties": {
+                    "Name": {"title": {}},
+                    "Spotify ID": {"rich_text": {}},
+                    "Genres": {"multi_select": {}},
+                    "Followers": {"number": {}},
+                    "Last Synced": {"date": {}},
+                }
+            },
+        },
+    )
+    return {
+        "followed_artists_database_id": db["id"],
+        "followed_artists_data_source_id": db["data_sources"][0]["id"],
+    }
 
 
 # --- one-time sandbox creation --------------------------------------------------

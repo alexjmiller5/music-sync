@@ -6,7 +6,7 @@ from pathlib import Path
 
 import structlog
 
-from core.models import Playlist, Song
+from core.models import FollowedArtist, Playlist, Song
 
 log = structlog.get_logger()
 
@@ -38,7 +38,10 @@ def load_playlists(zip_path: Path | str) -> list[Playlist]:
     return playlists
 
 
-def load_followed_artists(zip_path: Path | str) -> list[str]:
+def load_followed_artists(zip_path: Path | str) -> list[FollowedArtist]:
     # Follow.json only contains follower/following COUNTS — the actual followed
-    # artist names live in YourLibrary.json under "artists".
-    return [a["name"] for a in _read_json(zip_path, "YourLibrary.json")["artists"]]
+    # artists live in YourLibrary.json under "artists" as {name, uri}.
+    return [
+        FollowedArtist(name=a["name"], spotify_id=a["uri"].rsplit(":", 1)[-1])
+        for a in _read_json(zip_path, "YourLibrary.json")["artists"]
+    ]

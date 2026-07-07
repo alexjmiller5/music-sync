@@ -17,3 +17,11 @@ class Playlist(BaseModel):
     name: str
     description: str | None = None
     songs: list[Song] = []
+
+
+class FollowedArtist(BaseModel):
+    name: str
+    spotify_id: str | None = None
+    # empty in the GDPR export; the live API (spotify_client) fills these in
+    genres: list[str] = []
+    followers: int | None = None
