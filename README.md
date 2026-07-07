@@ -40,6 +40,21 @@ songs keyed by Spotify URI (fallback `artist|name`). A song in N playlists is
 one Songs page with N relation links; relations added by hand in Notion
 survive resyncs.
 
+## Followed artists sync
+
+```
+op run --env-file=.env.tpl -- uv run scripts/sync_followed_to_notion.py
+```
+
+Upserts followed artists (from the export zip) into a sandbox **Followed
+Artists** database on the same sandbox page, keyed on Spotify ID — reruns
+create no duplicates. Genres/Followers stay empty until Spotify developer
+creds exist; once they do, the same command fetches live data via
+`src/core/spotify_client.py` (`GET /v1/me/following`) and enriches the same
+rows. The client (token refresh, 401 refresh-retry, 429 Retry-After,
+pagination for followed artists / playlists / playlist tracks) is fully
+unit-tested against mocks and needs no code changes to go live.
+
 ## Manual setup (the only steps that can't be codified)
 
 1. **Spotify developer app** — at
