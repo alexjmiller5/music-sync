@@ -14,6 +14,16 @@ data/raw/         Spotify GDPR export zips (gitignored — personal data, NEVER 
 justfile          dev / test / sync-secrets / deploy
 ```
 
+## Export ingestion
+
+`uv run scripts/ingest_export.py` reads the GDPR "Account Data" zip in
+`data/raw/` directly (no unzip) and writes a normalized snapshot to
+`data/snapshot.json` (gitignored) — this snapshot is the Spotify data backup.
+Note: the export dates from **July 2025 (~1 year stale)**; request a fresh one
+at [spotify.com/account/privacy](https://www.spotify.com/account/privacy/) when
+current data matters. Followed artists come from `YourLibrary.json` `artists`
+(the export's `Follow.json` only contains follower *counts*).
+
 ## Manual setup (the only steps that can't be codified)
 
 1. **Spotify developer app** — at
