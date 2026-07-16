@@ -9,7 +9,9 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     notion_token: str
-    # Optional until Alex creates the Spotify developer app (see README)
+    # Notion page id the sandbox page + DBs are created under
+    notion_parent_page_id: str
+    # Optional until a Spotify developer app exists (see README)
     spotify_client_id: str | None = None
     spotify_client_secret: str | None = None
     spotify_refresh_token: str | None = None

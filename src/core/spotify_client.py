@@ -1,10 +1,9 @@
 """Thin Spotify Web API client (plain Python, no Modal imports).
 
-LIVE CALLS ARE BLOCKED until Alex creates a Spotify developer app — 1Password
-only holds his username/password today. Once SPOTIFY_CLIENT_ID/SECRET/
-REFRESH_TOKEN exist (scripts/spotify_auth.py mints the refresh token), this
-client works unchanged: token refresh, 401 refresh-retry, 429 Retry-After,
-and cursor/next-url pagination are all covered by unit tests with mocks.
+Live calls need SPOTIFY_CLIENT_ID/SECRET/REFRESH_TOKEN in the env
+(scripts/spotify_auth.py mints the refresh token). Token refresh, 401
+refresh-retry, 429 Retry-After, and cursor/next-url pagination are all
+covered by unit tests with mocks.
 """
 
 import time

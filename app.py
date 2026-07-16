@@ -1,7 +1,7 @@
 """Modal deployment shim — ALL infrastructure lives here, as code.
 
 Business logic stays in src/core/ (plain Python, no Modal imports) so the
-same package runs on the mac mini, in tests, or anywhere else. This file
+same package runs locally, in tests, or anywhere else. This file
 only maps that logic onto Modal: image, secrets, endpoints, schedules.
 """
 

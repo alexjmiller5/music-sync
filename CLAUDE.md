@@ -9,7 +9,7 @@ data — NEVER commit anything under `data/`).
 **Business logic lives in `src/core/` as plain Python with NO Modal imports.**
 Only `app.py` imports `modal` — it is the deployment shim (image, secrets,
 endpoints, schedules). This keeps the logic portable: the same `core` package
-runs in tests, on the mac mini via launchd, or on any future platform.
+runs in tests, locally, or on any future platform.
 
 - Webhook → worker handoff is `process.spawn(payload)` — Modal's spawn IS the
   queue. Do not add Pub/Sub/Redis/celery.
@@ -18,7 +18,7 @@ runs in tests, on the mac mini via launchd, or on any future platform.
   Proxy Auth Tokens). Never expose an unauthenticated endpoint.
 - Cron: Modal is the PREFERRED home for schedules — but the Starter plan
   allows **5 deployed crons across ALL apps**, so track the budget. Overflow
-  goes to GHA cron or CF Cron Triggers (see the `personal-infra` skill).
+  goes to GHA cron or CF Cron Triggers.
 
 ## Stack
 

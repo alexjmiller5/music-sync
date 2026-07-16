@@ -38,6 +38,23 @@ def load_playlists(zip_path: Path | str) -> list[Playlist]:
     return playlists
 
 
+def find_export_zip(raw_dir: Path) -> Path:
+    """Newest 'Account Data' zip in raw_dir. GDPR downloads also produce
+    streaming-history / technical-log zips under the same filename pattern,
+    so membership of the Account Data folder is what identifies the right one.
+    """
+    zips = sorted(raw_dir.glob("*.zip"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for path in zips:
+        with zipfile.ZipFile(path) as zf:
+            if any(name.startswith(_PREFIX) for name in zf.namelist()):
+                return path
+    raise FileNotFoundError(
+        f"No '{_PREFIX}' export zip found in {raw_dir} — download your Spotify GDPR "
+        "export (spotify.com/account/privacy) and drop it there, or pass a path as "
+        "an argument."
+    )
+
+
 def load_followed_artists(zip_path: Path | str) -> list[FollowedArtist]:
     # Follow.json only contains follower/following COUNTS — the actual followed
     # artists live in YourLibrary.json under "artists" as {name, uri}.

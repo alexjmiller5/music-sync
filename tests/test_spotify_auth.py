@@ -110,5 +110,5 @@ def test_op_commands_mention_vault_and_never_a_file(capsys):
     out = capsys.readouterr().out
     assert "op item create" in out
     assert "op item edit" in out
-    assert "OpenClaw" in out
+    assert "--vault <vault>" in out
     assert "refresh_token=rt" in out

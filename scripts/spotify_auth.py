@@ -11,8 +11,7 @@ with redirect URI http://127.0.0.1:8888/callback:
 
 Opens the browser, captures the callback on 127.0.0.1:8888, exchanges the code,
 then PRINTS the refresh token plus the exact `op item create` / `op item edit`
-commands for Alex to paste into HIS shell (Claude is denied `op item edit`).
-Nothing is ever written to disk.
+commands to paste into your own shell. Nothing is ever written to disk.
 """
 
 import argparse
@@ -118,15 +117,15 @@ def exchange_code(
 
 def print_op_commands(client_id: str, client_secret: str, refresh_token: str) -> None:
     print("\nRefresh token minted. Save it to 1Password by pasting ONE of these")
-    print("into your own terminal (Claude is denied op item create/edit):\n")
-    print("# if the 'Spotify API' item does NOT exist yet in OpenClaw:")
+    print("into your own terminal (replace <vault> with your vault):\n")
+    print("# if the 'Spotify API' item does NOT exist yet:")
     print(
-        f"op item create --vault OpenClaw --category 'API Credential' --title 'Spotify API' "
+        f"op item create --vault <vault> --category 'API Credential' --title 'Spotify API' "
         f"client_id={client_id} client_secret={client_secret} refresh_token={refresh_token}"
     )
     print("\n# if it already exists:")
-    print(f"op item edit 'Spotify API' --vault OpenClaw refresh_token={refresh_token}")
-    print("\nNothing was written to disk.")
+    print(f"op item edit 'Spotify API' --vault <vault> refresh_token={refresh_token}")
+    print("\nNothing was written to disk. (No 1Password? Export it as SPOTIFY_REFRESH_TOKEN.)")
 
 
 def main() -> None:

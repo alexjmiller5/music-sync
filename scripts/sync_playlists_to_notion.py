@@ -4,8 +4,8 @@
 # ///
 """Sync data/snapshot.json into the sandbox Notion Playlists/Songs DBs.
 
-First run creates the sandbox page + DBs under the Spotify Notion Sync project
-page and writes sandbox_config.json (committed). Reruns are idempotent.
+First run creates the sandbox page + DBs under the NOTION_PARENT_PAGE_ID page
+and writes sandbox_config.json (gitignored, per-user). Reruns are idempotent.
 
 Run: op run --env-file=.env.tpl -- uv run scripts/sync_playlists_to_notion.py
 (or with NOTION_TOKEN already in the env)
@@ -22,18 +22,18 @@ from core.config import Settings  # noqa: E402
 from core.models import Playlist  # noqa: E402
 from core.notion_sync import NotionClient, create_sandbox, sync_snapshot  # noqa: E402
 
-PROJECT_PAGE_ID = "00000000-0000-0000-0000-000000000000"  # Spotify Notion Sync project
 CONFIG_PATH = ROOT / "sandbox_config.json"
 SNAPSHOT_PATH = ROOT / "data" / "snapshot.json"
 
 
 def main() -> None:
-    client = NotionClient(token=Settings().notion_token)
+    settings = Settings()
+    client = NotionClient(token=settings.notion_token)
 
     if CONFIG_PATH.exists():
         cfg = json.loads(CONFIG_PATH.read_text())
     else:
-        cfg = create_sandbox(client, PROJECT_PAGE_ID)
+        cfg = create_sandbox(client, settings.notion_parent_page_id)
         CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n")
         print(f"Created sandbox + DBs, wrote {CONFIG_PATH}")
 

@@ -9,7 +9,8 @@ its ids in sandbox_config.json. Reruns are idempotent (upsert on Spotify ID).
 When Spotify developer creds exist in the env, live API data (genres,
 followers) enriches the same rows — matched on Spotify ID.
 
-Run: op run --env-file=.env.tpl -- uv run scripts/sync_followed_to_notion.py
+Run: op run --env-file=.env.tpl -- uv run scripts/sync_followed_to_notion.py [export.zip]
+(zip defaults to the newest in data/raw/)
 """
 
 import json
@@ -20,7 +21,7 @@ ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from core.config import Settings  # noqa: E402
-from core.export_ingest import load_followed_artists  # noqa: E402
+from core.export_ingest import find_export_zip, load_followed_artists  # noqa: E402
 from core.notion_sync import (  # noqa: E402
     NotionClient,
     create_followed_artists_db,
@@ -29,10 +30,15 @@ from core.notion_sync import (  # noqa: E402
 from core.spotify_client import SpotifyClient, merge_followed_artists  # noqa: E402
 
 CONFIG_PATH = ROOT / "sandbox_config.json"
-ZIP_PATH = ROOT / "data" / "raw" / "my_spotify_data (3).zip"
 
 
 def main() -> None:
+    try:
+        zip_path = (
+            Path(sys.argv[1]) if len(sys.argv) > 1 else find_export_zip(ROOT / "data" / "raw")
+        )
+    except FileNotFoundError as e:
+        sys.exit(str(e))
     settings = Settings()
     client = NotionClient(token=settings.notion_token)
 
@@ -42,7 +48,7 @@ def main() -> None:
         CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n")
         print(f"Created Followed Artists DB, updated {CONFIG_PATH}")
 
-    artists = load_followed_artists(ZIP_PATH)
+    artists = load_followed_artists(zip_path)
     if settings.spotify_refresh_token:
         live = SpotifyClient(settings).get_followed_artists()
         artists = merge_followed_artists(artists, live)

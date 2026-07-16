@@ -9,6 +9,7 @@ from core.spotify_client import SpotifyClient, merge_followed_artists
 
 SETTINGS = Settings(
     notion_token="nt",
+    notion_parent_page_id="pp",
     spotify_client_id="cid",
     spotify_client_secret="csec",
     spotify_refresh_token="rtok",
@@ -36,7 +37,7 @@ def artist_item(spotify_id, name, genres=(), followers=0):
 
 def test_missing_creds_raises():
     with pytest.raises(RuntimeError, match="Spotify credentials"):
-        SpotifyClient(Settings(notion_token="nt"))
+        SpotifyClient(Settings(notion_token="nt", notion_parent_page_id="pp"))
 
 
 def test_token_refresh_uses_basic_auth_and_refresh_grant(mocker):
