@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 notion-spotify-sync — two-way Spotify <-> Notion playlist sync on Modal.
 Seeded from Spotify GDPR export zips in `data/raw/` (gitignored personal
@@ -29,7 +29,7 @@ Instantiate `Settings()` inside functions, never at import time.
 
 ## Commands
 
-Standard verb set (see global CLAUDE.md) — the justfile is the interface,
+Standard verb set (see global AGENTS.md) — the justfile is the interface,
 not a script catalog; one-offs go in `scripts/` and run directly.
 
 | Command | Purpose |
