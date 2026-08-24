@@ -14,14 +14,14 @@ jobs:
     env:
       OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
       - uses: 1Password/install-cli-action@v4
       # op:// refs below are BY NAME on purpose: op-project-bootstrap parses this file
       # to provision/verify the vault + items, and names are its input (an ID can't name
       # a vault that doesn't exist yet). The ONE exception to the IDs-over-names rule -
       # do NOT convert these to IDs. See global AGENTS.md. Renamed an item? Update here.
-      - uses: 1password/load-secrets-action@v2
+      - uses: 1password/load-secrets-action@v5
         with:
           export-env: true
         env:
