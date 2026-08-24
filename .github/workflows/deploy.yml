@@ -15,7 +15,7 @@ jobs:
       OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v7
       - uses: 1Password/install-cli-action@v4
       # op:// refs below are BY NAME on purpose: op-project-bootstrap parses this file
       # to provision/verify the vault + items, and names are its input (an ID can't name
