@@ -80,7 +80,7 @@ data-in-code in `scripts/create_50s_playlist.py`.
 1. **Spotify developer app** — at
    [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard)
    create an app with redirect URI `http://127.0.0.1:8888/callback`, then save
-   the client id/secret to a **`Spotify API`** item in `<your 1Password vault>`
+   the client id/secret to a **`<Project> Spotify OAuth Client`** item in `<your 1Password vault>`
    with fields `client_id`, `client_secret`, `refresh_token` (leave
    `refresh_token` blank — the auth script fills it).
 2. **Spotify auth** — mint the refresh token:

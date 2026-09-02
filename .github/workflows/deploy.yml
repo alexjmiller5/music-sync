@@ -25,8 +25,8 @@ jobs:
         with:
           export-env: true
         env:
-          MODAL_TOKEN_ID: op://OpenClaw/Modal notion-spotify-sync/token-id
-          MODAL_TOKEN_SECRET: op://OpenClaw/Modal notion-spotify-sync/token-secret
+          MODAL_TOKEN_ID: op://OpenClaw/OpenClaw CI Modal Token/token-id
+          MODAL_TOKEN_SECRET: op://OpenClaw/OpenClaw CI Modal Token/token-secret
       - run: uv run pytest -m "not integration"
       # Secrets must exist BEFORE deploy — app.py references modal.Secret.from_name.
       - name: Push app secrets to Modal
