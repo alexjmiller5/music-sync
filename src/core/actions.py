@@ -73,16 +73,12 @@ def apply(actions: list[Action], spotify, hub, dry_run: bool) -> RunLog:
         _safe(out, f"describe {pid}", lambda: spotify.set_description(pid, text))
     for pid in deletes:
         _safe(out, f"unfollow {pid}", lambda: spotify.unfollow_playlist(pid))
-    hub_error = None
     for table in ("songs", "playlists", "playlist_songs", "provenance"):
         if rows.get(table):
             try:
                 hub.push(table, list(rows[table].values()))
             except HubError as e:
                 out.errors.append(f"hub {table}: {e}")
-                hub_error = hub_error or e
-    if hub_error:
-        raise hub_error
     return out
 
 

@@ -96,3 +96,19 @@ def test_readd_item_after_remove_for_same_playlist_and_uri():
         ("add", "P", ("spotify:track:1",))
     )
     assert log.applied["readd_item"] == 1
+
+
+def test_hub_error_is_recorded_not_raised():
+    from core.hub import HubError
+
+    class FailingHub(FakeHub):
+        def push(self, table, rows):
+            if table == "songs":
+                raise HubError("boom")
+            return super().push(table, rows)
+
+    hub = FailingHub()
+    log = actions.apply(ACTS, FakeSpotify(), hub, dry_run=False)
+    assert log.errors and "boom" in log.errors[0]
+    tables = {t for t, _ in hub.pushed}
+    assert tables == {"playlists", "playlist_songs", "provenance"}
