@@ -134,6 +134,9 @@ class SpotifyClient:
     def set_description(self, playlist_id: str, text: str) -> None:
         self._request("PUT", f"{API}/v1/playlists/{playlist_id}", json={"description": text[:300]})
 
+    def unfollow_playlist(self, playlist_id: str) -> None:
+        self._request("DELETE", f"{API}/v1/playlists/{playlist_id}/followers")
+
     def like(self, uris: list[str]) -> None:
         for i in range(0, len(uris), 50):
             self._request(
