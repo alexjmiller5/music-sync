@@ -178,7 +178,7 @@ The reconciler never acts on state alone; it compares the live pull with
 | liked=1 → liked=0 and → added to a curated playlist in the same run | conflicting gestures                             | un-heart wins; log both                                                       |
 | liked=0 → liked=1                                                   | user hearted                                     | pool membership; smart playlists recompute; capture edge `like` if first seen |
 | soft-deleted curated rows < 7 days old, song liked again            | undo                                             | restore those curated memberships in Spotify and un-delete the rows           |
-| `POST /capture` called | Shazam capture (§7.3) | resolve on Spotify, add to inbox, capture edge `shazam`, trim inbox |
+| `POST /capture` called                                              | Shazam capture (§7.3)                            | resolve on Spotify, add to inbox, capture edge `shazam`, trim inbox           |
 | inbox count > 100                                                   | inbox overflow                                   | remove oldest beyond 100                                                      |
 | smart playlist contains a song not matching its rule                | hand-add to a smart playlist, or rule changed    | remove; log ("removed N you had added by hand")                               |
 | playlist song with `is_playable=false`                              | greyed out                                       | swap to a playable id of the same ISRC if one exists; else flag               |
@@ -301,6 +301,7 @@ ID and Shazam URL in the edge `detail`, trims the inbox to 100, and returns
 `{"ok": true, "message": "<title> by <artist> added to new songs"}`. A song
 already in the inbox returns ok with "already in new songs". No match
 returns `{"ok": false, "message": ...}` and files the Chore task ("add
+
 <title> by <artist> to new songs manually") that the shortcut files via
 Receptor today. `invalid_grant` on the app's token flags and returns an
 error the user sees.
@@ -375,24 +376,24 @@ copies are removed.
    mirror and prints the non-compliance report, one section per category,
    with counts and a per-song listing (title, artists, year, the playlists it
    is in):
-   - songs in curated playlists that are not liked (~1,600 in the buckets)
-   - liked songs in no playlist (398)
-   - songs the bucket rules would remove or move (`first_year` disagrees
+   * songs in curated playlists that are not liked (\~1,600 in the buckets)
+   * liked songs in no playlist (398)
+   * songs the bucket rules would remove or move (`first_year` disagrees
      with `the good stuff` / `galaxy`; not `Rap/Hip Hop` in `rap`)
-   - unplayable songs, split into "alternate id exists" and "no alternate"
-   - the same ISRC twice in one playlist (213 extra ids)
-   - same title and artist under different ISRCs (142), for the user to mark
+   * unplayable songs, split into "alternate id exists" and "no alternate"
+   * the same ISRC twice in one playlist (213 extra ids)
+   * same title and artist under different ISRCs (142), for the user to mark
      as versions to keep or duplicates to collapse
-   - `My Shazam Tracks` songs never liked (923), the inbox backlog
-   - songs without ISRC or local files that were in a playlist
-   The review happens in chat, in batches, finance-review style: the agent
-   presents a section, the user decides (like, remove, keep as version,
-   move, ignore), and the agent applies each decision **through the
-   `spotify` skill**, never through life-data. Decisions that are rules
-   rather than one-offs (for example "songs in `feel good` are always liked")
-   are already the reconciler's behavior and need no action. The review ends
-   when the report is empty or every remaining line is an accepted
-   exception, and the accepted exceptions are written down in the run log.
+   * `My Shazam Tracks` songs never liked (923), the inbox backlog
+   * songs without ISRC or local files that were in a playlist
+     The review happens in chat, in batches, finance-review style: the agent
+     presents a section, the user decides (like, remove, keep as version,
+     move, ignore), and the agent applies each decision **through the
+     `spotify`** **skill**, never through life-data. Decisions that are rules
+     rather than one-offs (for example "songs in `feel good` are always liked")
+     are already the reconciler's behavior and need no action. The review ends
+     when the report is empty or every remaining line is an accepted
+     exception, and the accepted exceptions are written down in the run log.
 8. Convert the three buckets to `smart` with the rules in §5.1.
 9. Run `create_50s_playlist.py` once through the spotify skill flow into a
    curated `50s Gold` playlist, then delete the script (data never lives in
