@@ -109,7 +109,14 @@ def pull_live(spotify, market: str, me_id: str, mirror: Mirror) -> Live:
         if (p.get("owner") or {}).get("id") != me_id:
             continue
         known = mirror.playlists.get(p["id"])
-        if known and known.snapshot_id and known.snapshot_id == p.get("snapshot_id"):
+        # smart playlists get rewritten by rule materialization without moving their snapshot
+        # (a heart/un-heart elsewhere never bumps them), so always re-fetch those
+        if (
+            known
+            and known.kind != "smart"
+            and known.snapshot_id
+            and known.snapshot_id == p.get("snapshot_id")
+        ):
             items = None
         else:
             body = spotify.get_playlist_items(p["id"], market)

@@ -174,13 +174,21 @@ def load_sqlite(mirror: Mirror) -> sqlite3.Connection:
     return db
 
 
-def evaluate(mirror: Mirror, playlist_ids: dict[str, str]) -> dict[str, set[str]]:
+def evaluate(
+    mirror: Mirror, playlist_ids: dict[str, str], errors: dict[str, str] | None = None
+) -> dict[str, set[str]]:
     db = load_sqlite(mirror)
     out = {}
     for p in mirror.playlists.values():
         if p.kind != "smart" or not p.rule:
             continue
-        sql = f"SELECT id FROM songs s WHERE s.liked = 1 AND {to_sql(p.rule, playlist_ids)}"
+        try:
+            sql = f"SELECT id FROM songs s WHERE s.liked = 1 AND {to_sql(p.rule, playlist_ids)}"
+        except RuleError as e:
+            if errors is None:
+                raise
+            errors[p.id] = str(e)
+            continue
         out[p.id] = {r[0] for r in db.execute(sql)}
     return out
 

@@ -1,5 +1,6 @@
 """Pure reconcile: (mirror, live) -> ordered actions. No I/O. Spec section 5.3."""
 
+import dataclasses
 from datetime import datetime, timedelta
 
 from core import rules
@@ -9,6 +10,7 @@ ORDER = [
     "like",
     "add_item",
     "remove_item",
+    "readd_item",
     "set_description",
     "delete_playlist",
     "upsert_song",
@@ -51,6 +53,7 @@ def plan(
     liked_before = {s.id for s in mirror.songs.values() if s.liked}
     no_isrc: list[str] = []
     flags: list[str] = []
+    rule_flags: list[str] = []
 
     # live membership index: (pid, isrc) -> best item (earliest added), plus duplicates
     actual: dict[tuple[str, str], object] = {}
@@ -80,6 +83,18 @@ def plan(
                         reason="duplicate isrc",
                     )
                 )
+                if keep.uri == drop.uri:
+                    # Spotify's DELETE removes every occurrence of a URI, so removing the
+                    # duplicate also removed the copy we meant to keep - add it back.
+                    acts.append(
+                        Action(
+                            "readd_item",
+                            playlist_id=lp.id,
+                            isrc=it.isrc,
+                            uri=keep.uri,
+                            reason="duplicate isrc, same uri",
+                        )
+                    )
 
     # songs: new rows + liked transitions (rules 1, 2)
     seen_isrcs = liked_now | {isrc for (_, isrc) in actual}
@@ -134,7 +149,9 @@ def plan(
                 )
             )
 
-    # un-heart (rule 4): remove from every non-inbox playlist it is in
+    # un-heart (rule 4): remove from every non-inbox playlist it is in - both a playlist
+    # pulled this run (via `actual`) and one skipped this run (via the mirror membership,
+    # since `actual` has no entry at all for a playlist whose items weren't fetched)
     unhearted = liked_before - liked_now
     for isrc in sorted(unhearted):
         acts.append(
@@ -156,14 +173,37 @@ def plan(
                     )
                 )
                 actual.pop((pid, i))
+        for (pid, i), mem in mirror.memberships.items():
+            if i != isrc or pid in inbox_ids:
+                continue
+            lp = live.playlists.get(pid)
+            if lp is None or lp.items is not None:
+                continue  # fetched this run: already handled above via `actual`
+            acts.append(
+                Action(
+                    "remove_item",
+                    playlist_id=pid,
+                    isrc=isrc,
+                    uri=f"spotify:track:{mem.spotify_track_id}",
+                    reason="un-hearted",
+                )
+            )
+            acts.append(
+                Action(
+                    "delete_membership",
+                    playlist_id=pid,
+                    isrc=isrc,
+                    row={"id": f"{pid}:{isrc}", "deleted_at": now_s},
+                )
+            )
 
     # added to curated while unliked (rule 3): like it. Tie with un-heart: un-heart won above.
-    to_like: dict[str, str] = {}
+    to_like: dict[str, tuple[str, str]] = {}  # isrc -> (uri, curated playlist id)
     for (pid, isrc), it in actual.items():
         if kind_of.get(pid) == "curated" and isrc not in liked_now and isrc not in unhearted:
             if (pid, isrc) not in mirror.memberships:
-                to_like[isrc] = it.uri
-    for isrc, uri in sorted(to_like.items()):
+                to_like[isrc] = (it.uri, pid)
+    for isrc, (uri, pid) in sorted(to_like.items()):
         acts.append(Action("like", isrc=isrc, uri=uri, reason="in curated playlist"))
         acts.append(
             Action("upsert_song", isrc=isrc, row={"id": isrc, "liked": 1, "liked_at": now_s})
@@ -172,7 +212,6 @@ def plan(
         # created_row=1 edge from the new-song branch above (rule 1); a second
         # edge here would merge over it and regress created_row to 0.
         if isrc in mirror.songs and (isrc, "playlist") not in mirror.captures:
-            pid = next(p for (p, i) in actual if i == isrc and kind_of.get(p) == "curated")
             acts.append(
                 Action(
                     "edge",
@@ -256,10 +295,14 @@ def plan(
             )
             actual.pop((pid, it.isrc), None)
 
-    # smart materialization (rule 7), on a mirror view that reflects this run's liked state
-    # ponytail: plan mutates mirror.songs[*].liked; deep-copy if plan is ever called twice on one mirror
+    # smart materialization (rule 7), on a mirror view that reflects this run's liked state.
+    # Songs are copied (not shared) so mutating .liked here never touches the caller's mirror.
     view = Mirror(
-        dict(mirror.songs), mirror.playlists, dict(mirror.memberships), [], mirror.captures
+        {isrc: dataclasses.replace(s) for isrc, s in mirror.songs.items()},
+        mirror.playlists,
+        dict(mirror.memberships),
+        [],
+        mirror.captures,
     )
     for isrc in liked_effective:
         if isrc in view.songs:
@@ -267,7 +310,11 @@ def plan(
     for isrc in unhearted:
         if isrc in view.songs:
             view.songs[isrc].liked = 0
-    desired = rules.evaluate(view, names)
+    rule_errors: dict[str, str] = {}
+    desired = rules.evaluate(view, names, rule_errors)
+    for pid, msg in rule_errors.items():
+        name = mirror.playlists[pid].name if pid in mirror.playlists else pid
+        rule_flags.append(f"{name}: rule error: {msg}")
     for pid, want in desired.items():
         lp = live.playlists.get(pid)
         p = mirror.playlists[pid]
@@ -372,6 +419,7 @@ def plan(
             )
 
     # ephemeral expiry (rule 10)
+    expired_ids: set[str] = set()
     for p in mirror.playlists.values():
         if (
             p.kind == "smart"
@@ -380,13 +428,17 @@ def plan(
             and p.expires_at < now_s
             and p.id in live.playlists
         ):
+            expired_ids.add(p.id)
             acts.append(Action("delete_playlist", playlist_id=p.id, reason="ephemeral expired"))
             acts.append(
                 Action("upsert_playlist", playlist_id=p.id, row={"id": p.id, "deleted_at": now_s})
             )
 
-    # mirror upkeep (rule 11)
+    # mirror upkeep (rule 11) - skip playlists soft-deleted above: no plain upsert_playlist
+    # row (it would overwrite deleted_at) and no membership upserts for a deleted playlist
     for lp in live.playlists.values():
+        if lp.id in expired_ids:
+            continue
         row = {
             "id": lp.id,
             "name": lp.name,
@@ -446,5 +498,7 @@ def plan(
         )
     for f in flags:
         acts.append(Action("flag", text=f, reason="attention"))
+    for f in rule_flags:
+        acts.append(Action("flag", text=f, reason="rule"))
     rank = {k: i for i, k in enumerate(ORDER)}
     return sorted(acts, key=lambda a: rank[a.kind])

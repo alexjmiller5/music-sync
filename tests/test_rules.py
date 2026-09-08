@@ -131,6 +131,26 @@ def test_evaluate_all_predicates():
     assert out == {"R": {"A"}, "H": {"D"}, "F": {"A"}}
 
 
+def test_evaluate_records_error_and_skips_playlist_when_errors_dict_given():
+    m = make_mirror()
+    m.playlists["BAD"] = Playlist(
+        "BAD", "bad rule", "smart", {"v": 1, "in_playlist_any": ["gone"]}, None, None, 1, None
+    )
+    errors: dict[str, str] = {}
+    out = rules.evaluate(m, {"feel good": "PF", "😴": "PS"}, errors)
+    assert "BAD" not in out and "unknown playlist" in errors["BAD"]
+    assert out == {"R": {"A"}, "H": {"D"}, "F": {"A"}}
+
+
+def test_evaluate_raises_without_errors_dict():
+    m = make_mirror()
+    m.playlists["BAD"] = Playlist(
+        "BAD", "bad rule", "smart", {"v": 1, "in_playlist_any": ["gone"]}, None, None, 1, None
+    )
+    with pytest.raises(rules.RuleError):
+        rules.evaluate(m, {"feel good": "PF", "😴": "PS"})
+
+
 def test_check_sql_lists_mismatches_in_sqlite():
     m = make_mirror()
     m.memberships[("R", "B")] = Membership("R", "B", "x", "t")  # B is 2005: violates rap 90s
