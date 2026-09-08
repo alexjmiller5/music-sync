@@ -43,10 +43,7 @@ def reconcile_run(
     if not dry_run:
         archive.put(settings, archive.key_for(now), gzip.compress(json.dumps(live.raw).encode()))
     plan = reconcile_mod.plan(m, live, now, settings.inbox_cap, settings.undo_days, today)
-    try:
-        out = actions.apply(plan, spotify, hub, dry_run)
-    except Exception as e:
-        out = actions.RunLog(dry_run=dry_run, errors=[f"run aborted: {e}"])
+    out = actions.apply(plan, spotify, hub, dry_run)
     log.info(
         "reconcile_done",
         **{k: v for k, v in out.applied.items() if v},
