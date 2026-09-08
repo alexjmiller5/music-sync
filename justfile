@@ -5,7 +5,7 @@ default:
 
 # Dev: live-reloading deploy of app.py against real Modal infra
 dev:
-    uv run modal serve app.py
+    modal serve app.py
 
 test:
     uv run pytest
@@ -19,14 +19,16 @@ fmt:
 
 # Stream logs from the deployed app
 logs:
-    uv run modal app logs music-sync
+    modal app logs music-sync
 
 # Push .env.tpl secrets into the Modal secret store (no plaintext touches disk;
-# the modal CLI rejects process-substitution FIFOs, hence the stdin script)
+# the modal CLI rejects process-substitution FIFOs, hence the stdin script).
+# This one drives the Modal SDK rather than the CLI, so the `modal` PATH wrapper
+# can't inject auth for it - op run does it instead.
 sync-secrets:
-    op inject -i .env.tpl | uv run scripts/sync_secrets.py music-sync
+    MODAL_TOKEN_ID=op://4eeyrkqibibn7k4j6rz2fbzvxm/2sfxybjpv3c3ohzxhf5qeken4a/token_id MODAL_TOKEN_SECRET=op://4eeyrkqibibn7k4j6rz2fbzvxm/2sfxybjpv3c3ohzxhf5qeken4a/token_secret op run --no-masking -- bash -c "op inject -i .env.tpl | uv run scripts/sync_secrets.py music-sync"
 
 deploy: test sync-secrets
-    uv run modal deploy app.py
+    modal deploy app.py
 
 # --- project-specific recipes below (one-offs live in scripts/, run directly) ---

@@ -1,0 +1,139 @@
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["httpx"]
+# ///
+"""Mint this project's machine-creatable credentials (op-project-bootstrap
+provision contract: --list prints mintable field names; --field NAME prints
+ONLY the value to stdout, progress on stderr).
+
+R2_API_TOKEN: a Cloudflare API token scoped to object writes on ONE bucket
+(the life-data archive), recreated on every mint because CF never re-reveals
+a token. Needs the AI Agent CF token (User API Tokens: Edit).
+
+token-id/token-secret: a CI-only Modal token for this project. Modal has no
+token-minting API - `modal token new` is a browser flow - so this minter
+opens a browser tab ONCE per project and Alex approves it. Bootstrap already
+runs in his desktop-authenticated terminal, so that is fine, and the result
+is a CI token dedicated to this project: revoking it kills this repo's
+deploys and nothing else.
+
+The mint writes to a private temp config (MODAL_CONFIG_PATH) rather than
+~/.modal.toml, so no credential lands in the real config; the temp file is
+0600 and removed as soon as the second field is read. One browser flow serves
+both fields - the second `--field` call reads the file the first one wrote.
+"""
+
+import os
+import subprocess
+import sys
+import tempfile
+import tomllib
+from pathlib import Path
+
+import httpx
+
+CF_ACCOUNT = "1e69de15e5dc3dddea6db7b3ae8087bc"
+BUCKET = "life-data-archive"
+NAME = "music-sync-r2"
+OP_CF_TOKEN = "op://4eeyrkqibibn7k4j6rz2fbzvxm/mxxpo6neiz3grdyrjj7rv7nume/credential"
+
+PROJECT = "music-sync"  # also the Modal profile name for this project's CI token
+MODAL_FIELDS = {"token-id": "token_id", "token-secret": "token_secret"}
+CACHE = Path(tempfile.gettempdir()) / f"modal-ci-{PROJECT}.toml"
+
+FIELDS = ["R2_API_TOKEN", "R2_ACCOUNT_ID", "R2_BUCKET", *MODAL_FIELDS]
+
+
+def log(msg: str) -> None:
+    print(msg, file=sys.stderr)
+
+
+def op_read(ref: str) -> str:
+    return subprocess.run(
+        ["op", "read", ref], capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+
+def mint_r2_token() -> str:
+    admin = op_read(OP_CF_TOKEN)
+    c = httpx.Client(
+        base_url="https://api.cloudflare.com/client/v4",
+        headers={"Authorization": f"Bearer {admin}"},
+    )
+    for t in (
+        c.get("/user/tokens", params={"per_page": 100}).raise_for_status().json()["result"] or []
+    ):
+        if t["name"] == NAME:
+            log(f"deleting existing token {NAME} (value not re-readable)")
+            c.delete(f"/user/tokens/{t['id']}").raise_for_status()
+    groups = c.get("/user/tokens/permission_groups").raise_for_status().json()["result"]
+    write = next(g for g in groups if g["name"] == "Workers R2 Storage Bucket Item Write")
+    r = c.post(
+        "/user/tokens",
+        json={
+            "name": NAME,
+            "policies": [
+                {
+                    "effect": "allow",
+                    "resources": {
+                        f"com.cloudflare.edge.r2.bucket.{CF_ACCOUNT}_default_{BUCKET}": "*"
+                    },
+                    "permission_groups": [{"id": write["id"]}],
+                }
+            ],
+        },
+    ).raise_for_status()
+    log("✓ R2 bucket-scoped write token minted")
+    return r.json()["result"]["value"]
+
+
+def modal_bin() -> list[str]:
+    """The project's pinned modal, bypassing Alex's PATH wrapper (which would
+    inject his personal token and make --verify check the wrong credential)."""
+    venv = Path(__file__).resolve().parent.parent / ".venv" / "bin" / "modal"
+    return [str(venv)] if venv.exists() else ["uvx", "modal"]
+
+
+def mint_modal_token() -> None:
+    log(f"· minting a CI-only Modal token for {PROJECT} (a browser tab will open)")
+    env = {k: v for k, v in os.environ.items() if k not in ("MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET")}
+    env["MODAL_CONFIG_PATH"] = str(CACHE)
+    CACHE.touch(mode=0o600)
+    subprocess.run(
+        [*modal_bin(), "token", "new", "--profile", f"{PROJECT}-ci", "--no-activate"],
+        env=env,
+        check=True,
+        stdout=sys.stderr,
+    )
+
+
+def read_modal_field(field: str) -> str:
+    if not CACHE.exists() or CACHE.stat().st_size == 0:
+        mint_modal_token()
+    profiles = tomllib.loads(CACHE.read_text())
+    profile = profiles.get(f"{PROJECT}-ci") or next(iter(profiles.values()))
+    return profile[MODAL_FIELDS[field]]
+
+
+def main() -> None:
+    match sys.argv[1:]:
+        case ["--list"]:
+            print("\n".join(FIELDS))
+        case ["--field", "R2_API_TOKEN"]:
+            print(mint_r2_token())
+        case ["--field", "R2_ACCOUNT_ID"]:
+            print(CF_ACCOUNT)
+        case ["--field", "R2_BUCKET"]:
+            print(BUCKET)
+        case ["--field", name] if name in MODAL_FIELDS:
+            value = read_modal_field(name)
+            # Last field consumed: the temp credential has served its purpose.
+            if name == "token-secret":
+                CACHE.unlink(missing_ok=True)
+            print(value)
+        case _:
+            sys.exit("usage: provision.py --list | --field <name>")
+
+
+if __name__ == "__main__":
+    main()
