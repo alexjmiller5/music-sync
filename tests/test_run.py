@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from core import run
+from core import actions, run
 from core.hub import HubError
 from core.model import Action
 from core.spotify_client import SpotifyAuthError
@@ -60,3 +60,23 @@ def test_hub_error_is_filed_with_a_full_runlog(settings, mocker):
     assert log.errors and "boom" in log.errors[0]
     assert filed.call_args.args[2] == ["something odd"]
     assert any("boom" in e for e in filed.call_args.args[3])
+
+
+def test_writes_false_is_passed_through_to_apply(settings, mocker):
+    mocker.patch("core.run.mirror.load_mirror", return_value=object())
+    mocker.patch("core.run.mirror.pull_live", return_value=SimpleNamespace(raw={}))
+    mocker.patch("core.run.archive.put")
+    mocker.patch("core.run.reconcile_mod.plan", return_value=[])
+    mocker.patch("core.run.flags.file")
+    spy = mocker.patch("core.run.actions.apply", wraps=actions.apply)
+
+    run.reconcile(
+        settings,
+        dry_run=False,
+        now=datetime(2026, 9, 8, tzinfo=timezone.utc),
+        spotify=LiveSpotify(),
+        hub=FailingHub(),
+        writes=False,
+    )
+
+    assert spy.call_args.kwargs["writes"] is False

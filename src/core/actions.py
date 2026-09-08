@@ -32,7 +32,17 @@ class RunLog:
         return ("DRY RUN\n" if self.dry_run else "") + ("\n".join(lines) or "nothing to do")
 
 
-def apply(actions: list[Action], spotify, hub, dry_run: bool) -> RunLog:
+SPOTIFY_WRITE_KINDS = {
+    "like",
+    "add_item",
+    "readd_item",
+    "remove_item",
+    "set_description",
+    "delete_playlist",
+}
+
+
+def apply(actions: list[Action], spotify, hub, dry_run: bool, writes: bool = True) -> RunLog:
     out = RunLog(dry_run=dry_run)
     likes: list[str] = []
     adds: dict[str, list[str]] = defaultdict(list)
@@ -43,6 +53,9 @@ def apply(actions: list[Action], spotify, hub, dry_run: bool) -> RunLog:
     rows: dict[str, dict[str, dict]] = defaultdict(dict)  # table -> id -> merged row
     for a in actions:
         out.applied[a.kind] += 1
+        if not writes and a.kind in SPOTIFY_WRITE_KINDS:
+            out.skipped.append(f"{a.kind} {a.playlist_id} {a.uri}")
+            continue
         if a.kind == "like":
             likes.append(a.uri)
         elif a.kind == "add_item":
