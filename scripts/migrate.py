@@ -139,7 +139,7 @@ def step_smart_buckets(hub, dry_run: bool) -> None:
     print("done")
 
 
-def step_rules(hub, dry_run: bool) -> None:
+def step_rules(hub, dry_run: bool) -> list[str]:
     from core import mirror as mm
     from core import rules
 
@@ -169,9 +169,10 @@ def step_rules(hub, dry_run: bool) -> None:
     ]
     print("rules: " + " ".join(shlex.quote(c) for c in cmd))
     if dry_run:
-        return
+        return cmd
     subprocess.run(cmd, check=True)
     print("done")
+    return cmd
 
 
 def step_enable() -> None:

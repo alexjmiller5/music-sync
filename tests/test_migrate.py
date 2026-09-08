@@ -170,3 +170,46 @@ def test_step_smart_buckets_sets_kind_and_rule():
     assert by_id["G"]["kind"] == "smart" and by_id["G"]["rule"]["first_year"] == {"gte": 2000}
     assert by_id["X"]["rule"]["first_year"] == {"lt": 2000}
     assert by_id["R"]["rule"]["deezer_genres_any"] == ["Rap/Hip Hop"]
+
+
+RAP_SMART_ROW = {
+    "id": "R",
+    "name": "rap",
+    "kind": "smart",
+    "rule": {"v": 1, "deezer_genres_any": ["Rap/Hip Hop"], "captured_by": "shazam"},
+    "description": None,
+    "snapshot_id": None,
+    "pinned": 1,
+    "expires_at": None,
+    "deleted_at": None,
+}
+CURATED_ROW = {**PLAYLIST_ROW, "id": "S", "name": "My Shazam Tracks"}
+
+
+def test_step_rules_dry_run_prints_sql_with_provenance_substitution():
+    hub = FakeHub(
+        {
+            "songs": [],
+            "playlists": [RAP_SMART_ROW, CURATED_ROW],
+            "playlist_songs": [],
+            "provenance": [],
+        }
+    )
+    cmd = migrate.step_rules(hub, dry_run=True)
+    sql = cmd[cmd.index("--sql") + 1]
+    assert "FROM provenance c WHERE c.to_kind='songs'" in sql
+    assert "FROM captures" not in sql
+    assert hub.pushed == []
+
+
+def test_step_rules_runs_life_rule_set_when_not_dry_run(monkeypatch):
+    hub = FakeHub(
+        {"songs": [], "playlists": [RAP_SMART_ROW], "playlist_songs": [], "provenance": []}
+    )
+    calls = []
+    monkeypatch.setattr(migrate.subprocess, "run", lambda cmd, **kw: calls.append((cmd, kw)))
+    migrate.step_rules(hub, dry_run=False)
+    assert len(calls) == 1
+    cmd, kw = calls[0]
+    assert kw == {"check": True}
+    assert cmd[:4] == ["life", "rule", "set", "smart-songs-match-rule"]

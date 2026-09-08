@@ -59,7 +59,7 @@ def test_report_sections():
         {},
     )
     r = review.report(m, live)
-    assert [ln for ln in r["curated_not_liked"] if "[A]" in ln]
+    assert len([ln for ln in r["curated_not_liked"] if "[A]" in ln]) == 1
     assert [ln for ln in r["liked_no_playlist"] if "[B]" in ln] and [
         ln for ln in r["liked_no_playlist"] if "[D]" in ln
     ]

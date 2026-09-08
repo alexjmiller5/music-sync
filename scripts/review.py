@@ -39,10 +39,13 @@ def report(m: Mirror, live: Live | None) -> dict[str, list[str]]:
     by_name = {p.name: p.id for p in m.playlists.values()}
     kind = {p.id: p.kind for p in m.playlists.values()}
     in_playlist = {isrc for (_, isrc) in m.memberships}
-    for (pid, isrc), _ in m.memberships.items():
-        s = m.songs.get(isrc)
-        if s and kind.get(pid) == "curated" and not s.liked:
-            r["curated_not_liked"].append(_line(s, m))
+    curated_unliked = {
+        isrc
+        for (pid, isrc) in m.memberships
+        if kind.get(pid) == "curated" and isrc in m.songs and not m.songs[isrc].liked
+    }
+    for isrc in curated_unliked:
+        r["curated_not_liked"].append(_line(m.songs[isrc], m))
     for s in m.songs.values():
         if s.liked and s.id not in in_playlist:
             r["liked_no_playlist"].append(_line(s, m))
