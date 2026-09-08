@@ -5,7 +5,7 @@ import json
 import httpx
 import pytest
 
-from core.spotify_client import SpotifyAuthError, SpotifyClient
+from core.spotify_client import MAX_429_RETRIES, SpotifyAuthError, SpotifyClient
 
 
 def token_resp(tok="tok1"):
@@ -128,3 +128,17 @@ def test_429_then_retry_and_401_refresh(settings, mocker):
 
     assert make(handler, settings, mocker).me() == {"id": "me"}
     assert state["tokens"] == 2
+
+
+def test_429_retry_limit(settings, mocker):
+    calls = []
+
+    def handler(req):
+        if req.url.host == "accounts.spotify.com":
+            return token_resp()
+        calls.append(req)
+        return httpx.Response(429, headers={"Retry-After": "0"})
+
+    with pytest.raises(httpx.HTTPStatusError):
+        make(handler, settings, mocker).me()
+    assert len(calls) == MAX_429_RETRIES + 1

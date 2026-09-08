@@ -21,6 +21,7 @@ ITEM_FIELDS = (
     "next,items(added_at,item(id,uri,name,is_local,is_playable,external_ids,"
     "artists(name),album(name,release_date)))"
 )
+MAX_429_RETRIES = 5
 
 
 class SpotifyAuthError(RuntimeError):
@@ -48,6 +49,7 @@ class SpotifyClient:
         if self._token is None:
             self._refresh_token()
         refreshed = False
+        consecutive_429s = 0
         while True:
             resp = self._http.request(
                 method, url, headers={"Authorization": f"Bearer {self._token}"}, **kwargs
@@ -55,16 +57,21 @@ class SpotifyClient:
             if resp.status_code == 401 and not refreshed:
                 self._refresh_token()
                 refreshed = True
+                consecutive_429s = 0
                 continue
             if resp.status_code == 429:
+                consecutive_429s += 1
+                if consecutive_429s > MAX_429_RETRIES:
+                    resp.raise_for_status()
                 wait = float(resp.headers.get("Retry-After", "1"))
                 log.warning("spotify_rate_limited", retry_after=wait)
                 time.sleep(wait)
                 continue
+            consecutive_429s = 0
             resp.raise_for_status()
             return resp.json() if resp.content else {}
 
-    def _get(self, url, params=None):
+    def _get(self, url: str, params: dict | None = None):
         return self._request("GET", url, params=params)
 
     def _paginate(self, url: str, params: dict) -> list[dict]:
