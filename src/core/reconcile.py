@@ -66,6 +66,8 @@ def plan(
             key = (lp.id, it.isrc)
             if key not in actual:
                 actual[key] = it
+            elif lp.id in inbox_ids:
+                pass  # inbox: FIFO cap is the only rule that removes/adds anything (never dedupe)
             else:  # duplicate ISRC: keep the earliest added_at, drop the other (rule 9)
                 keep, drop = sorted([actual[key], it], key=lambda x: x.added_at)
                 actual[key] = keep
@@ -166,7 +168,10 @@ def plan(
         acts.append(
             Action("upsert_song", isrc=isrc, row={"id": isrc, "liked": 1, "liked_at": now_s})
         )
-        if (isrc, "playlist") not in mirror.captures:
+        # only for songs that already existed: a brand-new song already got its
+        # created_row=1 edge from the new-song branch above (rule 1); a second
+        # edge here would merge over it and regress created_row to 0.
+        if isrc in mirror.songs and (isrc, "playlist") not in mirror.captures:
             pid = next(p for (p, i) in actual if i == isrc and kind_of.get(p) == "curated")
             acts.append(
                 Action(
@@ -317,9 +322,9 @@ def plan(
         if _strip_synced(text) != _strip_synced(lp.description):
             acts.append(Action("set_description", playlist_id=pid, text=text))
 
-    # unplayable relink (rule 8)
+    # unplayable relink (rule 8): inbox is exempt, same as dedupe (rule 9)
     for (pid, isrc), it in list(actual.items()):
-        if it.playable:
+        if it.playable or pid in inbox_ids:
             continue
         s = mirror.songs.get(isrc)
         alt = (
