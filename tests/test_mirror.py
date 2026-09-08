@@ -146,3 +146,19 @@ def test_pull_live_skips_unchanged_snapshots_and_foreign_playlists():
     assert live.playlists["P1"].items is None and sp.item_calls == ["P2"]
     assert all(k for k in live.liked) and live.raw["liked"] == LIKED
     assert [p["id"] for p in live.raw["playlists"]] == [p["id"] for p in PLAYLISTS]
+
+
+def test_pull_live_always_fetches_smart_playlists_even_if_snapshot_unchanged():
+    m = mirror.Mirror(
+        songs={},
+        playlists={
+            "P1": Playlist("P1", "a", "smart", {"v": 1}, None, PLAYLISTS[0]["snapshot_id"], 1, None)
+        },
+        memberships={},
+        deleted_memberships=[],
+        captures=set(),
+    )
+    sp = FakeSpotify()
+    live = mirror.pull_live(sp, "US", "alexmiller", m)
+    assert live.playlists["P1"].items is not None
+    assert sp.item_calls == ["P1", "P2"]

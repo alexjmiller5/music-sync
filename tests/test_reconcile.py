@@ -106,12 +106,69 @@ def test_unheart_removes_from_curated_and_smart_and_wins_tie():
     assert {a.row["id"] for a in kinds(acts, "delete_membership")} == {"CU:A", "SM:A"}
 
 
+def test_unheart_removes_skipped_playlist_memberships_via_mirror():
+    # steady state: hearting/un-hearting never bumps a curated playlist's snapshot, so
+    # pull_live skips it (items=None) - un-heart must still fall back to the mirror row
+    m = base()
+    live = Live(
+        {
+            "CU": live_pl("CU", "feel good", None),
+            "SM": live_pl("SM", "pop", None),
+            "IN": live_pl("IN", "new songs", None),
+        },
+        {"B": item("B")},
+        {},
+    )
+    acts = reconcile.plan(m, live, NOW)
+    removed = {(a.playlist_id, a.uri) for a in kinds(acts, "remove_item")}
+    assert removed == {("CU", "spotify:track:tA"), ("SM", "spotify:track:tA")}
+    assert {a.row["id"] for a in kinds(acts, "delete_membership")} == {"CU:A", "SM:A"}
+
+
+def test_smart_materializes_when_curated_and_inbox_skipped():
+    m = base()
+    m.songs["A"].liked = 0
+    m.songs["A"].liked_at = None
+    m.memberships.pop(("SM", "A"))
+    live = Live(
+        {
+            "CU": live_pl("CU", "feel good", None),
+            "SM": live_pl("SM", "pop", [item("B")]),
+            "IN": live_pl("IN", "new songs", None),
+        },
+        {"A": item("A"), "B": item("B")},
+        {},
+    )
+    acts = reconcile.plan(m, live, NOW)
+    assert ("SM", "spotify:track:tA") in {(a.playlist_id, a.uri) for a in kinds(acts, "add_item")}
+
+
+def test_rule_error_flags_instead_of_raising_other_smart_playlists_still_materialize():
+    m = base()
+    m.songs["D"] = song("D", genres=["Pop"])
+    m.playlists["BAD"] = pl("BAD", "bad rule", "smart", {"v": 1, "in_playlist_any": ["gone"]})
+    live = Live(
+        {
+            "CU": live_pl("CU", "feel good", [item("A")]),
+            "SM": live_pl("SM", "pop", [item("A"), item("B")]),
+            "IN": live_pl("IN", "new songs", []),
+        },
+        {"A": item("A"), "B": item("B"), "D": item("D")},
+        {},
+    )
+    acts = reconcile.plan(m, live, NOW)
+    rule_flags = [a for a in kinds(acts, "flag") if a.reason == "rule"]
+    assert len(rule_flags) == 1
+    assert "bad rule" in rule_flags[0].text and "gone" in rule_flags[0].text
+    assert [a.uri for a in kinds(acts, "add_item") if a.playlist_id == "SM"] == ["spotify:track:tD"]
+
+
 def test_undo_restores_curated_within_window():
     m = base()
     m.songs["A"].liked = 0
     m.memberships.pop(("CU", "A"))
     m.deleted_memberships.append(
-        Membership("CU", "A", "tA", T, deleted_at=(NOW - timedelta(days=2)).isoformat())
+        Membership("CU", "A", "tA", T, deleted_at=reconcile._iso(NOW - timedelta(days=2)))
     )
     live = Live(
         {
@@ -124,7 +181,10 @@ def test_undo_restores_curated_within_window():
     )
     acts = reconcile.plan(m, live, NOW)
     assert ("CU", "spotify:track:tA") in {(a.playlist_id, a.uri) for a in kinds(acts, "add_item")}
-    m.deleted_memberships[0].deleted_at = (NOW - timedelta(days=9)).isoformat()
+    # plan() must not mutate its input: the mirror's own "A" is still unliked, so the
+    # second call below is a genuine test of the cutoff window, not of a stale mutation
+    assert m.songs["A"].liked == 0
+    m.deleted_memberships[0].deleted_at = reconcile._iso(NOW - timedelta(days=9))
     assert ("CU", "spotify:track:tA") not in {
         (a.playlist_id, a.uri) for a in kinds(reconcile.plan(m, live, NOW), "add_item")
     }
@@ -223,13 +283,41 @@ def test_duplicate_isrc_keeps_earliest():
     assert [a.uri for a in kinds(acts, "remove_item") if a.playlist_id == "CU"] == [
         "spotify:track:tA"
     ]
+    assert not kinds(acts, "readd_item")  # different uris: no readd needed
+
+
+def test_duplicate_isrc_same_uri_needs_readd():
+    m = base()
+    live = Live(
+        {
+            "CU": live_pl(
+                "CU",
+                "feel good",
+                [
+                    item("A", "tA", added="2026-08-02T00:00:00.000Z"),
+                    item("A", "tA", added="2026-08-01T00:00:00.000Z"),
+                ],
+            ),
+            "SM": live_pl("SM", "pop", []),
+            "IN": live_pl("IN", "new songs", []),
+        },
+        {"A": item("A")},
+        {},
+    )
+    acts = reconcile.plan(m, live, NOW)
+    assert [a.uri for a in kinds(acts, "remove_item") if a.playlist_id == "CU"] == [
+        "spotify:track:tA"
+    ]
+    assert [a.uri for a in kinds(acts, "readd_item") if a.playlist_id == "CU"] == [
+        "spotify:track:tA"
+    ]
 
 
 def test_ephemeral_expiry_and_skipped_playlists():
     m = base()
     m.playlists["SM"].pinned, m.playlists["SM"].expires_at = (
         0,
-        (NOW - timedelta(hours=1)).isoformat(),
+        reconcile._iso(NOW - timedelta(hours=1)),
     )
     live = Live(
         {
@@ -243,6 +331,9 @@ def test_ephemeral_expiry_and_skipped_playlists():
     acts = reconcile.plan(m, live, NOW)
     assert [a.playlist_id for a in kinds(acts, "delete_playlist")] == ["SM"]
     assert not kinds(acts, "remove_item") and not kinds(acts, "delete_membership")
+    # soft-delete must not be overwritten by mirror upkeep's plain upsert_playlist
+    sm_upserts = [a for a in kinds(acts, "upsert_playlist") if a.playlist_id == "SM"]
+    assert len(sm_upserts) == 1 and sm_upserts[0].row["deleted_at"] == reconcile._iso(NOW)
 
 
 def test_no_isrc_items_are_one_flag_not_rows():
