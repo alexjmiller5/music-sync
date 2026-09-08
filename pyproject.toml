@@ -1,5 +1,5 @@
 [project]
-name = "notion-spotify-sync"
+name = "music-sync"
 version = "0.1.0"
 description = "Two-way Spotify <-> Notion playlist sync"
 requires-python = ">=3.13"

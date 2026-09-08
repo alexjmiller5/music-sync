@@ -1,6 +1,6 @@
 # AGENTS.md
 
-notion-spotify-sync — two-way Spotify <-> Notion playlist sync on Modal.
+music-sync — two-way Spotify <-> Notion playlist sync on Modal.
 Seeded from Spotify GDPR export zips in `data/raw/` (gitignored personal
 data — NEVER commit anything under `data/`).
 
