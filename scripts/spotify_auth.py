@@ -5,7 +5,7 @@
 """One-time Spotify auth: mint a refresh token via authorization-code + PKCE.
 
 Run AFTER creating the Spotify developer app (https://developer.spotify.com/dashboard)
-with redirect URI http://127.0.0.1:8888/callback:
+with redirect URI http://127.0.0.1:8080/callback:
 
     SPOTIFY_CLIENT_ID=... SPOTIFY_CLIENT_SECRET=... uv run scripts/spotify_auth.py
 
@@ -31,7 +31,7 @@ TOKEN_URL = "https://accounts.spotify.com/api/token"
 SCOPES = (
     "playlist-read-private playlist-read-collaborative "
     "playlist-modify-private playlist-modify-public "
-    "user-follow-read user-library-read"
+    "user-library-read user-library-modify user-follow-read"
 )
 
 
@@ -39,7 +39,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--client-id", default=os.environ.get("SPOTIFY_CLIENT_ID"))
     parser.add_argument("--client-secret", default=os.environ.get("SPOTIFY_CLIENT_SECRET"))
-    parser.add_argument("--port", type=int, default=8888)
+    parser.add_argument("--port", type=int, default=8080)
     args = parser.parse_args(argv)
     if not args.client_id or not args.client_secret:
         parser.error(

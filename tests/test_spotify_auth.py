@@ -23,14 +23,15 @@ SCOPES = [
     "playlist-read-collaborative",
     "playlist-modify-private",
     "playlist-modify-public",
-    "user-follow-read",
     "user-library-read",
+    "user-library-modify",
+    "user-follow-read",
 ]
 
 
 def test_parse_args_from_flags():
     args = auth.parse_args(["--client-id", "cid", "--client-secret", "csec"])
-    assert (args.client_id, args.client_secret, args.port) == ("cid", "csec", 8888)
+    assert (args.client_id, args.client_secret, args.port) == ("cid", "csec", 8080)
 
 
 def test_parse_args_from_env(monkeypatch):
