@@ -174,7 +174,7 @@ The reconciler never acts on state alone; it compares the live pull with
 | Observation (mirror → live)                                         | Meaning                                          | Action                                                                        |
 | ------------------------------------------------------------------- | ------------------------------------------------ | ----------------------------------------------------------------------------- |
 | not in curated playlist → in it, liked=0                            | user added an unliked song to a curated playlist | like it (PUT /me/tracks), set liked=1, capture edge `playlist`                |
-| liked=1 → liked=0, song in ≥1 non-inbox playlist                    | user un-hearted                                  | remove from every curated and smart playlist; soft-delete junction rows; log  |
+| liked=1 → liked=0, song in ≥1 non-inbox playlist                    | user un-hearted                                  | remove from every curated and smart playlist (memberships of playlists skipped this run come from the mirror); soft-delete junction rows; log |
 | liked=1 → liked=0 and → added to a curated playlist in the same run | conflicting gestures                             | un-heart wins; log both                                                       |
 | liked=0 → liked=1                                                   | user hearted                                     | pool membership; smart playlists recompute; capture edge `like` if first seen |
 | soft-deleted curated rows < 7 days old, song liked again            | undo                                             | restore those curated memberships in Spotify and un-delete the rows           |
@@ -182,7 +182,7 @@ The reconciler never acts on state alone; it compares the live pull with
 | inbox count > 100                                                   | inbox overflow                                   | remove oldest beyond 100                                                      |
 | smart playlist contains a song not matching its rule                | hand-add to a smart playlist, or rule changed    | remove; log ("removed N you had added by hand")                               |
 | playlist song with `is_playable=false`                              | greyed out                                       | swap to a playable id of the same ISRC if one exists; else flag               |
-| same ISRC twice in one playlist                                     | duplicate                                        | keep the earliest `added_at`, remove the other                                |
+| same ISRC twice in one playlist                                     | duplicate                                        | keep the earliest `added_at`, remove the other; when both copies share one Spotify URI, remove then re-add the kept copy (Spotify deletes every occurrence of a URI) |
 | smart playlist pinned=0 past `expires_at`                           | ephemeral expiry                                 | delete in Spotify, soft-delete row                                            |
 
 ### 5.4 Undo
@@ -247,8 +247,9 @@ mismatches. No per-playlist rule objects exist in the catalog.
 * `reconcile` - `modal.Cron("0 * * * *")` (hourly), also exposed as a
   proxy-auth `POST /reconcile` endpoint so the user, an agent, or the Shazam
   shortcut can trigger a run immediately. One run at a time (Modal
-  `concurrency_limit=1`); a run skips playlists whose snapshot id is
-  unchanged. Uses one of the five Starter-plan cron slots; `modal app list`
+  `concurrency_limit=1`); a run skips curated and inbox playlists whose snapshot id is
+  unchanged; smart playlists are always pulled (hearting changes no
+  snapshot, and their membership is what the run materializes). Uses one of the five Starter-plan cron slots; `modal app list`
   before deploy confirms a slot is free.
 * `capture` - proxy-auth `POST /capture` (§7.3). The one path that writes
   life-data outside the hourly run; same app, same credentials, same code.
@@ -423,7 +424,7 @@ copies are removed.
 ## 11. Requirements (EARS)
 
 1. The system shall identify every recording by ISRC and shall skip recordings without one, counting them in the run log.
-2. When the reconciler runs, it shall pull every owned playlist whose snapshot id changed and Liked Songs, and shall diff them against the mirror before acting.
+2. When the reconciler runs, it shall pull every owned smart playlist and every curated or inbox playlist whose snapshot id changed and Liked Songs, and shall diff them against the mirror before acting.
 3. When a song is added to a curated playlist while unliked, the reconciler shall like it and record a `playlist` capture edge.
 4. When a liked song becomes unliked, the reconciler shall remove it from every curated and smart playlist and soft-delete its junction rows.
 5. If a song is re-liked within 7 days of such a removal, the reconciler shall restore its curated memberships.
