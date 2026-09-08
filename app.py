@@ -53,16 +53,28 @@ def reconcile(body: dict | None = None):
     return _run(dry_run=bool((body or {}).get("dry_run", False)))
 
 
+def _flag_quietly(settings, flags: list[str], errors: list[str]) -> None:
+    """flags.file (Notion) can fail on its own; never let that turn the
+    documented capture response into an opaque 500."""
+    from datetime import date
+
+    import httpx
+    from core import flags as flags_mod
+
+    try:
+        flags_mod.file(settings, httpx.Client(), flags, errors, date.today().isoformat())
+    except Exception as e:
+        print(f"capture: could not file flag: {e}")
+
+
 @app.function(image=image, secrets=secrets, timeout=120)
 @modal.fastapi_endpoint(method="POST", requires_proxy_auth=True)
 def capture(body: dict):
-    from datetime import date, datetime, timezone
+    from datetime import datetime, timezone
 
-    import httpx
     from fastapi.responses import JSONResponse
 
     from core import capture as cap
-    from core import flags
     from core.config import Settings
     from core.hub import Hub
     from core.spotify_client import SpotifyAuthError, SpotifyClient
@@ -77,22 +89,12 @@ def capture(body: dict):
             datetime.now(timezone.utc),
         )
     except SpotifyAuthError as e:
-        flags.file(
-            s,
-            httpx.Client(),
-            [],
-            [f"Spotify refresh token {e}: re-mint with scripts/spotify_auth.py"],
-            date.today().isoformat(),
-        )
+        _flag_quietly(s, [], [f"Spotify refresh token {e}: re-mint with scripts/spotify_auth.py"])
         return JSONResponse(
             {"ok": False, "message": "Spotify token expired; flagged"}, status_code=503
         )
     if not out["ok"] and out["message"].startswith("Could not find"):
-        flags.file(
-            s,
-            httpx.Client(),
-            [f"Add {body.get('title')} by {body.get('artist')} to new songs manually"],
-            [],
-            date.today().isoformat(),
+        _flag_quietly(
+            s, [f"Add {body.get('title')} by {body.get('artist')} to new songs manually"], []
         )
     return out
