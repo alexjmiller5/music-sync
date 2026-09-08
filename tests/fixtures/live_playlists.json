@@ -1,0 +1,47 @@
+[
+ {
+  "id": "P1",
+  "name": "feel good",
+  "description": "",
+  "snapshot_id": "s1",
+  "owner": {
+   "id": "alexmiller"
+  },
+  "public": false,
+  "collaborative": false,
+  "items": {
+   "total": 2
+  },
+  "uri": "spotify:playlist:P1"
+ },
+ {
+  "id": "P2",
+  "name": "rap",
+  "description": "post 2000s",
+  "snapshot_id": "s2",
+  "owner": {
+   "id": "alexmiller"
+  },
+  "public": false,
+  "collaborative": false,
+  "items": {
+   "total": 4
+  },
+  "uri": "spotify:playlist:P2"
+ },
+ {
+  "id": "P9",
+  "name": "Classical Movie Soundtracks",
+  "description": "",
+  "snapshot_id": "s9",
+  "owner": {
+   "id": "someone"
+  },
+  "public": true,
+  "collaborative": false,
+  "items": {
+   "total": 1370
+  },
+  "uri": "spotify:playlist:P9"
+ }
+]
