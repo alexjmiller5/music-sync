@@ -28,7 +28,7 @@ class SpotifyClient:
             and settings.spotify_refresh_token
         ):
             raise RuntimeError(
-                "Spotify credentials missing — create the developer app and run "
+                "Spotify credentials missing - create the developer app and run "
                 "scripts/spotify_auth.py (see README)"
             )
         self._settings = settings

@@ -9,7 +9,7 @@ with redirect URI http://127.0.0.1:8080/callback:
 
     SPOTIFY_CLIENT_ID=... SPOTIFY_CLIENT_SECRET=... uv run scripts/spotify_auth.py
 
-Opens the browser, captures the callback on 127.0.0.1:8888, exchanges the code,
+Opens the browser, captures the callback on 127.0.0.1:8080, exchanges the code,
 then PRINTS the refresh token plus the exact `op item create` / `op item edit`
 commands to paste into your own shell. Nothing is ever written to disk.
 """

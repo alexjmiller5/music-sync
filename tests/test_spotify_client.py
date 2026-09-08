@@ -1,4 +1,4 @@
-"""Unit tests for the Spotify Web API client — httpx.MockTransport, no network."""
+"""Unit tests for the Spotify Web API client - httpx.MockTransport, no network."""
 
 import httpx
 import pytest
