@@ -96,6 +96,19 @@ def test_set_description_truncates_to_300(settings, mocker):
     assert calls == [("PUT", "/v1/playlists/P", {"description": "x" * 300})]
 
 
+def test_unfollow_playlist_deletes_followers(settings, mocker):
+    calls = []
+
+    def handler(req):
+        if req.url.host == "accounts.spotify.com":
+            return token_resp()
+        calls.append((req.method, req.url.path))
+        return httpx.Response(200)
+
+    make(handler, settings, mocker).unfollow_playlist("P")
+    assert calls == [("DELETE", "/v1/playlists/P/followers")]
+
+
 def test_search_isrc_and_track_limit_10(settings, mocker):
     seen = []
 
