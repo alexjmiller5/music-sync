@@ -7,7 +7,7 @@ from core import mirror as mirror_mod
 from core.config import Settings
 from core.model import ISRC_RE
 
-_STRIP = re.compile(r"\s*[\(\[\-].*$")
+_STRIP = re.compile(r"\s+-.*$|\s*[\(\[].*$")
 _PUNCT = re.compile(r"[^\w\s]")
 
 

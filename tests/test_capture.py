@@ -26,6 +26,20 @@ def test_best_match_normalizes_title_and_artist():
     assert capture.best_match("Nope", "Kendrick Lamar", tracks) is None
 
 
+def test_best_match_hyphen_only_in_suffix():
+    # T-Shirt should not strip at hyphen (no preceding space)
+    tracks = [
+        track("1", "T-Shirt", "Migos"),
+        track("2", "T", "Migos"),
+    ]
+    assert capture.best_match("T-Shirt", "Migos", tracks)["id"] == "1"
+    # " - Live" suffix should be stripped (hyphen preceded by space)
+    tracks = [
+        track("2", "Money Trees - Live", "Kendrick Lamar"),
+    ]
+    assert capture.best_match("Money Trees", "Kendrick Lamar", tracks)["id"] == "2"
+
+
 class FakeSpotify:
     def __init__(self, tracks, inbox_items=()):
         self.tracks, self.inbox_items, self.calls = tracks, list(inbox_items), []
@@ -35,6 +49,17 @@ class FakeSpotify:
 
     def add_items(self, pid, uris):
         self.calls.append(("add", pid, uris))
+        # Add the matched track to inbox_items so it shows up in get_playlist_items
+        for uri in uris:
+            for t in self.tracks:
+                if t["uri"] == uri:
+                    self.inbox_items.append(
+                        {
+                            "added_at": "2026-09-08T12:00:00.000Z",
+                            "item": t,
+                        }
+                    )
+                    break
 
     def remove_items(self, pid, uris):
         self.calls.append(("remove", pid, uris))
@@ -156,4 +181,9 @@ def test_capture_trims_inbox(settings):
     )
     settings.inbox_cap = 2
     capture.capture({"title": "New", "artist": "A"}, sp, hub, settings, NOW)
-    assert ("remove", "IN", ["spotify:track:0"]) in sp.calls
+    # With 3 existing items + 1 new = 4 total, inbox_cap=2 removes oldest 2
+    assert ("remove", "IN", ["spotify:track:0", "spotify:track:1"]) in sp.calls
+    # The new song (track:9) must not be in any remove call
+    for call in sp.calls:
+        if call[0] == "remove":
+            assert "spotify:track:9" not in call[2]
