@@ -98,6 +98,16 @@ def test_readd_item_after_remove_for_same_playlist_and_uri():
     assert log.applied["readd_item"] == 1
 
 
+def test_writes_false_skips_spotify_but_still_applies_hub_and_flags():
+    sp, hub = FakeSpotify(), FakeHub()
+    log = actions.apply(ACTS, sp, hub, dry_run=False, writes=False)
+    assert sp.calls == []
+    assert len(log.skipped) == 7
+    assert log.applied["add_item"] == 3 and log.flags == ["something odd"]
+    tables = {t for t, _ in hub.pushed}
+    assert tables == {"songs", "playlists", "playlist_songs", "provenance"}
+
+
 def test_hub_error_is_recorded_not_raised():
     from core.hub import HubError
 

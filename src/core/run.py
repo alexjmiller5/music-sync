@@ -23,6 +23,7 @@ def reconcile_run(
     spotify=None,
     hub=None,
     http: httpx.Client | None = None,
+    writes: bool = True,
 ) -> actions.RunLog:
     now = now or datetime.now(timezone.utc)
     today = now.date().isoformat()
@@ -43,7 +44,7 @@ def reconcile_run(
     if not dry_run:
         archive.put(settings, archive.key_for(now), gzip.compress(json.dumps(live.raw).encode()))
     plan = reconcile_mod.plan(m, live, now, settings.inbox_cap, settings.undo_days, today)
-    out = actions.apply(plan, spotify, hub, dry_run)
+    out = actions.apply(plan, spotify, hub, dry_run, writes=writes)
     log.info(
         "reconcile_done",
         **{k: v for k, v in out.applied.items() if v},
