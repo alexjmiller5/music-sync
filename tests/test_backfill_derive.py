@@ -19,6 +19,29 @@ def test_select_ids_filters_null_col_and_deleted():
     assert backfill_derive.select_ids(rows, "first_year") == ["A"]
 
 
+def test_select_ids_defaults_to_any_derived_col_null():
+    rows = [
+        {
+            "id": "A",
+            "title": "t",
+            "deezer_genres": None,
+            "mb_tags": "[]",
+            "first_year": 2000,
+            "deleted_at": None,
+        },
+        {
+            "id": "B",
+            "title": "t",
+            "deezer_genres": "[]",
+            "mb_tags": "[]",
+            "first_year": 2000,
+            "deleted_at": None,
+        },
+    ]
+    assert backfill_derive.select_ids(rows) == ["A"]
+    assert backfill_derive.select_ids(rows, "first_year") == []
+
+
 class FakeHub:
     def __init__(self, n):
         self.n = n
