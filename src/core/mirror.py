@@ -105,9 +105,9 @@ def pull_live(spotify, market: str, me_id: str, mirror: Mirror) -> Live:
     raw = {"playlists": [], "items": {}, "liked": []}
     playlists = {}
     for p in spotify.get_playlists():
+        raw["playlists"].append(p)
         if (p.get("owner") or {}).get("id") != me_id:
             continue
-        raw["playlists"].append(p)
         known = mirror.playlists.get(p["id"])
         if known and known.snapshot_id and known.snapshot_id == p.get("snapshot_id"):
             items = None

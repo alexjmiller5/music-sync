@@ -145,3 +145,4 @@ def test_pull_live_skips_unchanged_snapshots_and_foreign_playlists():
     assert set(live.playlists) == {p["id"] for p in PLAYLISTS if p["owner"]["id"] == "alexmiller"}
     assert live.playlists["P1"].items is None and sp.item_calls == ["P2"]
     assert all(k for k in live.liked) and live.raw["liked"] == LIKED
+    assert [p["id"] for p in live.raw["playlists"]] == [p["id"] for p in PLAYLISTS]
