@@ -8,10 +8,10 @@ in Spotify from rules over that catalog, deployed on
 ## Layout
 
 ```
-app.py            Modal shim — image, secrets, endpoints, schedules
+app.py            Modal shim - image, secrets, endpoints, schedules
 src/core/         business logic (plain Python, portable)
 tests/            pytest
-data/raw/         Spotify GDPR export zips (gitignored — personal data, NEVER commit)
+data/raw/         Spotify GDPR export zips (gitignored - personal data, NEVER commit)
 .env.tpl          secrets manifest (1Password op:// refs, committed)
 justfile          dev / test / sync-secrets / deploy
 ```
@@ -22,12 +22,12 @@ reconciler, rules engine, and mirror land in later tasks per the design spec.
 
 ## Manual setup (the only steps that can't be codified)
 
-1. **Spotify developer app** — at
+1. **Spotify developer app** - at
    [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard)
    create an app with redirect URI `http://127.0.0.1:8080/callback`, then save
    the client id/secret into the `Music Sync ENV` 1Password item.
-2. **Spotify auth** — mint the refresh token (opens a browser, prints the
-   value to paste into 1Password — nothing touches disk):
+2. **Spotify auth** - mint the refresh token (opens a browser, prints the
+   value to paste into 1Password; nothing touches disk):
    ```
    op run --env-file=.env.tpl -- uv run scripts/spotify_auth.py
    ```
@@ -41,7 +41,7 @@ reconciler, rules engine, and mirror land in later tasks per the design spec.
 
 ### Without 1Password
 
-Plain env vars work everywhere `op run` is shown — export the fields listed
+Plain env vars work everywhere `op run` is shown - export the fields listed
 in `.env.tpl` instead. Mint the refresh token with
 `uv run scripts/spotify_auth.py --client-id ... --client-secret ...` and
 export the token it prints.

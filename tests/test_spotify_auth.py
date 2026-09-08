@@ -1,4 +1,4 @@
-"""Unit tests for scripts/spotify_auth.py — arg parsing, authorize URL, callback server.
+"""Unit tests for scripts/spotify_auth.py - arg parsing, authorize URL, callback server.
 
 No browser, no live Spotify: the server test drives the local http.server with
 httpx; token exchange uses a MockTransport.
