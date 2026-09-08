@@ -263,6 +263,45 @@ def test_no_isrc_items_are_one_flag_not_rows():
     )
 
 
+def test_inbox_exempt_from_relink_and_dedupe():
+    m = base()
+    m.songs["A"].spotify_ids = ["tA2", "tA"]
+    items = [
+        item("A", "tA", added=T, playable=False),
+        item("A", "tA9", added="2026-08-31T00:00:00.000Z"),
+    ]
+    live = Live(
+        {
+            "IN": live_pl("IN", "new songs", items),
+            "CU": live_pl("CU", "feel good", []),
+            "SM": live_pl("SM", "pop", []),
+        },
+        {"A": item("A")},
+        {},
+    )
+    acts = reconcile.plan(m, live, NOW)
+    assert not [a for a in kinds(acts, "remove_item") if a.playlist_id == "IN"]
+    assert not [a for a in kinds(acts, "add_item") if a.playlist_id == "IN"]
+    assert not [a for a in kinds(acts, "flag") if a.reason == "attention"]
+
+
+def test_new_unliked_curated_song_has_one_edge_created_row_1():
+    m = base()
+    live = Live(
+        {
+            "CU": live_pl("CU", "feel good", [item("A"), item("E")]),
+            "SM": live_pl("SM", "pop", [item("A"), item("B")]),
+            "IN": live_pl("IN", "new songs", []),
+        },
+        {"A": item("A"), "B": item("B")},
+        {},
+    )
+    acts = reconcile.plan(m, live, NOW)
+    edges = [a for a in kinds(acts, "edge") if a.row["to_ref"] == "E"]
+    assert len(edges) == 1 and edges[0].row["detail"]["created_row"] == 1
+    assert [a.uri for a in kinds(acts, "like") if a.isrc == "E"] == ["spotify:track:tE"]
+
+
 def test_apply_order():
     m = base()
     m.songs["B"].deezer_genres = ["Rock"]
