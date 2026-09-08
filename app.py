@@ -7,7 +7,7 @@ only maps that logic onto Modal: image, secrets, endpoints, schedules.
 
 import modal
 
-APP_NAME = "notion-spotify-sync"  # also the Modal secret name (see justfile sync-secrets)
+APP_NAME = "music-sync"  # also the Modal secret name (see justfile sync-secrets)
 
 app = modal.App(APP_NAME)
 

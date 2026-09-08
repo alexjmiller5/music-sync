@@ -499,7 +499,7 @@ wheels = [
 ]
 
 [[package]]
-name = "notion-spotify-sync"
+name = "music-sync"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

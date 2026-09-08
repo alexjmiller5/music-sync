@@ -1,4 +1,4 @@
-# notion-spotify-sync
+# music-sync
 
 Two-way Spotify <-> Notion playlist sync, deployed on
 [Modal](https://modal.com) from the `modal-service` template.
