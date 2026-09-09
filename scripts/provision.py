@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["httpx"]
+# dependencies = ["httpx", "modal>=1.0,<2"]
 # ///
 """Mint this project's machine-creatable credentials (op-project-bootstrap
 provision contract: --list prints mintable field names; --field NAME prints
@@ -12,25 +12,15 @@ by provisioning; rotation must verify the replacement before revocation. Needs t
 R2_ACCESS_KEY_ID: resolves the named token's ID after R2_API_TOKEN is minted.
 The existing token value stays in the environment item; no R2 cache is written.
 
-token-id/token-secret: a CI-only Modal token for this project. Modal has no
-token-minting API - `modal token new` is a browser flow - so this minter
-opens a browser tab ONCE per project and Alex approves it. Bootstrap already
-runs in his desktop-authenticated terminal, so that is fine, and the result
-is a CI token dedicated to this project: revoking it kills this repo's
-deploys and nothing else.
-
-The mint writes to a private temp config (MODAL_CONFIG_PATH) rather than
-~/.modal.toml, so no credential lands in the real config; the temp file is
-0600 and removed as soon as the second field is read. One browser flow serves
-both fields - the second `--field` call reads the file the first one wrote.
+token-id/token-secret: a CI-only Modal token pair minted together in memory.
+The operator approves the stderr URL/code in the configured remote browser;
+bootstrap saves the verified JSON pair atomically to the project vault.
 """
 
+import json
 import os
 import subprocess
 import sys
-import tempfile
-import tomllib
-from pathlib import Path
 
 import httpx
 
@@ -38,9 +28,9 @@ BUCKET = "music-sync-state"
 NAME = "music-sync-state-r2"
 OP_CF_TOKEN = "op://4eeyrkqibibn7k4j6rz2fbzvxm/mxxpo6neiz3grdyrjj7rv7nume/credential"
 
-PROJECT = "music-sync"  # also the Modal profile name for this project's CI token
-MODAL_FIELDS = {"token-id": "token_id", "token-secret": "token_secret"}
-CACHE = Path(tempfile.gettempdir()) / f"modal-ci-{PROJECT}.toml"
+PROJECT = "music-sync"
+MODAL_FIELDS = ("token-id", "token-secret")
+MAX_ATTEMPTS = 15
 
 FIELDS = [
     "RECONCILE_ENABLED",
@@ -141,32 +131,29 @@ def r2_access_key_id() -> str:
     return ids[0]
 
 
-def modal_bin() -> list[str]:
-    """The project's pinned modal, bypassing Alex's PATH wrapper (which would
-    inject his personal token and make --verify check the wrong credential)."""
-    venv = Path(__file__).resolve().parent.parent / ".venv" / "bin" / "modal"
-    return [str(venv)] if venv.exists() else ["uvx", "modal"]
+def mint_modal_token() -> dict[str, str]:
+    from modal.client import Client
+    from modal.config import DEFAULT_SERVER_URL
+    from modal.token_flow import TokenFlow
 
-
-def mint_modal_token() -> None:
-    log(f"· minting a CI-only Modal token for {PROJECT} (a browser tab will open)")
-    env = {k: v for k, v in os.environ.items() if k not in ("MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET")}
-    env["MODAL_CONFIG_PATH"] = str(CACHE)
-    CACHE.touch(mode=0o600)
-    subprocess.run(
-        [*modal_bin(), "token", "new", "--profile", f"{PROJECT}-ci", "--no-activate"],
-        env=env,
-        check=True,
-        stdout=sys.stderr,
-    )
-
-
-def read_modal_field(field: str) -> str:
-    if not CACHE.exists() or CACHE.stat().st_size == 0:
-        mint_modal_token()
-    profiles = tomllib.loads(CACHE.read_text())
-    profile = profiles.get(f"{PROJECT}-ci") or next(iter(profiles.values()))
-    return profile[MODAL_FIELDS[field]]
+    with Client.anonymous(DEFAULT_SERVER_URL) as client:
+        flow = TokenFlow(client)
+        with flow.start() as (_, url, code):
+            print(
+                f"Approve a dedicated {PROJECT} CI token in the remote browser:\n{url}",
+                file=sys.stderr,
+            )
+            print(f"Verification code: {code}", file=sys.stderr)
+            for _ in range(MAX_ATTEMPTS):
+                result = flow.finish(timeout=40)
+                if result is not None:
+                    break
+            else:
+                raise RuntimeError("Modal approval timed out")
+    if not result.token_id.strip() or not result.token_secret.strip():
+        raise RuntimeError("Modal returned an incomplete token pair")
+    Client.verify(DEFAULT_SERVER_URL, (result.token_id, result.token_secret))
+    return dict(zip(MODAL_FIELDS, (result.token_id, result.token_secret), strict=True))
 
 
 def main() -> None:
@@ -183,14 +170,18 @@ def main() -> None:
             print(account_id())
         case ["--field", "R2_BUCKET"]:
             print(BUCKET)
-        case ["--field", name] if name in MODAL_FIELDS:
-            value = read_modal_field(name)
-            # Last field consumed: the temp credential has served its purpose.
-            if name == "token-secret":
-                CACHE.unlink(missing_ok=True)
-            print(value)
+        case ["--batches"]:
+            print(json.dumps({"modal-token": MODAL_FIELDS}))
+        case ["--batch", "modal-token"]:
+            try:
+                pair = mint_modal_token()
+            except Exception:
+                sys.exit("Modal token mint or verification failed; no credentials emitted")
+            print(json.dumps(pair))
         case _:
-            sys.exit("usage: provision.py --list | --field <name>")
+            sys.exit(
+                "usage: provision.py --list | --field <R2 field> | --batches | --batch modal-token"
+            )
 
 
 if __name__ == "__main__":

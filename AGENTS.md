@@ -79,7 +79,7 @@ src/core/
   model.py                    dataclasses shared across core
   archive.py                  raw files via life-data, recovery via project-owned R2
 scripts/
-  provision.py                mints R2/Modal tokens; resolves R2_ACCESS_KEY_ID after R2_API_TOKEN
+  provision.py                R2 field minters + atomic, memory-only Modal token batch
   sync_secrets.py             push .env.tpl -> Modal secret store
   spotify_auth.py             mint/re-mint the Spotify refresh token
   create_50s_playlist.py      one-off, deleted after migration step 9
@@ -113,3 +113,11 @@ functions stay thin enough to not need tests beyond `tests/test_app.py`,
 which covers dispatch, the activation gate and real FastAPI error responses.
 Release regressions use dummy state and mocked HTTP; the suite blocks external
 sockets while permitting the OAuth callback tests on loopback.
+
+## Credential provisioning
+
+`op-project-bootstrap` calls `scripts/provision.py --batch modal-token` once
+for the Modal CI pair and saves both fields through JSON stdin. The operator
+opens the stderr approval URL in the configured remote browser session and
+approves the displayed code. No local browser opens or token cache is written.
+R2 provisioning retains its `--field` interface and manifest order.
