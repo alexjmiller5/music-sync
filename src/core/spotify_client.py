@@ -138,7 +138,7 @@ class SpotifyClient:
         self._request("DELETE", f"{API}/v1/playlists/{playlist_id}/followers")
 
     def like(self, uris: list[str]) -> None:
-        for i in range(0, len(uris), 50):
+        for i in range(0, len(uris), 40):
             self._request(
-                "PUT", f"{API}/v1/me/library", params={"uris": ",".join(uris[i : i + 50])}
+                "PUT", f"{API}/v1/me/library", params={"uris": ",".join(uris[i : i + 40])}
             )
