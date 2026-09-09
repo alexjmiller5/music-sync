@@ -30,27 +30,42 @@ def _run(dry_run: bool) -> dict:
     return {
         "summary": log.summary(),
         "applied": dict(log.applied),
+        "planned": log.planned,
         "flags": log.flags,
         "errors": log.errors,
     }
 
 
-@app.function(
-    image=image, secrets=secrets, schedule=modal.Cron("0 * * * *"), max_containers=1, timeout=1500
-)
-def reconcile_cron():
-    # Activation gate (spec req 18): the migration flips RECONCILE_ENABLED=1 in the
-    # Modal secret after the manual review and a clean dry-run.
-    if os.environ.get("RECONCILE_ENABLED") != "1":
-        print("reconcile_cron: RECONCILE_ENABLED != 1, skipping")
-        return {"skipped": True}
-    return _run(dry_run=False)
-
-
 @app.function(image=image, secrets=secrets, max_containers=1, timeout=1500)
+@modal.concurrent(max_inputs=1)
+def worker(operation: str, body: dict | None = None):
+    """One queue for the entire read/archive/plan/apply cycle across all callers."""
+    body = body or {}
+    if operation == "capture":
+        return _capture(body)
+    if operation != "reconcile":
+        raise ValueError("unknown operation")
+    dry_run = body.get("dry_run") is True
+    if not dry_run and os.environ.get("RECONCILE_ENABLED") != "1":
+        return {"skipped": True}
+    return _run(dry_run=dry_run)
+
+
+@app.function(image=image, schedule=modal.Cron("0 * * * *"), timeout=1500)
+def reconcile_cron():
+    return worker.remote("reconcile")
+
+
+@app.function(image=image, timeout=1500)
 @modal.fastapi_endpoint(method="POST", requires_proxy_auth=True)
 def reconcile(body: dict | None = None):
-    return _run(dry_run=bool((body or {}).get("dry_run", False)))
+    return worker.remote("reconcile", body)
+
+
+@app.function(image=image, timeout=1500)
+@modal.fastapi_endpoint(method="POST", requires_proxy_auth=True)
+def capture(body: dict):
+    return worker.remote("capture", body)
 
 
 def _flag_quietly(settings, flags: list[str], errors: list[str]) -> None:
@@ -67,9 +82,7 @@ def _flag_quietly(settings, flags: list[str], errors: list[str]) -> None:
         print(f"capture: could not file flag: {e}")
 
 
-@app.function(image=image, secrets=secrets, timeout=120)
-@modal.fastapi_endpoint(method="POST", requires_proxy_auth=True)
-def capture(body: dict):
+def _capture(body: dict):
     from datetime import datetime, timezone
 
     from fastapi.responses import JSONResponse

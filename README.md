@@ -8,7 +8,7 @@ in Spotify from rules over that catalog, deployed on
 ## Layout
 
 ```
-app.py            Modal shim - image, secrets, the hourly reconcile, /reconcile and /capture endpoints
+app.py            Modal shim - one serialized worker, hourly trigger, /reconcile and /capture
 src/core/         business logic (plain Python, portable, no Modal imports)
   spotify_client.py  Spotify Web API client (post-2026-02 Development Mode endpoint set)
   hub.py              life-data hub HTTP client (pull, push, derive)
@@ -69,7 +69,7 @@ hourly cron). Body:
 Response:
 
 ```json
-{"summary": "...", "applied": {"upsert_song": 3, "...": 0}, "flags": [], "errors": []}
+{"summary": "...", "planned": [], "applied": {}, "flags": [], "errors": []}
 ```
 
 **`POST /capture`** - used by the Shazam shortcut. Body:
@@ -131,10 +131,64 @@ not a script catalog; one-offs go in `scripts/` and run directly.
 `tables:write` - life-data is written ONLY by this app; agents and the user
 write Spotify directly (see AGENTS.md).
 
-The cron is gated by `RECONCILE_ENABLED=1` in the `music-sync` Modal secret;
-until that field is set, `reconcile_cron` runs hourly but returns
-`{"skipped": true}` without touching Spotify or life-data. The one-time
-migration that flips it on lives in `scripts/migrate.py` (spec section 9).
+Reconciliation is gated by `RECONCILE_ENABLED=1` in the `music-sync` Modal
+secret. The canonical `.env.tpl` includes it and `scripts/provision.py`
+initializes it to `0`. Cron and mutating on-demand requests (including an
+empty body) return `{"skipped": true}` while disabled. Explicit
+`{"dry_run": true}` remains available and performs no writes or flag filing.
+Capture is separately authorized and does not require activation.
+
+After manual compliance review and a fresh dry-run, set the environment
+item's `RECONCILE_ENABLED` field to `1` and sync secrets. Ordinary secret
+syncs preserve this value because it is in the manifest. Do not activate
+until every proposed Spotify mutation is accepted. `planned` contains each
+action's playlist ID/name, ISRC/title when known, URI, reason and row/text
+change. `applied` counts only confirmed batches, and is empty for dry runs;
+the text summary separates Spotify mutations from mirror patches.
+
+## Preservation and recovery
+
+Cron, manual reconcile and capture synchronously dispatch to the same Modal
+`worker`, configured with `max_containers=1` and
+`@modal.concurrent(max_inputs=1)`. The entire read/archive/plan/apply cycle
+runs there. FastAPI is a production dependency, including its real error
+responses in the `--no-dev` image. Local migration imports must be run while
+normal reconciliation is disabled and capture traffic is paused.
+
+`run.reconcile(..., writes=False)` is an observation-only import: full owned
+playlist pulls, actual liked values and complete observed membership rows.
+It does not enforce auto-like, FIFO, dedupe, relink, undo, rules or expiry.
+New owned playlists are classified curated before event detection during
+normal enforcement, so their initial additions get liked exactly once.
+
+Every reconcile (including recovery) archives a fresh raw pull under
+`raw/spotify-pull/`; captures archive the inbox before adding or trimming
+under `raw/spotify-capture/`. Unique object names avoid overwriting backups.
+Archive failures stop before Spotify mutation.
+
+Before applying a plan, the worker stores its remaining batches and complete
+planned actions in `music-sync/pending-reconcile.json.gz` in the same R2
+bucket. It checkpoints after each successful batch, stops at the first
+Spotify, hub or checkpoint failure, and clears the object to JSON null only
+when all batches finish. A new run resumes this plan before adopting a new
+mirror baseline. Adds check live URI presence, so retries after uncertain
+responses or partial 100-item client batches do not add duplicates. Same-URI
+repair retains the re-add intent across crashes. Hub patches merge by ID
+and transmit only exact sets of present columns, preserving undo identity
+and timestamps; explicit null remains an intentional update.
+
+An incomplete mutating plan blocks capture and observation imports until
+reconciliation recovers. A failed observation import can resume with
+`writes=False`. Recovery finishes the saved intent first; Spotify edits made
+after a failed run are reconciled on the subsequent fresh run. A persistently
+failing operation requires operator attention; do not delete pending evidence
+or advance the mirror to bypass it.
+
+The archive token needs object **read and write** permission on the configured
+bucket; provisioning requests both. Existing write-only credentials need
+replacement before running this version. Keep `music-sync/` outside raw
+archive lifecycle expiration, and reserve its pending object for this one
+worker/account. No new hub table, schema or recovery dependency is needed.
 
 ### Without 1Password
 

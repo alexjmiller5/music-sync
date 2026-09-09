@@ -97,3 +97,5 @@ class Action:
     text: str | None = None
     row: dict | None = None
     reason: str = ""
+    playlist_name: str | None = None
+    title: str | None = None
