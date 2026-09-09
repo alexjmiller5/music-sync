@@ -38,3 +38,42 @@ def test_r2_access_key_lookup_is_read_only_paginated_and_unambiguous(matches, ca
             provision.main()
         assert capsys.readouterr().out == ""
     assert pages == [1, 2]
+
+
+def test_r2_mint_creates_owned_bucket_without_revoking_existing_credentials(monkeypatch):
+    calls = []
+
+    def handler(req):
+        calls.append(req)
+        assert req.method != "DELETE"
+        if req.url.path.endswith("/permission_groups"):
+            return httpx.Response(
+                200,
+                json={
+                    "result": [
+                        {"id": "read", "name": "Workers R2 Storage Bucket Item Read"},
+                        {"id": "write", "name": "Workers R2 Storage Bucket Item Write"},
+                    ]
+                },
+            )
+        if req.url.path.endswith("/r2/buckets"):
+            if req.method == "GET":
+                return httpx.Response(200, json={"result": {"buckets": []}})
+            assert req.read() == b'{"name":"music-sync-state"}'
+            return httpx.Response(200, json={"result": {}})
+        if req.method == "GET":
+            return httpx.Response(200, json={"result": []})
+        import json
+
+        policy = json.loads(req.read())["policies"][0]
+        assert policy["resources"] == {
+            "com.cloudflare.edge.r2.bucket.account_default_music-sync-state": "*"
+        }
+        return httpx.Response(200, json={"result": {"value": "new-token"}})
+
+    client = httpx.Client(base_url="https://cf.test", transport=httpx.MockTransport(handler))
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "account")
+    monkeypatch.setattr(provision, "op_read", lambda ref: "dummy")
+    monkeypatch.setattr(provision.httpx, "Client", lambda **kwargs: client)
+    assert provision.mint_r2_token() == "new-token"
+    assert any(r.url.path.endswith("/r2/buckets") and r.method == "POST" for r in calls)

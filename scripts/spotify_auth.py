@@ -10,14 +10,17 @@ with redirect URI http://127.0.0.1:8080/callback:
     SPOTIFY_CLIENT_ID=... SPOTIFY_CLIENT_SECRET=... uv run scripts/spotify_auth.py
 
 Opens the browser, captures the callback on 127.0.0.1:8080, exchanges the code,
-then PRINTS the refresh token plus the exact `op item create` / `op item edit`
-commands to paste into your own shell. Nothing is ever written to disk.
+then emits a JSON object containing refresh_token on stdout for a credential-store
+consumer. Diagnostics and the consent URL go to stderr. Nothing is written to disk.
+Use --no-browser to open the consent URL in a browser on another machine;
+forward its loopback callback port to this process.
 """
 
 import argparse
 import base64
 import hashlib
 import http.server
+import json
 import os
 import secrets
 import sys
@@ -40,6 +43,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--client-id", default=os.environ.get("SPOTIFY_CLIENT_ID"))
     parser.add_argument("--client-secret", default=os.environ.get("SPOTIFY_CLIENT_SECRET"))
     parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args(argv)
     if not args.client_id or not args.client_secret:
         parser.error(
@@ -115,19 +119,6 @@ def exchange_code(
     return resp.json()
 
 
-def print_op_commands(client_id: str, client_secret: str, refresh_token: str) -> None:
-    print("\nRefresh token minted. Save it to 1Password by pasting ONE of these")
-    print("into your own terminal (replace <vault> with your vault):\n")
-    print("# if the 'Spotify API' item does NOT exist yet:")
-    print(
-        f"op item create --vault <vault> --category 'API Credential' --title 'Spotify API' "
-        f"client_id={client_id} client_secret={client_secret} refresh_token={refresh_token}"
-    )
-    print("\n# if it already exists:")
-    print(f"op item edit 'Spotify API' --vault <vault> refresh_token={refresh_token}")
-    print("\nNothing was written to disk. (No 1Password? Export it as SPOTIFY_REFRESH_TOKEN.)")
-
-
 def main() -> None:
     args = parse_args()
     verifier = secrets.token_urlsafe(64)
@@ -138,9 +129,9 @@ def main() -> None:
 
     server = make_callback_server(args.port)
     url = build_authorize_url(args.client_id, state, challenge, args.port)
-    print(f"Opening browser for Spotify consent (listening on {_redirect_uri(args.port)})...")
-    print(f"If it does not open, visit:\n{url}")
-    webbrowser.open(url)
+    print(f"Spotify consent (listening on {_redirect_uri(args.port)}):\n{url}", file=sys.stderr)
+    if not args.no_browser:
+        webbrowser.open(url)
     while server.result is None:
         server.handle_request()
     server.server_close()
@@ -153,7 +144,7 @@ def main() -> None:
     tokens = exchange_code(
         args.client_id, args.client_secret, server.result["code"], verifier, args.port
     )
-    print_op_commands(args.client_id, args.client_secret, tokens["refresh_token"])
+    print(json.dumps({"refresh_token": tokens["refresh_token"]}))
 
 
 if __name__ == "__main__":
