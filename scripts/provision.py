@@ -9,6 +9,8 @@ ONLY the value to stdout, progress on stderr).
 R2_API_TOKEN: a Cloudflare API token scoped to object reads and writes on ONE bucket
 (the life-data archive), recreated on every mint because CF never re-reveals
 a token. Needs the AI Agent CF token (User API Tokens: Edit).
+R2_ACCESS_KEY_ID: resolves the named token's ID after R2_API_TOKEN is minted.
+The existing token value stays in the environment item; no R2 cache is written.
 
 token-id/token-secret: a CI-only Modal token for this project. Modal has no
 token-minting API - `modal token new` is a browser flow - so this minter
@@ -41,7 +43,14 @@ PROJECT = "music-sync"  # also the Modal profile name for this project's CI toke
 MODAL_FIELDS = {"token-id": "token_id", "token-secret": "token_secret"}
 CACHE = Path(tempfile.gettempdir()) / f"modal-ci-{PROJECT}.toml"
 
-FIELDS = ["RECONCILE_ENABLED", "R2_API_TOKEN", "R2_ACCOUNT_ID", "R2_BUCKET", *MODAL_FIELDS]
+FIELDS = [
+    "RECONCILE_ENABLED",
+    "R2_API_TOKEN",
+    "R2_ACCESS_KEY_ID",
+    "R2_ACCOUNT_ID",
+    "R2_BUCKET",
+    *MODAL_FIELDS,
+]
 
 
 def log(msg: str) -> None:
@@ -94,6 +103,28 @@ def mint_r2_token() -> str:
     return r.json()["result"]["value"]
 
 
+def r2_access_key_id() -> str:
+    """Look up the minted token without rotating it or caching its secret."""
+    ids, page = [], 1
+    with httpx.Client(
+        base_url="https://api.cloudflare.com/client/v4",
+        headers={"Authorization": f"Bearer {op_read(OP_CF_TOKEN)}"},
+    ) as client:
+        while True:
+            body = (
+                client.get("/user/tokens", params={"per_page": 100, "page": page})
+                .raise_for_status()
+                .json()
+            )
+            ids.extend(t["id"] for t in body["result"] if t["name"] == NAME)
+            if page >= body.get("result_info", {}).get("total_pages", page):
+                break
+            page += 1
+    if len(ids) != 1:
+        raise RuntimeError(f"Expected exactly one {NAME} token; mint R2_API_TOKEN first")
+    return ids[0]
+
+
 def modal_bin() -> list[str]:
     """The project's pinned modal, bypassing Alex's PATH wrapper (which would
     inject his personal token and make --verify check the wrong credential)."""
@@ -130,6 +161,8 @@ def main() -> None:
             print("0")
         case ["--field", "R2_API_TOKEN"]:
             print(mint_r2_token())
+        case ["--field", "R2_ACCESS_KEY_ID"]:
+            print(r2_access_key_id())
         case ["--field", "R2_ACCOUNT_ID"]:
             print(CF_ACCOUNT)
         case ["--field", "R2_BUCKET"]:

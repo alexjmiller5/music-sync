@@ -17,6 +17,7 @@ def settings():
         r2_account_id="acct",
         r2_bucket="bucket",
         r2_api_token="r2tok",
+        r2_access_key_id="r2-key-id",
     )
 
 

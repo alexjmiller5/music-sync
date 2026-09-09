@@ -35,9 +35,17 @@ runs in tests, locally, or on any future platform.
   operations and preserves the pending batches; resume before taking a new
   baseline. Do not remove retry evidence manually. Capture cannot overtake a
   pending reconcile. An observation import may resume without enabling writes.
+- R2 object reads/writes use boto3's S3 API with bucket-scoped permissions.
+  `R2_ACCESS_KEY_ID` is the token ID; the S3 secret is derived in memory as
+  SHA-256 of `R2_API_TOKEN`. Only `NoSuchKey` means a missing object; other
+  errors stop the flow. Keep the pending key unchanged.
 - Hub patches group by exact present keys. Never turn omitted columns into
   nulls. Preserve membership identity and `added_at` through soft deletion
   for seven-day undo. Un-heart/rule removal/expiry override dedupe re-adds.
+- `Hub.push` adds one UTC millisecond `updated_at` per invocation where absent,
+  preserving supplied timestamps and caller rows. Spotify `added_at` and
+  `liked_at` are normalized to UTC milliseconds on the wire, including replay.
+  JSON objects and arrays pass through to the hub unchanged.
 - Dry-run responses include structured `planned` actions with recording and
   playlist identity, reason and proposed changes; `applied` is confirmed work
   only. No Spotify/hub/archive/Notion writes occur during dry runs.
@@ -63,7 +71,7 @@ src/core/
   model.py                    dataclasses shared across core
   archive.py                  archive a raw pull to R2
 scripts/
-  provision.py                mints R2_API_TOKEN and the Modal CI token (op-project-bootstrap contract)
+  provision.py                mints R2/Modal tokens; resolves R2_ACCESS_KEY_ID after R2_API_TOKEN
   sync_secrets.py             push .env.tpl -> Modal secret store
   spotify_auth.py             mint/re-mint the Spotify refresh token
   create_50s_playlist.py      one-off, deleted after migration step 9
@@ -72,7 +80,7 @@ tests/                        pytest
 
 ## Stack
 
-uv · pydantic-settings (env config) · httpx · structlog · pytest · ruff.
+uv · pydantic-settings (env config) · httpx · boto3 (R2 S3) · structlog · pytest · ruff.
 Config comes from env vars only: Modal Secret in the cloud, `op run` locally.
 `.env.tpl` is the canonical secrets manifest (op:// refs, committed).
 Instantiate `Settings()` inside functions, never at import time.

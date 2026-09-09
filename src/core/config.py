@@ -20,5 +20,6 @@ class Settings(BaseSettings):
     r2_account_id: str
     r2_bucket: str
     r2_api_token: str
+    r2_access_key_id: str
     inbox_cap: int = 100
     undo_days: int = 7
