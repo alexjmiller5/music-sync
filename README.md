@@ -20,7 +20,7 @@ src/core/         business logic (plain Python, portable, no Modal imports)
   capture.py           /capture: resolve a Shazam result, add to inbox, record the edge
   config.py           Settings (env vars only)
   model.py             dataclasses shared across core
-  archive.py           archive a raw pull to R2
+  archive.py           archive raw pulls through the life-data file API
 scripts/
   provision.py       mints R2/Modal tokens; resolves R2_ACCESS_KEY_ID after R2_API_TOKEN
   sync_secrets.py     push .env.tpl -> Modal secret store
@@ -96,21 +96,47 @@ not a script catalog; one-offs go in `scripts/` and run directly.
 | `just sync-secrets` | Push `.env.tpl` -> Modal secret store |
 | `just deploy` | test + sync-secrets + `modal deploy` |
 
+**Resumable metadata backfill:** with `LIFE_HUB_URL` and `LIFE_HUB_TOKEN`
+in the environment, run `uv run scripts/backfill_derive.py`. The same script
+can run as `python -u scripts/backfill_derive.py` in a container with httpx
+and `src/core` available. It calls only the hub's pull/derive interfaces.
+`--col title`, `--col deezer_genres`, or `--col mb_tags` narrows the source;
+each also checks/refreshes `first_year`. `--col first_year` checks only years.
+
+Each request derives one recording/source. Current hub provenance skips
+completed sources, including Spotify no-match and legitimate null years.
+Source attempts trigger a final year derivation; restarting also detects
+changed year inputs from provenance. Each failed pair gets at most three
+attempts, waiting 5 then 15 seconds. Five consecutive recordings exhausting
+timeout/transport retries pause only that source for the run; record-specific
+HTTP errors such as 502 do not pause it. Other records/sources continue.
+Progress separates recordings, source writes, and reused checkpoints. The
+last stdout line is JSON with unresolved `failed` entries, `stopped_sources`,
+and `deferred` counts; failures/deferred work exit 1. Keep that output in the
+job logs and rerun the same command to resume from provenance. No local
+checkpoint files or service changes are needed.
+
 ## Manual setup (the only steps that can't be codified)
 
-1. **Spotify developer app** - "AI Agent" at
+1. **Spotify developer app** - create a dedicated "Music Sync" app at
    [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard),
    redirect URI `http://127.0.0.1:8080/callback`. Post-2026-02 apps in
    Development Mode get a reduced endpoint set (see spec section 7.1); save
    the client id/secret into the `Music Sync ENV` 1Password item.
-2. **Spotify auth** - mint the refresh token (opens a browser, prints the
-   value to paste into 1Password; nothing touches disk):
+2. **Spotify auth** - mint its own refresh token. The helper emits only a JSON
+   object with `refresh_token` on stdout; pipe that to your credential store
+   without logging it or writing it to a file. Consent instructions go to stderr:
    ```
    op run --env-file=.env.tpl -- uv run scripts/spotify_auth.py
    ```
    Spotify expires this refresh token every 180 days. A run that sees
    `invalid_grant` flags it in Notion and stops; re-mint with the command
-   above.
+   above. Use `--no-browser` for a remote browser and forward its loopback
+   port 8080 to the machine running this command.
+
+   App credentials are never shared with Derivations or a terminal client.
+   Spotify Development Mode apps still share their developer account quota
+   ([Spotify quota policy](https://developer.spotify.com/blog/2026-07-23-web-api-quota-updates)).
 3. **Modal proxy-auth token for the Shazam shortcut** - minted once in the
    Modal dashboard under Settings -> Proxy Auth Tokens, stored as `MODAL_KEY`
    / `MODAL_SECRET` in `iOS Shortcuts ENV`. The shortcut posts to `/capture`
@@ -120,16 +146,17 @@ not a script catalog; one-offs go in `scripts/` and run directly.
    ```
    op-project-bootstrap ~/Desktop/coding/active-projects/music-sync/.env.tpl --repo alexjmiller5/music-sync
    ```
-5. **Modal auth** (before any local deploy): `uv run modal token new`
+5. **Deploy** - push to `main`; CI reads the project's own Modal credential.
 
 ## Secrets
 
 `.env.tpl` holds 1Password `op://` references only, pointing at the
 `Music Sync` vault's `Music Sync ENV` item. Run everything through
 `op run --env-file=.env.tpl -- <cmd>`. The hub token stored there
-(`LIFE_HUB_TOKEN`) is named `music-sync-modal` on the hub, scoped
-`tables:write` - life-data is written ONLY by this app; agents and the user
-write Spotify directly (see AGENTS.md).
+(`LIFE_HUB_TOKEN`) is named `music-sync-storage` on the hub, scoped to
+`tables:read,tables:write` and read/write file grants for `raw/spotify-pull/`
+and `raw/spotify-capture/`. Only this app writes the mirrored music catalog;
+agents and the user write Spotify directly (see AGENTS.md).
 
 Reconciliation is gated by `RECONCILE_ENABLED=1` in the `music-sync` Modal
 secret. The canonical `.env.tpl` includes it and `scripts/provision.py`
@@ -167,7 +194,7 @@ under `raw/spotify-capture/`. Unique object names avoid overwriting backups.
 Archive failures stop before Spotify mutation.
 
 Before applying a plan, the worker stores its remaining batches and complete
-planned actions in `music-sync/pending-reconcile.json.gz` in the same R2
+planned actions in `music-sync/pending-reconcile.json.gz` in the project-owned R2
 bucket. It checkpoints after each successful batch, stops at the first
 Spotify, hub or checkpoint failure, and clears the object to JSON null only
 when all batches finish. A new run resumes this plan before adopting a new
@@ -189,7 +216,11 @@ after a failed run are reconciled on the subsequent fresh run. A persistently
 failing operation requires operator attention; do not delete pending evidence
 or advance the mirror to bypass it.
 
-R2 archives use boto3 against `https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com`.
+Recovery checkpoints use the project-owned `music-sync-state` R2 bucket.
+Retained raw pulls and captures use the life-data `/v1/files/` API with
+scoped grants for `raw/spotify-pull/` and `raw/spotify-capture/`.
+
+Recovery storage uses boto3 against `https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com`.
 The token needs bucket object **read and write** permission, which Cloudflare
 supports through the S3 API. `R2_ACCESS_KEY_ID` is the ID of the token stored
 in `R2_API_TOKEN`; its SHA-256 hash is the S3 secret, derived only in memory.
@@ -204,5 +235,6 @@ lifecycle expiration, and reserve its pending object for this one worker/account
 
 Plain env vars work everywhere `op run` is shown - export the fields listed
 in `.env.tpl` instead. Mint the refresh token with
-`uv run scripts/spotify_auth.py --client-id ... --client-secret ...` and
-export the token it prints.
+`uv run scripts/spotify_auth.py` using `SPOTIFY_CLIENT_ID` and
+`SPOTIFY_CLIENT_SECRET` from the environment. Consume its `refresh_token` JSON
+field directly into the credential store or process environment.

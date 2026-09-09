@@ -5,8 +5,10 @@ httpx; token exchange uses a MockTransport.
 """
 
 import importlib.util
+import json
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -106,10 +108,25 @@ def test_exchange_code_posts_pkce_verifier_and_returns_tokens():
     assert seen["body"]["redirect_uri"] == ["http://127.0.0.1:8888/callback"]
 
 
-def test_op_commands_mention_vault_and_never_a_file(capsys):
-    auth.print_op_commands("cid", "csec", "rt")
-    out = capsys.readouterr().out
-    assert "op item create" in out
-    assert "op item edit" in out
-    assert "--vault <vault>" in out
-    assert "refresh_token=rt" in out
+def test_main_no_browser_emits_only_refresh_json(monkeypatch, capsys):
+    monkeypatch.setenv("SPOTIFY_CLIENT_ID", "cid")
+    monkeypatch.setenv("SPOTIFY_CLIENT_SECRET", "private-client-secret")
+    monkeypatch.setattr(auth.sys, "argv", ["spotify_auth.py", "--no-browser"])
+    monkeypatch.setattr(auth.secrets, "token_urlsafe", lambda _: "state")
+    monkeypatch.setattr(
+        auth,
+        "make_callback_server",
+        lambda _: SimpleNamespace(
+            result={"code": "code", "state": "state"}, server_close=lambda: None
+        ),
+    )
+    monkeypatch.setattr(
+        auth, "exchange_code", lambda *args: {"refresh_token": "private-refresh-token"}
+    )
+    monkeypatch.setattr(auth.webbrowser, "open", lambda _: pytest.fail("opened local browser"))
+    auth.main()
+    out, err = capsys.readouterr()
+    assert json.loads(out) == {"refresh_token": "private-refresh-token"}
+    assert "private-client-secret" not in out + err
+    assert "private-refresh-token" not in err
+    assert "https://accounts.spotify.com/authorize?" in err

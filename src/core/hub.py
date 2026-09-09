@@ -72,10 +72,13 @@ class Hub:
             raise HubError(f"{table}: {len(rejected)} rejected, first: {rejected[0]}")
         return {"upserted": total, "rejected": []}
 
-    def derive(self, table: str, ids: list[str]) -> dict:
+    def derive(self, table: str, ids: list[str], col: str | None = None) -> dict:
         derived, failed = 0, []
         for i in range(0, len(ids), DERIVE_CHUNK):
-            out = self._post("/v1/derive", {"table": table, "ids": ids[i : i + DERIVE_CHUNK]})
+            body = {"table": table, "ids": ids[i : i + DERIVE_CHUNK]}
+            if col is not None:
+                body["col"] = col
+            out = self._post("/v1/derive", body)
             derived += out.get("derived", 0)
             failed += out.get("failed", [])
         return {"derived": derived, "failed": failed}
