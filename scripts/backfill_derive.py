@@ -11,8 +11,10 @@ import argparse
 import hashlib
 import json
 import os
+import sqlite3
 import sys
 import time
+from contextlib import closing
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -55,10 +57,13 @@ def complete(row: dict, table: str, col: str, proofs: dict) -> bool:
     if col == "title" and row.get("spotify_ids") in ([], "[]"):
         fields = ("spotify_ids", "spotify_playable")  # Spotify no-match omits title/year.
     values = [row.get(c) for c in YEARS] if col == "first_year" else [row["id"]]
-    # These inputs are ISRC text and catalog int years, cast to text by the hub.
-    raw = json.dumps(
-        [None if v is None else str(v) for v in values], separators=(",", ":"), ensure_ascii=False
-    )
+    # D1 binds JS Number inputs as REAL even for catalog int years. Match
+    # validate.js inputsHash's SQLite rendering; text and NULL stay unchanged.
+    values = [float(v) if isinstance(v, (int, float)) else v for v in values]
+    with closing(sqlite3.connect(":memory:")) as db:
+        raw = db.execute(
+            "SELECT json_array(" + ",".join("CAST(? AS TEXT)" for _ in values) + ")", values
+        ).fetchone()[0]
     digest = hashlib.sha256(raw.encode()).hexdigest()
     return all(
         (p := proofs.get(f"{table}:{row['id']}:{field}", {})).get("inputs_hash") == digest
