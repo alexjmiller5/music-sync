@@ -1,7 +1,7 @@
 """Pure reconcile: (mirror, live) -> ordered actions. No I/O. Spec section 5.3."""
 
 import dataclasses
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from core import rules
 from core.model import Action, Live, Mirror, Song
@@ -99,6 +99,11 @@ def plan(
         li = live.liked.get(isrc)
         liked = 1 if li else 0
         liked_at = li.added_at if li else None
+        if liked_at:
+            value = datetime.fromisoformat(liked_at)
+            if value.tzinfo is None:
+                raise ValueError("liked_at: timezone required")
+            liked_at = _iso(value.astimezone(timezone.utc))
         s = mirror.songs.get(isrc)
         if s is None:
             acts.append(

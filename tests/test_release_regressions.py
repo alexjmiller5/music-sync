@@ -630,14 +630,20 @@ def test_failed_observation_import_can_resume_without_enabling_writes(settings, 
     assert hub.tables["playlist_songs"][f"P:{A}"]["isrc"] == A
 
 
-def test_observation_import_meets_hub_datetime_contract_and_recovers(settings, archive_store):
+@pytest.mark.parametrize(
+    "liked_at",
+    ["2026-09-07T00:00:00Z", "2026-09-07T00:00:00+00:00", "2026-09-06T20:00:00-04:00"],
+)
+def test_observation_import_meets_hub_datetime_contract_and_recovers(
+    settings, archive_store, liked_at
+):
     import re
 
     store, sp = Store(member=False), Spotify()
     store.tables["songs"].clear()
     store.fail = "playlist_songs"
     sp.items = [raw(added="2026-09-07T00:00:00Z")]
-    sp.liked = [raw(added="2026-09-07T00:00:00+00:00")]
+    sp.liked = [raw(added=liked_at)]
 
     def handler(req):
         body = json.loads(req.content)
@@ -675,6 +681,30 @@ def test_observation_import_meets_hub_datetime_contract_and_recovers(settings, a
     assert store.tables["songs"][A]["first_seen"] == "2026-09-08T12:00:00.000Z"
     assert store.tables["songs"][A]["liked_at"] == T
     assert store.tables["playlist_songs"][f"P:{A}"]["added_at"] == T
+
+    before = copy.deepcopy((sp.liked, archive_store))
+    preview = execute(settings, sp, hub, dry_run=True)
+    assert not preview.errors
+    assert not any(a["kind"] == "upsert_song" for a in preview.planned)
+    assert (sp.liked, archive_store) == before
+    for key, data in archive_store.items():
+        if key.startswith("raw/"):
+            assert json.loads(gzip.decompress(data))["liked"][0]["added_at"] == liked_at
+
+    # A genuinely later like must still produce a song patch.
+    sp.liked = [raw(added="2026-09-07T00:00:01Z")]
+    later = execute(settings, sp, hub, dry_run=True)
+    assert not later.errors
+    patches = [a["row"] for a in later.planned if a["kind"] == "upsert_song"]
+    assert patches == [{"id": A, "liked": 1, "liked_at": "2026-09-07T00:00:01.000Z"}]
+
+
+def test_naive_live_like_fails_before_writes(settings, archive_store):
+    sp, hub = Spotify(), Store()
+    sp.liked = [raw(added="2026-09-07T00:00:00")]
+    with pytest.raises(ValueError, match="timezone"):
+        execute(settings, sp, hub, dry_run=True)
+    assert sp.calls == [] and archive_store == {}
 
 
 def test_pending_observation_blocks_activation_preview_until_recovered(
