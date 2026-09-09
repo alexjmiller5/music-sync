@@ -749,3 +749,172 @@ def test_pending_observation_blocks_activation_preview_until_recovered(
         for a in out.planned
     )
     assert sp.calls == [] and not out.applied
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("writes", [False, True])
+@pytest.mark.parametrize("failure", ["hub-response", "first-checkpoint"])
+def test_retry_timestamp_survives_restart_and_preserves_newer_edit(
+    settings, archive_store, mocker, legacy, writes, failure
+):
+    from core import hub as hub_mod
+    from core.model import Action
+
+    class Clock(datetime):
+        value = datetime(2026, 9, 9, 12, 0, 0, 123456, tzinfo=timezone.utc)
+
+        @classmethod
+        def now(cls, tz):
+            return cls.value
+
+    mocker.patch.object(hub_mod, "datetime", Clock)
+    mocker.patch.object(actions, "datetime", Clock, create=True)
+    stamp = "2026-09-09T12:00:00.123Z"
+    newer = "2026-09-09T12:30:00.000Z"
+    plan = [
+        Action("like", uri="spotify:track:a"),
+        Action("upsert_song", row={"id": A, "liked": 0}),
+        Action("upsert_playlist", row={"id": "P", "snapshot_id": "new"}),
+        Action("delete_membership", row={"id": f"P:{A}", "deleted_at": T}),
+        Action("edge", row={"id": "edge", "detail": {"created_row": 0}}),
+    ]
+    original_plan = copy.deepcopy(plan)
+    mocker.patch.object(run.reconcile_mod, "plan", return_value=plan)
+    if legacy:
+        archive_store[run.archive.PENDING_KEY] = gzip.compress(
+            json.dumps(
+                {
+                    "planned": [actions.asdict(a) for a in plan],
+                    "operations": actions._batches(plan, writes),
+                    "writes": writes,
+                }
+            ).encode()
+        )
+    store, sp = Store(), Spotify()
+    initial_tables = copy.deepcopy(store.tables)
+    save = run.archive.put
+    checkpoints, received = [], []
+    interrupted = False
+
+    def put(settings, key, data):
+        nonlocal interrupted
+        save(settings, key, data)
+        if key == run.archive.PENDING_KEY:
+            checkpoints.append(json.loads(gzip.decompress(data)))
+            if failure == "first-checkpoint" and not interrupted:
+                interrupted = True
+                # The object was stored, but the response was lost.
+                raise RuntimeError("first checkpoint response lost")
+
+    mocker.patch.object(run.archive, "put", side_effect=put)
+
+    def handler(req):
+        nonlocal interrupted
+        body = json.loads(req.content)
+        table = body["table"]
+        if req.url.path.endswith("/pull"):
+            return httpx.Response(200, json={"rows": store.pull(table, body["columns"])})
+        received.append(body)
+        for row in body["rows"]:
+            old = store.tables[table].get(row["id"], {})
+            # Model strict-newer last-write-wins at the external boundary.
+            if row["updated_at"] > old.get("updated_at", ""):
+                store.push(table, [row])
+        if failure == "hub-response" and not interrupted:
+            interrupted = True
+            raise httpx.ReadTimeout("hub response lost")
+        return httpx.Response(200, json={"upserted": len(body["rows"]), "rejected": []})
+
+    def client():
+        return Hub(
+            "https://hub.test", "dummy", httpx.Client(transport=httpx.MockTransport(handler))
+        )
+
+    out = execute(settings, sp, client(), writes=writes)
+    assert out.errors and interrupted
+    if failure == "first-checkpoint":
+        assert received == [] and sp.calls == [] and store.tables == initial_tables
+    initial_intent = checkpoints[0]
+    assert all(
+        row.get("updated_at") == stamp
+        for op in initial_intent["operations"]
+        if op["kind"] == "hub"
+        for row in op["rows"]
+    )
+    assert [a["row"] for a in initial_intent["planned"]] == [a.row for a in original_plan]
+    assert [a.row for a in plan] == [a.row for a in original_plan]
+    # Simulate an independent edit while this process is down.
+    store.tables["songs"][A].update(liked=1, updated_at=newer)
+    Clock.value = datetime(2026, 9, 9, 13, tzinfo=timezone.utc)
+    out = execute(settings, sp, client(), writes=writes)
+    assert not out.errors
+    assert store.tables["songs"][A]["liked"] == 1
+    assert store.tables["songs"][A]["updated_at"] == newer
+    assert store.tables["playlist_songs"][f"P:{A}"]["deleted_at"] == T
+    assert store.tables["playlist_songs"][f"P:{A}"]["updated_at"] == stamp
+    assert store.tables["provenance"]["edge"]["detail"] == {"created_row": 0}
+    assert all(row["updated_at"] == stamp for body in received for row in body["rows"])
+    assert json.loads(gzip.decompress(archive_store[run.archive.PENDING_KEY])) is None
+    assert len(sp.calls) == (1 if writes else 0)
+
+
+def test_failed_legacy_checkpoint_leaves_original_pending_untouched():
+    from core.model import Action
+
+    plan = [Action("upsert_song", row={"id": A, "liked": 0})]
+    pending = actions._batches(plan, writes=False)
+    before = copy.deepcopy(pending)
+    store, sp = Store(), Spotify()
+    tables = copy.deepcopy(store.tables)
+
+    def fail(remaining):
+        assert remaining[0]["rows"][0].get("updated_at") is not None
+        raise RuntimeError("storage unavailable")
+
+    out = actions.apply(plan, sp, store, False, checkpoint=fail, pending=pending)
+    assert out.errors == ["checkpoint: storage unavailable"]
+    assert pending == before and plan[0].row == {"id": A, "liked": 0}
+    assert store.tables == tables and sp.calls == []
+
+
+@pytest.mark.parametrize("flow", ["capture", "migration"])
+def test_direct_imports_keep_hub_timestamp_fallback(settings, archive_store, flow):
+    import re
+
+    from scripts import migrate
+
+    store, sp = Store(kind="inbox", member=False), Spotify(items=[], liked=False)
+    store.tables["songs"].clear()
+    received = []
+
+    def handler(req):
+        body = json.loads(req.content)
+        table = body["table"]
+        if req.url.path.endswith("/pull"):
+            return httpx.Response(200, json={"rows": store.pull(table, body["columns"])})
+        received.append(body)
+        for row in body["rows"]:
+            assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", row["updated_at"])
+        return httpx.Response(200, json=store.push(table, body["rows"]))
+
+    hub = Hub("https://hub.test", "dummy", httpx.Client(transport=httpx.MockTransport(handler)))
+    if flow == "capture":
+        out = capture.capture(
+            {"title": "Song", "artist": "Artist"},
+            sp,
+            hub,
+            settings.model_copy(update={"inbox_cap": 0}),
+            NOW,
+        )
+        assert out["ok"] and sp.items == []
+        assert store.tables["playlist_songs"][f"P:{A}"]["deleted_at"] is not None
+        assert [body["table"] for body in received] == [
+            "songs",
+            "playlist_songs",
+            "provenance",
+            "playlist_songs",
+        ]
+    else:
+        migrate.step_inbox(hub, "P", dry_run=False)
+        assert store.tables["playlists"]["P"]["kind"] == "inbox"
+        assert [body["table"] for body in received] == ["playlists"]

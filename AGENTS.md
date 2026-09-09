@@ -46,6 +46,11 @@ runs in tests, locally, or on any future platform.
   preserving supplied timestamps and caller rows. Spotify `added_at` and
   `liked_at` are normalized to UTC milliseconds on the wire, including replay.
   JSON objects and arrays pass through to the hub unchanged.
+- Reconciliation stamps missing `updated_at` values on copied hub operation
+  rows before checkpointing or mutating Spotify/the hub. Pending retries reuse
+  those stamps; unstamped pending rows are checkpointed with a stamp before
+  submission. Supplied timestamps, including null for hub rejection, and caller
+  payloads stay unchanged. Dry runs do not prepare or save timestamps.
 - Dry-run responses include structured `planned` actions with recording and
   playlist identity, reason and proposed changes; `applied` is confirmed work
   only. No Spotify/hub/archive/Notion writes occur during dry runs.
