@@ -636,3 +636,47 @@ def test_failed_observation_import_can_resume_without_enabling_writes(settings, 
     assert sp.calls == []
     assert hub.tables["songs"][A]["liked"] == 0
     assert hub.tables["playlist_songs"][f"P:{A}"]["isrc"] == A
+
+
+def test_pending_observation_blocks_activation_preview_until_recovered(
+    settings, archive_store, mocker
+):
+    sp, hub = Spotify(liked=False), Store(kind="smart", liked=0, member=False)
+    hub.tables["playlists"]["P"]["rule"] = {"v": 1}
+    hub.fail = "playlist_songs"
+    assert execute(settings, sp, hub, writes=False).errors
+    pending = archive_store[run.archive.PENDING_KEY]
+    assert json.loads(gzip.decompress(pending))["operations"]
+
+    push = mocker.spy(hub, "push")
+    put = run.archive.put
+    filed = run.flags.file
+    put.reset_mock()
+    filed.reset_mock()
+    before = copy.deepcopy((hub.tables, vars(sp), archive_store))
+    for writes in (True, False):
+        out = execute(settings, sp, hub, dry_run=True, writes=writes)
+        assert out.errors == [
+            "Activation preview blocked by pending recovery; "
+            "complete recovery, then request a fresh dry run"
+        ]
+        assert out.dry_run and not out.applied and not out.planned
+        assert (hub.tables, vars(sp), archive_store) == before
+        assert archive_store[run.archive.PENDING_KEY] == pending
+        push.assert_not_called()
+        put.assert_not_called()
+        filed.assert_not_called()
+
+    assert not execute(settings, sp, hub, writes=False).errors
+    assert json.loads(gzip.decompress(archive_store[run.archive.PENDING_KEY])) is None
+    assert sp.calls == []
+    out = execute(settings, sp, hub, dry_run=True)
+    assert not out.errors
+    assert any(
+        a["kind"] == "remove_item"
+        and a["playlist_id"] == "P"
+        and a["isrc"] == A
+        and a["reason"] == "removed by rule"
+        for a in out.planned
+    )
+    assert sp.calls == [] and not out.applied
