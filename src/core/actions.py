@@ -3,6 +3,7 @@
 import json
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 
 from core.model import Action
 
@@ -99,6 +100,14 @@ def apply(
     if dry_run:
         return out
     ops = _batches(actions, writes) if pending is None else pending
+    stamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    # Copy intent before checkpointing, including unstamped recovery batches.
+    ops = [
+        {**op, "rows": [{"updated_at": stamp, **row} for row in op["rows"]]}
+        if op["kind"] == "hub"
+        else op
+        for op in ops
+    ]
     operation = "checkpoint"
     try:
         if checkpoint:
