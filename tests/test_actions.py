@@ -75,14 +75,14 @@ def test_dry_run_touches_nothing_but_counts():
     sp, hub = FakeSpotify(), FakeHub()
     log = actions.apply(ACTS, sp, hub, dry_run=True)
     assert sp.calls == [] and hub.pushed == [] and log.dry_run
-    assert log.applied["like"] == 2 and "add_item: 3" in log.summary()
+    assert log.applied == {} and len(log.planned) == len(ACTS)
 
 
-def test_spotify_error_isolated_per_playlist():
+def test_spotify_error_stops_dependent_writes():
     sp, hub = FakeSpotify(fail_playlist="P"), FakeHub()
     log = actions.apply(ACTS, sp, hub, dry_run=False)
-    assert ("add", "Q", ("spotify:track:1",)) in sp.calls
-    assert log.errors and "P" in log.errors[0]
+    assert ("add", "Q", ("spotify:track:1",)) not in sp.calls
+    assert hub.pushed == [] and log.errors
 
 
 def test_readd_item_after_remove_for_same_playlist_and_uri():
@@ -103,7 +103,7 @@ def test_writes_false_skips_spotify_but_still_applies_hub_and_flags():
     log = actions.apply(ACTS, sp, hub, dry_run=False, writes=False)
     assert sp.calls == []
     assert len(log.skipped) == 7
-    assert log.applied["add_item"] == 3 and log.flags == ["something odd"]
+    assert log.applied["add_item"] == 0 and log.flags == ["something odd"]
     tables = {t for t, _ in hub.pushed}
     assert tables == {"songs", "playlists", "playlist_songs", "provenance"}
 
@@ -121,4 +121,4 @@ def test_hub_error_is_recorded_not_raised():
     log = actions.apply(ACTS, FakeSpotify(), hub, dry_run=False)
     assert log.errors and "boom" in log.errors[0]
     tables = {t for t, _ in hub.pushed}
-    assert tables == {"playlists", "playlist_songs", "provenance"}
+    assert tables == set()

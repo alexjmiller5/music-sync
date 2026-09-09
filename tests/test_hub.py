@@ -26,7 +26,7 @@ def test_pull_posts_table_columns_since_with_bearer_and_user_agent():
     assert "music-sync" in seen["h"]["User-Agent"]
 
 
-def test_push_chunks_and_unions_columns():
+def test_push_chunks_with_exact_key_groups():
     bodies = []
 
     def handler(req):
@@ -37,9 +37,9 @@ def test_push_chunks_and_unions_columns():
 
     rows = [{"id": str(i), "liked": 1} for i in range(501)] + [{"id": "x", "first_seen": "s"}]
     out = make(handler).push("songs", rows)
-    assert out["upserted"] == 502 and len(bodies) == 2
-    assert bodies[0]["columns"] == ["first_seen", "id", "liked"]
-    assert bodies[0]["rows"][0] == {"id": "0", "liked": 1, "first_seen": None}
+    assert out["upserted"] == 502 and len(bodies) == 3
+    assert bodies[0]["columns"] == ["id", "liked"]
+    assert bodies[0]["rows"][0] == {"id": "0", "liked": 1}
 
 
 def test_push_raises_on_rejection():

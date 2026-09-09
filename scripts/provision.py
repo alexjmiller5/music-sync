@@ -6,7 +6,7 @@
 provision contract: --list prints mintable field names; --field NAME prints
 ONLY the value to stdout, progress on stderr).
 
-R2_API_TOKEN: a Cloudflare API token scoped to object writes on ONE bucket
+R2_API_TOKEN: a Cloudflare API token scoped to object reads and writes on ONE bucket
 (the life-data archive), recreated on every mint because CF never re-reveals
 a token. Needs the AI Agent CF token (User API Tokens: Edit).
 
@@ -41,7 +41,7 @@ PROJECT = "music-sync"  # also the Modal profile name for this project's CI toke
 MODAL_FIELDS = {"token-id": "token_id", "token-secret": "token_secret"}
 CACHE = Path(tempfile.gettempdir()) / f"modal-ci-{PROJECT}.toml"
 
-FIELDS = ["R2_API_TOKEN", "R2_ACCOUNT_ID", "R2_BUCKET", *MODAL_FIELDS]
+FIELDS = ["RECONCILE_ENABLED", "R2_API_TOKEN", "R2_ACCOUNT_ID", "R2_BUCKET", *MODAL_FIELDS]
 
 
 def log(msg: str) -> None:
@@ -67,7 +67,14 @@ def mint_r2_token() -> str:
             log(f"deleting existing token {NAME} (value not re-readable)")
             c.delete(f"/user/tokens/{t['id']}").raise_for_status()
     groups = c.get("/user/tokens/permission_groups").raise_for_status().json()["result"]
-    write = next(g for g in groups if g["name"] == "Workers R2 Storage Bucket Item Write")
+    permissions = [
+        g
+        for g in groups
+        if g["name"]
+        in {"Workers R2 Storage Bucket Item Write", "Workers R2 Storage Bucket Item Read"}
+    ]
+    if len(permissions) != 2:
+        raise RuntimeError("R2 object read and write permissions are both required")
     r = c.post(
         "/user/tokens",
         json={
@@ -78,12 +85,12 @@ def mint_r2_token() -> str:
                     "resources": {
                         f"com.cloudflare.edge.r2.bucket.{CF_ACCOUNT}_default_{BUCKET}": "*"
                     },
-                    "permission_groups": [{"id": write["id"]}],
+                    "permission_groups": [{"id": g["id"]} for g in permissions],
                 }
             ],
         },
     ).raise_for_status()
-    log("✓ R2 bucket-scoped write token minted")
+    log("✓ R2 bucket-scoped read/write token minted")
     return r.json()["result"]["value"]
 
 
@@ -119,6 +126,8 @@ def main() -> None:
     match sys.argv[1:]:
         case ["--list"]:
             print("\n".join(FIELDS))
+        case ["--field", "RECONCILE_ENABLED"]:
+            print("0")
         case ["--field", "R2_API_TOKEN"]:
             print(mint_r2_token())
         case ["--field", "R2_ACCOUNT_ID"]:

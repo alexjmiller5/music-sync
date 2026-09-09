@@ -41,13 +41,17 @@ def plan(
     inbox_cap: int = 100,
     undo_days: int = 7,
     today: str | None = None,
+    observation_only: bool = False,
 ) -> list[Action]:
+    if observation_only:
+        return observe(mirror, live, now)
     today = today or now.date().isoformat()
     now_s = _iso(now)
     acts: list[Action] = []
     names = {p.name: p.id for p in mirror.playlists.values()}
     names.update({p.name: p.id for p in live.playlists.values()})
-    kind_of = {pid: p.kind for pid, p in mirror.playlists.items()}
+    kind_of = {pid: "curated" for pid in live.playlists}
+    kind_of.update({pid: p.kind for pid, p in mirror.playlists.items()})
     inbox_ids = {pid for pid, k in kind_of.items() if k == "inbox"}
     liked_now = set(live.liked)
     liked_before = {s.id for s in mirror.songs.values() if s.liked}
@@ -55,46 +59,39 @@ def plan(
     flags: list[str] = []
     rule_flags: list[str] = []
 
-    # live membership index: (pid, isrc) -> best item (earliest added), plus duplicates
-    actual: dict[tuple[str, str], object] = {}
+    # Index earliest observation; decide duplicate repairs after final membership.
+    actual = {}
+    duplicates = {}
     for lp in live.playlists.values():
-        if lp.items is None:
-            continue
-        for it in lp.items:
+        for it in sorted(lp.items or [], key=lambda x: x.added_at):
             if not it.isrc:
-                no_isrc.append(
-                    f"{lp.name}: {it.name} ({'local file' if it.is_local else 'no ISRC'})"
-                )
+                no_isrc.append(f"{lp.name}: {it.name} (no ISRC or local file)")
                 continue
             key = (lp.id, it.isrc)
             if key not in actual:
                 actual[key] = it
-            elif lp.id in inbox_ids:
-                pass  # inbox: FIFO cap is the only rule that removes/adds anything (never dedupe)
-            else:  # duplicate ISRC: keep the earliest added_at, drop the other (rule 9)
-                keep, drop = sorted([actual[key], it], key=lambda x: x.added_at)
-                actual[key] = keep
-                acts.append(
-                    Action(
-                        "remove_item",
-                        playlist_id=lp.id,
-                        isrc=it.isrc,
-                        uri=drop.uri,
-                        reason="duplicate isrc",
-                    )
+            elif lp.id not in inbox_ids:
+                duplicates.setdefault(key, []).append(it)
+
+    # Seed complete identity before tombstones, including a conflicting new add/un-heart.
+    # Later intended patches merge over this observation in the applicator.
+    for (pid, isrc), it in actual.items():
+        if (pid, isrc) not in mirror.memberships:
+            acts.append(
+                Action(
+                    "upsert_membership",
+                    playlist_id=pid,
+                    isrc=isrc,
+                    row={
+                        "id": f"{pid}:{isrc}",
+                        "playlist_id": pid,
+                        "isrc": isrc,
+                        "spotify_track_id": it.track_id,
+                        "added_at": it.added_at,
+                        "deleted_at": None,
+                    },
                 )
-                if keep.uri == drop.uri:
-                    # Spotify's DELETE removes every occurrence of a URI, so removing the
-                    # duplicate also removed the copy we meant to keep - add it back.
-                    acts.append(
-                        Action(
-                            "readd_item",
-                            playlist_id=lp.id,
-                            isrc=it.isrc,
-                            uri=keep.uri,
-                            reason="duplicate isrc, same uri",
-                        )
-                    )
+            )
 
     # songs: new rows + liked transitions (rules 1, 2)
     seen_isrcs = liked_now | {isrc for (_, isrc) in actual}
@@ -380,6 +377,9 @@ def plan(
             else None
         )
         if alt:
+            actual[(pid, isrc)] = dataclasses.replace(
+                it, track_id=alt, uri=f"spotify:track:{alt}", playable=True
+            )
             acts.append(
                 Action(
                     "remove_item",
@@ -432,6 +432,26 @@ def plan(
             acts.append(Action("delete_playlist", playlist_id=p.id, reason="ephemeral expired"))
             acts.append(
                 Action("upsert_playlist", playlist_id=p.id, row={"id": p.id, "deleted_at": now_s})
+            )
+
+    for (pid, isrc), drops in duplicates.items():
+        if pid in expired_ids:
+            continue
+        kept = actual.get((pid, isrc))
+        removed_uris = {it.uri for it in drops}
+        for uri in sorted(removed_uris):
+            acts.append(
+                Action("remove_item", playlist_id=pid, isrc=isrc, uri=uri, reason="duplicate isrc")
+            )
+        if kept and kept.uri in removed_uris:
+            acts.append(
+                Action(
+                    "readd_item",
+                    playlist_id=pid,
+                    isrc=isrc,
+                    uri=kept.uri,
+                    reason="duplicate isrc, same uri",
+                )
             )
 
     # mirror upkeep (rule 11) - skip playlists soft-deleted above: no plain upsert_playlist
@@ -501,4 +521,87 @@ def plan(
     for f in rule_flags:
         acts.append(Action("flag", text=f, reason="rule"))
     rank = {k: i for i, k in enumerate(ORDER)}
-    return sorted(acts, key=lambda a: rank[a.kind])
+    return sorted(
+        (a for a in acts if not (a.kind == "upsert_membership" and a.playlist_id in expired_ids)),
+        key=lambda a: rank[a.kind],
+    )
+
+
+def observe(mirror: Mirror, live: Live, now: datetime) -> list[Action]:
+    """Import observations only. Never run enforcement against the review baseline."""
+    stamp = _iso(now)
+    acts = []
+    seen = dict(live.liked)
+    sources = {isrc: ("like", "liked") for isrc in live.liked}
+    for lp in live.playlists.values():
+        row = {
+            "id": lp.id,
+            "name": lp.name,
+            "description": lp.description,
+            "snapshot_id": lp.snapshot_id,
+            "last_reconciled": stamp,
+        }
+        if lp.id not in mirror.playlists:
+            row.update(kind="curated", pinned=1)
+        if lp.items is not None:
+            row["track_count"] = len(lp.items)
+        acts.append(Action("upsert_playlist", playlist_id=lp.id, row=row))
+        members = {}
+        for it in sorted(lp.items or [], key=lambda x: x.added_at):
+            if not it.isrc:
+                acts.append(Action("flag", text=f"{lp.name}: {it.name} (no ISRC or local file)"))
+                continue
+            seen.setdefault(it.isrc, it)
+            sources.setdefault(it.isrc, ("playlist", lp.id))
+            members.setdefault(it.isrc, it)
+        for isrc, it in members.items():
+            acts.append(
+                Action(
+                    "upsert_membership",
+                    playlist_id=lp.id,
+                    isrc=isrc,
+                    row={
+                        "id": f"{lp.id}:{isrc}",
+                        "playlist_id": lp.id,
+                        "isrc": isrc,
+                        "spotify_track_id": it.track_id,
+                        "added_at": it.added_at,
+                        "deleted_at": None,
+                    },
+                )
+            )
+        if lp.items is not None:
+            for pid, isrc in mirror.memberships:
+                if pid == lp.id and isrc not in members:
+                    acts.append(
+                        Action(
+                            "delete_membership",
+                            playlist_id=pid,
+                            isrc=isrc,
+                            row={"id": f"{pid}:{isrc}", "deleted_at": stamp},
+                        )
+                    )
+    for isrc in sorted(set(seen) | set(mirror.songs)):
+        li = live.liked.get(isrc)
+        row = {"id": isrc, "liked": int(li is not None), "liked_at": li.added_at if li else None}
+        if isrc not in mirror.songs:
+            row["first_seen"] = stamp
+            kind, ref = sources[isrc]
+            acts.append(
+                Action(
+                    "edge",
+                    isrc=isrc,
+                    row={
+                        "id": f"{kind}:{ref}:{isrc}",
+                        "from_kind": kind,
+                        "from_ref": ref,
+                        "to_kind": "songs",
+                        "to_ref": isrc,
+                        "rel": "imported_from",
+                        "asserted_by": "music-sync",
+                        "detail": {"created_row": 1},
+                    },
+                )
+            )
+        acts.append(Action("upsert_song", isrc=isrc, row=row))
+    return acts

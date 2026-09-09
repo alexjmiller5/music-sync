@@ -1,5 +1,7 @@
 """life-data hub client over the HTTP protocol. Knows a URL and a bearer token, nothing else."""
 
+from collections import defaultdict
+
 import httpx
 
 PUSH_CHUNK = 500
@@ -34,13 +36,20 @@ class Hub:
     def push(self, table: str, rows: list[dict]) -> dict:
         if not rows:
             return {"upserted": 0, "rejected": []}
-        columns = sorted({k for r in rows for k in r})
+        groups = defaultdict(list)
+        for row in rows:
+            groups[tuple(sorted(row))].append(row)
         total, rejected = 0, []
-        for i in range(0, len(rows), PUSH_CHUNK):
-            chunk = [{c: r.get(c) for c in columns} for r in rows[i : i + PUSH_CHUNK]]
-            out = self._post("/v1/rows/push", {"table": table, "columns": columns, "rows": chunk})
-            total += out["upserted"]
-            rejected += out.get("rejected", [])
+        for keys, group in groups.items():
+            for i in range(0, len(group), PUSH_CHUNK):
+                out = self._post(
+                    "/v1/rows/push",
+                    {"table": table, "columns": list(keys), "rows": group[i : i + PUSH_CHUNK]},
+                )
+                total += out["upserted"]
+                rejected += out.get("rejected", [])
+                if rejected:
+                    raise HubError(f"{table}: {len(rejected)} rejected, first: {rejected[0]}")
         if rejected:
             raise HubError(f"{table}: {len(rejected)} rejected, first: {rejected[0]}")
         return {"upserted": total, "rejected": []}

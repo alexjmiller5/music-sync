@@ -1,10 +1,16 @@
 from datetime import datetime, timezone
-from types import SimpleNamespace
 
 from core import actions, run
 from core.hub import HubError
-from core.model import Action
+from core.model import Action, Mirror, Live
 from core.spotify_client import SpotifyAuthError
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def archive_read(mocker):
+    mocker.patch("core.archive.get", return_value=None)
 
 
 class DeadSpotify:
@@ -22,7 +28,7 @@ def test_invalid_grant_becomes_flag_and_stops(settings, mocker):
         hub=object(),
     )
     assert log.errors and "invalid_grant" in log.errors[0]
-    assert filed.call_args.args[2] == [] and "invalid_grant" in filed.call_args.args[3][0]
+    filed.assert_not_called()  # dry-run must never file a real task
 
 
 class LiveSpotify:
@@ -36,8 +42,8 @@ class FailingHub:
 
 
 def test_hub_error_is_filed_with_a_full_runlog(settings, mocker):
-    mocker.patch("core.run.mirror.load_mirror", return_value=object())
-    mocker.patch("core.run.mirror.pull_live", return_value=SimpleNamespace(raw={}))
+    mocker.patch("core.run.mirror.load_mirror", return_value=Mirror({}, {}, {}, [], set()))
+    mocker.patch("core.run.mirror.pull_live", return_value=Live({}, {}, {}))
     mocker.patch("core.run.archive.put")
     mocker.patch(
         "core.run.reconcile_mod.plan",
@@ -63,8 +69,8 @@ def test_hub_error_is_filed_with_a_full_runlog(settings, mocker):
 
 
 def test_writes_false_is_passed_through_to_apply(settings, mocker):
-    mocker.patch("core.run.mirror.load_mirror", return_value=object())
-    mocker.patch("core.run.mirror.pull_live", return_value=SimpleNamespace(raw={}))
+    mocker.patch("core.run.mirror.load_mirror", return_value=Mirror({}, {}, {}, [], set()))
+    mocker.patch("core.run.mirror.pull_live", return_value=Live({}, {}, {}))
     mocker.patch("core.run.archive.put")
     mocker.patch("core.run.reconcile_mod.plan", return_value=[])
     mocker.patch("core.run.flags.file")

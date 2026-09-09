@@ -1,8 +1,12 @@
 """POST /capture: resolve a Shazam result on Spotify, add it to the inbox, record the edge."""
 
+import gzip
+import json
 import re
+from uuid import uuid4
 from datetime import datetime
 
+from core import archive
 from core import mirror as mirror_mod
 from core.config import Settings
 from core.model import ISRC_RE
@@ -49,10 +53,30 @@ def capture(payload: dict, spotify, hub, settings: Settings, now: datetime) -> d
     inbox = next((p for p in m.playlists.values() if p.kind == "inbox"), None)
     if not inbox:
         return {"ok": False, "message": "no inbox playlist in life-data", "isrc": isrc}
-    if (inbox.id, isrc) in m.memberships:
-        return {"ok": True, "message": f"{title} by {artist} is already in new songs", "isrc": isrc}
+    pending = archive.get(settings, archive.PENDING_KEY)
+    if pending and json.loads(gzip.decompress(pending)):
+        return {
+            "ok": False,
+            "message": "Pending reconcile recovery; retry after reconciliation",
+            "isrc": isrc,
+        }
+    raw_items = spotify.get_playlist_items(inbox.id, settings.spotify_market)
+    archive.put(
+        settings,
+        f"raw/spotify-capture/{now.strftime('%Y-%m-%dT%H%M%S')}-{uuid4().hex}.json.gz",
+        gzip.compress(json.dumps({"playlist_id": inbox.id, "items": raw_items}).encode()),
+    )
+    existing = next(
+        (
+            mirror_mod.item_from_raw(r)
+            for r in raw_items
+            if mirror_mod.item_from_raw(r).isrc == isrc
+        ),
+        None,
+    )
     now_s = _iso(now)
-    spotify.add_items(inbox.id, [tr["uri"]])
+    if existing is None:
+        spotify.add_items(inbox.id, [tr["uri"]])
     created = isrc not in m.songs
     if created:
         hub.push("songs", [{"id": isrc, "liked": 0, "liked_at": None, "first_seen": now_s}])
@@ -63,8 +87,8 @@ def capture(payload: dict, spotify, hub, settings: Settings, now: datetime) -> d
                 "id": f"{inbox.id}:{isrc}",
                 "playlist_id": inbox.id,
                 "isrc": isrc,
-                "spotify_track_id": tr["id"],
-                "added_at": now_s,
+                "spotify_track_id": existing.track_id if existing else tr["id"],
+                "added_at": existing.added_at if existing else now_s,
                 "deleted_at": None,
             }
         ],
@@ -103,4 +127,5 @@ def capture(payload: dict, spotify, hub, settings: Settings, now: datetime) -> d
         hub.push(
             "playlist_songs", [{"id": f"{inbox.id}:{i.isrc}", "deleted_at": now_s} for i in extra]
         )
-    return {"ok": True, "message": f"{title} by {artist} added to new songs", "isrc": isrc}
+    message = "is already in" if existing else "added to"
+    return {"ok": True, "message": f"{title} by {artist} {message} new songs", "isrc": isrc}
