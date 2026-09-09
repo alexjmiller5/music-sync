@@ -1,6 +1,7 @@
 """life-data hub client over the HTTP protocol. Knows a URL and a bearer token, nothing else."""
 
 from collections import defaultdict
+from datetime import datetime, timezone
 
 import httpx
 
@@ -36,8 +37,25 @@ class Hub:
     def push(self, table: str, rows: list[dict]) -> dict:
         if not rows:
             return {"upserted": 0, "rejected": []}
+        stamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         groups = defaultdict(list)
         for row in rows:
+            row = {"updated_at": stamp, **row}
+            # Spotify and saved recovery batches may carry seconds or UTC offsets.
+            for col in ("added_at", "liked_at"):
+                if row.get(col) is None:
+                    continue
+                try:
+                    value = datetime.fromisoformat(row[col])
+                    if value.tzinfo is None:
+                        raise ValueError("timezone required")
+                except (TypeError, ValueError) as exc:
+                    raise HubError(f"{col}: expected a timezone-aware ISO-8601 timestamp") from exc
+                row[col] = (
+                    value.astimezone(timezone.utc)
+                    .isoformat(timespec="milliseconds")
+                    .replace("+00:00", "Z")
+                )
             groups[tuple(sorted(row))].append(row)
         total, rejected = 0, []
         for keys, group in groups.items():

@@ -22,7 +22,7 @@ src/core/         business logic (plain Python, portable, no Modal imports)
   model.py             dataclasses shared across core
   archive.py           archive a raw pull to R2
 scripts/
-  provision.py       mints R2_API_TOKEN and the Modal CI token (op-project-bootstrap contract)
+  provision.py       mints R2/Modal tokens; resolves R2_ACCESS_KEY_ID after R2_API_TOKEN
   sync_secrets.py     push .env.tpl -> Modal secret store
   spotify_auth.py     mint/re-mint the Spotify refresh token
   create_50s_playlist.py  one-off, deleted after migration step 9
@@ -176,6 +176,11 @@ responses or partial 100-item client batches do not add duplicates. Same-URI
 repair retains the re-add intent across crashes. Hub patches merge by ID
 and transmit only exact sets of present columns, preserving undo identity
 and timestamps; explicit null remains an intentional update.
+`Hub.push` supplies one `updated_at` per invocation in UTC milliseconds when
+absent, preserving any caller-supplied value. Spotify `added_at` and `liked_at`
+are converted to UTC milliseconds ending in `Z` for the hub validator, including
+saved recovery batches. Input rows and pending evidence remain unchanged;
+JSON objects and arrays retain their values on the wire.
 
 An incomplete mutating plan blocks capture and observation imports until
 reconciliation recovers. A failed observation import can resume with
@@ -184,11 +189,16 @@ after a failed run are reconciled on the subsequent fresh run. A persistently
 failing operation requires operator attention; do not delete pending evidence
 or advance the mirror to bypass it.
 
-The archive token needs object **read and write** permission on the configured
-bucket; provisioning requests both. Existing write-only credentials need
-replacement before running this version. Keep `music-sync/` outside raw
-archive lifecycle expiration, and reserve its pending object for this one
-worker/account. No new hub table, schema or recovery dependency is needed.
+R2 archives use boto3 against `https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com`.
+The token needs bucket object **read and write** permission, which Cloudflare
+supports through the S3 API. `R2_ACCESS_KEY_ID` is the ID of the token stored
+in `R2_API_TOKEN`; its SHA-256 hash is the S3 secret, derived only in memory.
+Provisioning resolves the named token ID after minting the token value. For an
+existing read/write token, populate its ID without reminting it. See
+[Cloudflare's credential mapping](https://developers.cloudflare.com/r2/api/tokens/).
+Only `NoSuchKey` means an absent object; bucket, permission, transport and
+incomplete-read failures stop the flow. Keep `music-sync/` outside raw archive
+lifecycle expiration, and reserve its pending object for this one worker/account.
 
 ### Without 1Password
 

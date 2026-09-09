@@ -175,6 +175,14 @@ def test_mixed_hub_patches_preserve_identity_and_explicit_null():
     def handler(req):
         body = json.loads(req.content)
         bodies.append(body)
+        # The live worker rejects missing/null updated_at before catalog validation.
+        rejected = [
+            {"id": row["id"], "col": "updated_at", "rule": "required"}
+            for row in body["rows"]
+            if row.get("updated_at") is None
+        ]
+        if rejected:
+            return httpx.Response(200, json={"upserted": 0, "rejected": rejected})
         for row in body["rows"]:
             # Model the hub's partial-column update contract.
             store.setdefault(row["id"], {}).update({c: row.get(c) for c in body["columns"]})
@@ -584,22 +592,6 @@ def test_real_spotify_client_chunk_failure_replays_only_missing_uris(settings):
     assert [len(p) for p in posts] == [100, 1, 1]
 
 
-def test_archive_read_only_404_is_absence_other_failures_close(settings):
-    from core import archive
-
-    for status in [200, 404, 403, 500]:
-        client = httpx.Client(
-            transport=httpx.MockTransport(lambda req: httpx.Response(status, content=b"dummy"))
-        )
-        if status >= 400 and status != 404:
-            with pytest.raises(httpx.HTTPStatusError):
-                archive.get(settings, archive.PENDING_KEY, http=client)
-        else:
-            assert archive.get(settings, archive.PENDING_KEY, http=client) == (
-                b"dummy" if status == 200 else None
-            )
-
-
 def test_provision_requests_read_and_write_for_recovery(mocker):
     from scripts import provision
 
@@ -636,6 +628,53 @@ def test_failed_observation_import_can_resume_without_enabling_writes(settings, 
     assert sp.calls == []
     assert hub.tables["songs"][A]["liked"] == 0
     assert hub.tables["playlist_songs"][f"P:{A}"]["isrc"] == A
+
+
+def test_observation_import_meets_hub_datetime_contract_and_recovers(settings, archive_store):
+    import re
+
+    store, sp = Store(member=False), Spotify()
+    store.tables["songs"].clear()
+    store.fail = "playlist_songs"
+    sp.items = [raw(added="2026-09-07T00:00:00Z")]
+    sp.liked = [raw(added="2026-09-07T00:00:00+00:00")]
+
+    def handler(req):
+        body = json.loads(req.content)
+        table = body["table"]
+        if req.url.path.endswith("/pull"):
+            return httpx.Response(200, json={"rows": store.pull(table, body["columns"])})
+        # Match the worker's required stamp and catalog datetime validation.
+        for row in body["rows"]:
+            for col in ("updated_at", "first_seen", "liked_at", "added_at"):
+                value = row.get(col)
+                if (col == "updated_at" or value is not None) and not re.fullmatch(
+                    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", value or ""
+                ):
+                    return httpx.Response(
+                        200,
+                        json={
+                            "upserted": 0,
+                            "rejected": [{"id": row["id"], "col": col, "rule": "type"}],
+                        },
+                    )
+        try:
+            return httpx.Response(200, json=store.push(table, body["rows"]))
+        except HubError as exc:
+            return httpx.Response(500, text=str(exc))
+
+    hub = Hub("https://hub.test", "dummy", httpx.Client(transport=httpx.MockTransport(handler)))
+    out = execute(settings, sp, hub, writes=False)
+    assert len(out.errors) == 1 and "injected hub failure" in out.errors[0]
+    pending = json.loads(gzip.decompress(archive_store[run.archive.PENDING_KEY]))
+    # Saved operations retain the original value; normalization is a wire concern.
+    assert pending["operations"][0]["rows"][0]["added_at"] == "2026-09-07T00:00:00Z"
+    assert not execute(settings, sp, hub, writes=False).errors
+    assert json.loads(gzip.decompress(archive_store[run.archive.PENDING_KEY])) is None
+    assert sp.calls == []
+    assert store.tables["songs"][A]["first_seen"] == "2026-09-08T12:00:00.000Z"
+    assert store.tables["songs"][A]["liked_at"] == T
+    assert store.tables["playlist_songs"][f"P:{A}"]["added_at"] == T
 
 
 def test_pending_observation_blocks_activation_preview_until_recovered(

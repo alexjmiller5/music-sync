@@ -272,6 +272,10 @@ mismatches. No per-playlist rule objects exist in the catalog.
 * life-data access is the hub HTTP protocol: `/v1/rows/pull` (with cursors)
   to load the mirror, `/v1/rows/push` for writes, `/v1/derive` for backfill.
   The client sends exact-key patch groups so omitted fields remain unchanged.
+  It adds an absent `updated_at` once per push invocation in UTC milliseconds,
+  preserving supplied values. Spotify `added_at` and `liked_at` are normalized
+  to the same format ending in `Z` on the wire, including saved recovery batches.
+  JSON objects and arrays remain unchanged; the hub stores them as JSON text.
   Catalog invariants are operator checks, not assumed write-time validation;
   the client validates rules before evaluation. Derivations enrich new rows.
 
@@ -284,6 +288,11 @@ successful batch; on any Spotify, hub or checkpoint failure stop dependent
 operations and retain durable evidence. Do not advance the song/membership
 baseline after a failed Spotify batch. Partial hub writes are completed from
 the pending plan before another pull is adopted as the baseline.
+
+R2 objects use boto3's S3 API with bucket object read/write permissions.
+`R2_ACCESS_KEY_ID` is the ID of `R2_API_TOKEN`; derive the secret access key
+as SHA-256 of its value in memory. Provision the value before looking up its ID.
+Only `NoSuchKey` represents absence; all other archive errors stop the flow.
 
 Every resumed run archives a fresh full pull before replay. Add operations
 check live URI presence before retrying uncertain or partially applied client
@@ -483,4 +492,3 @@ copies are removed.
 16. The reconciler shall support a dry-run mode that reports every action it would take and applies none.
 17. Before any Spotify write, each run shall archive its raw pull verbatim to R2.
 18. Reconciliation writes shall remain disabled, including on-demand requests, until a fresh dry-run reports no proposed Spotify mutations beyond accepted review exceptions. The activation field shall default to 0 and survive secrets sync.
-

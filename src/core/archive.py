@@ -1,10 +1,14 @@
-"""Archive the raw Spotify pull to R2 through Cloudflare's REST API (httpx only)."""
+"""Archive raw pulls and recovery checkpoints through R2's S3 API."""
 
+from contextlib import closing, nullcontext
 from datetime import datetime
-from urllib.parse import quote
+from hashlib import sha256
 from uuid import uuid4
 
-import httpx
+import boto3
+from botocore.client import BaseClient
+from botocore.config import Config
+from botocore.exceptions import ClientError
 
 from core.config import Settings
 
@@ -13,35 +17,41 @@ def key_for(now: datetime) -> str:
     return f"raw/spotify-pull/{now.strftime('%Y-%m-%dT%H%M%SZ')}-{uuid4().hex}.json.gz"
 
 
-def put(settings: Settings, key: str, data: bytes, http: httpx.Client | None = None) -> None:
-    url = (
-        f"https://api.cloudflare.com/client/v4/accounts/{settings.r2_account_id}"
-        f"/r2/buckets/{settings.r2_bucket}/objects/{quote(key, safe='')}"
+def _client(settings: Settings) -> BaseClient:
+    return boto3.client(
+        "s3",
+        endpoint_url=f"https://{settings.r2_account_id}.r2.cloudflarestorage.com",
+        region_name="auto",
+        aws_access_key_id=settings.r2_access_key_id,
+        aws_secret_access_key=sha256(settings.r2_api_token.encode()).hexdigest(),
+        config=Config(
+            signature_version="s3v4",
+            connect_timeout=120,
+            read_timeout=120,
+            request_checksum_calculation="when_required",
+            response_checksum_validation="when_required",
+        ),
     )
-    r = (http or httpx.Client(timeout=120)).put(
-        url,
-        content=data,
-        headers={
-            "Authorization": f"Bearer {settings.r2_api_token}",
-            "Content-Type": "application/gzip",
-        },
-    )
-    r.raise_for_status()
+
+
+def put(settings: Settings, key: str, data: bytes, s3: BaseClient | None = None) -> None:
+    with nullcontext(s3) if s3 is not None else closing(_client(settings)) as client:
+        client.put_object(
+            Bucket=settings.r2_bucket, Key=key, Body=data, ContentType="application/gzip"
+        )
 
 
 # Outside raw/ so raw-backup lifecycle expiration cannot discard retry evidence.
 PENDING_KEY = "music-sync/pending-reconcile.json.gz"
 
 
-def get(settings: Settings, key: str, http: httpx.Client | None = None) -> bytes | None:
-    url = (
-        f"https://api.cloudflare.com/client/v4/accounts/{settings.r2_account_id}"
-        f"/r2/buckets/{settings.r2_bucket}/objects/{quote(key, safe='')}"
-    )
-    r = (http or httpx.Client(timeout=120)).get(
-        url, headers={"Authorization": f"Bearer {settings.r2_api_token}"}
-    )
-    if r.status_code == 404:
-        return None
-    r.raise_for_status()
-    return r.content
+def get(settings: Settings, key: str, s3: BaseClient | None = None) -> bytes | None:
+    with nullcontext(s3) if s3 is not None else closing(_client(settings)) as client:
+        try:
+            response = client.get_object(Bucket=settings.r2_bucket, Key=key)
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "NoSuchKey":
+                return None
+            raise
+        with closing(response["Body"]) as body:
+            return body.read()

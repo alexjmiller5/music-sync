@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.13"
-# dependencies = ["httpx", "pydantic-settings", "structlog"]
+# dependencies = ["boto3", "httpx", "pydantic-settings", "structlog"]
 # ///
 """One-time migration steps (spec section 9). Each step prints its plan and
 stops there unless --dry-run is ABSENT - i.e. --dry-run means print only.
