@@ -40,7 +40,8 @@ OUTPUTS = {
 
 
 def input_hash(values):
-    # Independent oracle: the hub hashes SQLite's text rendering of inputs.
+    # D1 binds JS Number inputs as REAL, including integral numbers.
+    values = [float(v) if isinstance(v, (int, float)) else v for v in values]
     db = sqlite3.connect(":memory:")
     try:
         raw = db.execute(
@@ -143,6 +144,48 @@ def test_resume_accepts_no_match_and_null_year_with_proofs():
     assert service.calls == []
     assert second["completed_recordings"] == 1 and second["skipped"] == 4
     assert second["derived"] == second["attempts"] == 0
+
+
+def test_resume_reuses_d1_numeric_year_proof():
+    service = Service()
+    service.outputs["title"]["album_year"] = 1990
+    service.outputs["deezer_genres"]["deezer_year"] = 1990
+    for col in SOURCES:
+        service.persist("S0000", col)
+    # Literal oracle for the live failure shape, using only synthetic years.
+    proof = service.proofs["songs:S0000:first_year"]
+    proof["inputs_hash"] = hashlib.sha256(b'["1990.0","1990.0",null]').hexdigest()
+    out = service.run()
+    assert service.calls == []
+    assert out["completed_recordings"] == 1 and out["skipped"] == 4
+    assert out["derived"] == out["attempts"] == 0
+
+
+@pytest.mark.parametrize(
+    ("values", "raw", "reuse"),
+    [
+        ([1990.0, 1990, None], '["1990.0","1990.0",null]', True),
+        ([1991, 1990, None], '["1990.0","1990.0",null]', False),
+        ([1990, 1990, None], '["1990","1990",null]', False),
+        ([None, None, None], "[null,null,null]", True),
+        ([None, None, None], '["None",null,null]', False),
+        (["01990", "1990", None], '["01990","1990",null]', True),
+        (["1990", "1990", None], '["1990.0","1990.0",null]', False),
+        ([1e20, 1990, None], '["1.0e+20","1990.0",null]', True),
+    ],
+)
+def test_year_checkpoint_matches_d1_binding(values, raw, reuse):
+    service = Service()
+    service.rows["S0000"].update(zip(backfill_derive.YEARS, values))
+    service.persist("S0000", "first_year")
+    service.proofs["songs:S0000:first_year"]["inputs_hash"] = hashlib.sha256(
+        raw.encode()
+    ).hexdigest()
+    out = service.run("first_year")
+    assert service.calls == ([] if reuse else [("S0000", "first_year")])
+    assert out["skipped"] == int(reuse)
+    assert out["derived"] == int(not reuse)
+    assert out["completed_recordings"] == 1
 
 
 def test_partial_failure_resume_refreshes_non_null_year():
