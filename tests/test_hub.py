@@ -158,6 +158,19 @@ def test_derive_chunks_of_50():
     assert sizes == [50, 50, 20] and out == {"derived": 120, "failed": []}
 
 
+def test_derive_forwards_optional_column_in_each_request():
+    bodies = []
+
+    def handler(req):
+        bodies.append(json.loads(req.content))
+        return httpx.Response(200, json={"derived": len(bodies[-1]["ids"]), "failed": []})
+
+    out = make(handler).derive("songs", [str(i) for i in range(51)], col="mb_tags")
+    assert [len(b["ids"]) for b in bodies] == [50, 1]
+    assert all(b["col"] == "mb_tags" for b in bodies)
+    assert out == {"derived": 51, "failed": []}
+
+
 def test_http_error_is_huberror():
     def handler(req):
         return httpx.Response(500, text="boom")
