@@ -8,9 +8,8 @@
 
 Music Sync keeps a personal music catalog in life-data and materializes
 **smart playlists** in Spotify from rules over that catalog. Spotify stays the
-only app the user touches day to day. A single Modal cron is the only process
-that writes life-data and the only process that enforces playlist rules in
-Spotify.
+only app the user touches day to day. A single serialized Modal worker owns capture and reconciliation writes.
+The hourly cron and authenticated endpoints dispatch to that worker.
 
 The user's stated use case: sort music into playlists automatically, and create
 new playlists by filtering the pool on genre and era, which Spotify cannot do.
@@ -20,7 +19,7 @@ new playlists by filtering the pool on genre and era, which Spotify cannot do.
 1. **One writer per store.** Spotify is written by the user (the app), the
    app's `/capture` endpoint on the shortcut's behalf, and agents (via the
    `spotify` skill). life-data is written
-   only by the Modal cron, with one exception: an agent writes
+   only by the serialized Modal worker, with one exception: an agent writes
    `playlists.rule` (and `kind`, `pinned`, `expires_at`) when the user asks
    for a smart playlist. The user and agents otherwise treat life-data as
    read-only.
@@ -246,13 +245,17 @@ mismatches. No per-playlist rule objects exist in the catalog.
 
 * `reconcile` - `modal.Cron("0 * * * *")` (hourly), also exposed as a
   proxy-auth `POST /reconcile` endpoint so the user, an agent, or the Shazam
-  shortcut can trigger a run immediately. One run at a time (Modal
-  `concurrency_limit=1`); a run skips curated and inbox playlists whose snapshot id is
+  shortcut can trigger a run immediately. All entrypoints dispatch synchronously through `worker.remote(...)` to one
+  worker with `max_containers=1` and `@modal.concurrent(max_inputs=1)`; a run skips curated and inbox playlists whose snapshot id is
   unchanged; smart playlists are always pulled (hearting changes no
   snapshot, and their membership is what the run materializes). Uses one of the five Starter-plan cron slots; `modal app list`
   before deploy confirms a slot is free.
 * `capture` - proxy-auth `POST /capture` (§7.3). The one path that writes
-  life-data outside the hourly run; same app, same credentials, same code.
+  life-data outside the hourly run; same serialized worker, credentials and core code. FastAPI is declared in
+  production dependencies for the `--no-dev` image.
+* Activation: `RECONCILE_ENABLED` is in the canonical secrets manifest and
+  provisioned as `0`. Both cron and mutating manual runs require `1`; explicit
+  dry runs remain available while disabled. Capture is independently authorized.
 * Secrets (`Music Sync ENV`): `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`,
   `SPOTIFY_REFRESH_TOKEN` (the "AI Agent" developer app; read scopes minted
   2026-09-07; Spotify expires it every 180 days - re-mint with
@@ -268,8 +271,40 @@ mismatches. No per-playlist rule objects exist in the catalog.
   /playlists/{id}` (description), `POST /me/playlists`. No batch endpoints.
 * life-data access is the hub HTTP protocol: `/v1/rows/pull` (with cursors)
   to load the mirror, `/v1/rows/push` for writes, `/v1/derive` for backfill.
-  The hub validates every pushed row against the catalog and runs the
-  derivations for new rows.
+  The client sends exact-key patch groups so omitted fields remain unchanged.
+  Catalog invariants are operator checks, not assumed write-time validation;
+  the client validates rules before evaluation. Derivations enrich new rows.
+
+### Failure recovery and review preservation
+
+Before applying any batch, save its remaining operations and complete planned
+actions to `music-sync/pending-reconcile.json.gz` in the existing R2 bucket.
+Keep this object outside raw archive lifecycle expiry. Checkpoint after each
+successful batch; on any Spotify, hub or checkpoint failure stop dependent
+operations and retain durable evidence. Do not advance the song/membership
+baseline after a failed Spotify batch. Partial hub writes are completed from
+the pending plan before another pull is adopted as the baseline.
+
+Every resumed run archives a fresh full pull before replay. Add operations
+check live URI presence before retrying uncertain or partially applied client
+chunks. Relink additions precede old-URI removal. Same-URI dedupe repair keeps
+one durable re-add intent after removal, including across worker restarts.
+An incomplete mutating plan blocks capture and observation imports. Failed
+observation imports can resume with `writes=False`. Recovery finishes saved
+intent first; later user gestures are detected on the next fresh reconcile.
+A persistent failure requires operator attention, never deletion of evidence.
+
+Resolve final membership before dedupe repair: un-heart, smart exclusion and
+expiry prevent resurrection, and any number of same-URI duplicates produces
+at most one kept-copy re-add. Newly discovered owned playlists are curated
+before event detection in enforcement mode. Seven-day undo rows retain full
+identity and original `added_at`, including a new add conflicting with un-heart.
+
+Dry runs return each structured planned action (playlist ID/name, ISRC/title
+where known, URI, reason, row or text change), separated from confirmed applied
+counts and routine mirror patches. They write nothing, including flags. R2
+credentials require object read and write; no extra table or dependency is
+introduced for recovery.
 
 ### 7.2 Derivations (repo `derivations`, Modal)
 
@@ -296,11 +331,14 @@ two fields in `iOS Shortcuts ENV`) → `showNotification` of the response
 `message`. Shortcuts' Shazam result exposes no ISRC (only Apple Music ID,
 title, artist), so the endpoint resolves the recording: Spotify search
 `track:<title> artist:<artist>` (limit 10), best match by normalized title and
-artist, ISRC from the result. It then adds the track to the inbox, pushes the
+artist, ISRC from the result. It first reads and archives the live inbox under a unique
+`raw/spotify-capture/` object key, then adds the track if absent, pushes the
 `songs` row (if new) and the `captured_by=shazam` edge with the Apple Music
 ID and Shazam URL in the edge `detail`, trims the inbox to 100, and returns
 `{"ok": true, "message": "<title> by <artist> added to new songs"}`. A song
-already in the inbox returns ok with "already in new songs". No match
+already in the live inbox still completes any missing catalog/provenance
+writes and FIFO trim before returning ok with "already in new songs". Archive
+failure prevents mutation. Pending reconciliation blocks capture until recovery. No match
 returns `{"ok": false, "message": ...}` and files the Chore task ("add
 
 <title> by <artist> to new songs manually") that the shortcut files via
@@ -371,7 +409,9 @@ copies are removed.
 5. First pull into the mirror: every owned playlist and liked songs →
    `songs`, `playlist_songs`, `playlists` (all `curated`), capture edges
    (`like` from like `added_at`; `shazam` for `My Shazam Tracks` rows;
-   `playlist` otherwise). No Spotify writes.
+   `playlist` otherwise). No Spotify writes or enforcement planning. Observation imports preserve
+   actual likes and all observed memberships, even on resumed imports and
+   overflowing inboxes; no auto-like, FIFO, undo, dedupe, relink, rules or expiry.
 6. Backfill derivations (§7.2). Nothing below depends on Spotify writes yet.
 7. **Manual compliance review (gate).** `scripts/review.py` reads only the
    mirror and prints the non-compliance report, one section per category,
@@ -400,8 +440,10 @@ copies are removed.
    curated `50s Gold` playlist, then delete the script (data never lives in
    code).
 10. **Activation gate.** Re-pull, then run the reconciler in `--dry-run`. It
-    must report zero actions other than the accepted exceptions from step 7.
-    Only then deploy the cron. Confirm two clean hourly runs, then close the
+    must report zero proposed Spotify mutations other than the accepted
+    exceptions from step 7; routine mirror patches are listed separately.
+    Only then set `RECONCILE_ENABLED=1` and sync secrets. A disabled preview
+    deployment is permitted before review. Confirm two clean hourly runs, then close the
     Notion tasks absorbed by this project (sync playlists, track following,
     download backup, dedup, Apple Music tag, 50s playlist).
 
@@ -433,12 +475,12 @@ copies are removed.
 8. When `/capture` receives a Shazam result, the system shall resolve the recording on Spotify, add it to the inbox, and record a `shazam` capture edge; if it cannot resolve it, it shall file a Chore task and add nothing.
 9. Where a playlist song is unplayable and a playable Spotify id with the same ISRC exists, the reconciler shall swap ids; otherwise it shall flag the song.
 10. When any condition it cannot resolve occurs, the reconciler shall write one Notion Chore task per run listing every flag, and none when there are no flags.
-11. The hub shall reject a `playlists.rule` that is not valid version-1 rule JSON.
+11. The reconciler shall reject invalid version-1 rule JSON before evaluating or materializing that playlist; catalog checks report persisted invalid rules.
 12. The reconciler shall be the only writer of `songs`, `playlist_songs`, and every `playlists` column except `kind`, `rule`, `pinned`, `expires_at`.
 13. The system shall use only Spotify endpoints available to Development Mode apps created after 2026-02-11.
 14. The MusicBrainz derivation shall not exceed one request per second.
-15. The reconciler shall run hourly and on demand through a proxy-auth endpoint, never concurrently with itself.
+15. Hourly reconcile, manual reconcile and capture shall share one serialized worker covering the entire read/archive/plan/apply cycle.
 16. The reconciler shall support a dry-run mode that reports every action it would take and applies none.
 17. Before any Spotify write, each run shall archive its raw pull verbatim to R2.
-18. The cron shall not be deployed until a dry-run over a freshly pulled mirror reports no actions beyond the exceptions accepted in the manual review.
+18. Reconciliation writes shall remain disabled, including on-demand requests, until a fresh dry-run reports no proposed Spotify mutations beyond accepted review exceptions. The activation field shall default to 0 and survive secrets sync.
 

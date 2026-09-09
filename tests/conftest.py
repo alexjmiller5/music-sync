@@ -18,3 +18,22 @@ def settings():
         r2_bucket="bucket",
         r2_api_token="r2tok",
     )
+
+
+@pytest.fixture(autouse=True)
+def no_external_sockets(monkeypatch):
+    """Real services are never test dependencies; OAuth callback loopback is allowed."""
+    import ipaddress
+    import socket
+
+    original = socket.socket.connect
+
+    def connect(sock, address):
+        if sock.family in (socket.AF_INET, socket.AF_INET6):
+            host = address[0]
+            assert host == "localhost" or ipaddress.ip_address(host).is_loopback, (
+                "external socket blocked"
+            )
+        return original(sock, address)
+
+    monkeypatch.setattr(socket.socket, "connect", connect)

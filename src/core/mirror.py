@@ -101,7 +101,7 @@ def item_from_raw(raw: dict) -> LiveItem:
     )
 
 
-def pull_live(spotify, market: str, me_id: str, mirror: Mirror) -> Live:
+def pull_live(spotify, market: str, me_id: str, mirror: Mirror, full: bool = False) -> Live:
     raw = {"playlists": [], "items": {}, "liked": []}
     playlists = {}
     for p in spotify.get_playlists():
@@ -112,7 +112,8 @@ def pull_live(spotify, market: str, me_id: str, mirror: Mirror) -> Live:
         # smart playlists get rewritten by rule materialization without moving their snapshot
         # (a heart/un-heart elsewhere never bumps them), so always re-fetch those
         if (
-            known
+            not full
+            and known
             and known.kind != "smart"
             and known.snapshot_id
             and known.snapshot_id == p.get("snapshot_id")

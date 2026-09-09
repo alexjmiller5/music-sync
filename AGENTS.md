@@ -18,11 +18,29 @@ runs in tests, locally, or on any future platform.
 - Cron: Modal is the PREFERRED home for schedules - but the Starter plan
   allows **5 deployed crons across ALL apps**, so track the budget. Overflow
   goes to GHA cron or CF Cron Triggers.
-- **The hourly `reconcile_cron` is gated by `RECONCILE_ENABLED=1`** in the
-  `music-sync` Modal secret. Until that field is set the cron runs every
-  hour but returns `{"skipped": true}` immediately - no Spotify or life-data
-  writes. The one-time migration (`scripts/migrate.py`, spec section 9)
-  flips it on last, after a manual review and a clean dry run.
+- **Cron and mutating manual reconciliation require `RECONCILE_ENABLED=1`.**
+  The manifest carries the field; provisioning initializes it to `0`. Explicit
+  dry runs are allowed while disabled; capture is independently authorized.
+- All three entrypoints synchronously call one `worker.remote(...)` with
+  `max_containers=1` and `@modal.concurrent(max_inputs=1)`. Keep the full
+  read/archive/plan/apply cycle inside it; endpoint container caps alone do
+  not serialize different functions. FastAPI is a production dependency.
+- `writes=False` selects observation-only planning before enforcement. Import
+  actual liked values and full memberships; never persist hypothetical FIFO,
+  auto-like, relink, undo, rule or expiry changes during review.
+- Every Spotify mutation flow archives its pre-write pull, including capture
+  and resumed reconciliation. R2 pending intent lives at
+  `music-sync/pending-reconcile.json.gz`, outside raw-backup lifecycle rules.
+  Archive credentials require object read and write. A failure stops remaining
+  operations and preserves the pending batches; resume before taking a new
+  baseline. Do not remove retry evidence manually. Capture cannot overtake a
+  pending reconcile. An observation import may resume without enabling writes.
+- Hub patches group by exact present keys. Never turn omitted columns into
+  nulls. Preserve membership identity and `added_at` through soft deletion
+  for seven-day undo. Un-heart/rule removal/expiry override dedupe re-adds.
+- Dry-run responses include structured `planned` actions with recording and
+  playlist identity, reason and proposed changes; `applied` is confirmed work
+  only. No Spotify/hub/archive/Notion writes occur during dry runs.
 - **life-data is written ONLY by this app.** Agents and the user write
   Spotify directly (the `spotify_player` CLI via the `spotify` skill, or the
   Spotify app itself) - never life-data. The hourly reconcile is what mirrors
@@ -31,7 +49,7 @@ runs in tests, locally, or on any future platform.
 ## Layout
 
 ```
-app.py                       Modal shim: hourly reconcile cron, /reconcile and /capture endpoints
+app.py                       Modal shim: serialized worker, cron and proxy-auth endpoints
 src/core/
   spotify_client.py          Spotify Web API client (post-2026-02 Development Mode endpoint set)
   hub.py                     life-data hub HTTP client (pull, push, derive)
@@ -76,4 +94,6 @@ not a script catalog; one-offs go in `scripts/` and run directly.
 
 Write the test in `tests/` first, then the `src/core/` code. `app.py` shim
 functions stay thin enough to not need tests beyond `tests/test_app.py`,
-which covers the activation gate.
+which covers dispatch, the activation gate and real FastAPI error responses.
+Release regressions use dummy state and mocked HTTP; the suite blocks external
+sockets while permitting the OAuth callback tests on loopback.

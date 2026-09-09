@@ -37,7 +37,8 @@ def test_put_uses_cf_r2_objects_api(settings):
 
 
 def test_key_for():
-    assert (
-        archive.key_for(datetime(2026, 9, 8, 13, 5, 9, tzinfo=timezone.utc))
-        == "raw/spotify-pull/2026-09-08T130509Z.json.gz"
-    )
+    now = datetime(2026, 9, 8, 13, 5, 9, tzinfo=timezone.utc)
+    key = archive.key_for(now)
+    assert key.startswith("raw/spotify-pull/2026-09-08T130509Z-")
+    assert key.endswith(".json.gz")
+    assert key != archive.key_for(now)

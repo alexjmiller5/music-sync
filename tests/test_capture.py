@@ -1,6 +1,15 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from core import capture
+
+
+@pytest.fixture(autouse=True)
+def archive_io(mocker):
+    mocker.patch("core.archive.get", return_value=None)
+    mocker.patch("core.archive.put")
+
 
 NOW = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
 
@@ -147,7 +156,8 @@ def test_capture_already_in_inbox(settings):
             }
         ],
     )
-    sp = FakeSpotify([track("1", "Money Trees", "Kendrick Lamar")])
+    tr = track("1", "Money Trees", "Kendrick Lamar")
+    sp = FakeSpotify([tr], inbox_items=[{"added_at": "t", "item": tr}])
     out = capture.capture(
         {"title": "Money Trees", "artist": "Kendrick Lamar"}, sp, hub, settings, NOW
     )
