@@ -44,6 +44,14 @@ def reconcile_run(
         return out
     saved = archive.get(settings, archive.PENDING_KEY)
     pending = json.loads(gzip.decompress(saved)) if saved else None
+    if pending and dry_run:
+        return actions.RunLog(
+            dry_run=True,
+            errors=[
+                "Activation preview blocked by pending recovery; "
+                "complete recovery, then request a fresh dry run"
+            ],
+        )
     if pending and pending["writes"] and not writes:
         return actions.RunLog(
             errors=["Pending reconcile recovery must finish before observation import"]
