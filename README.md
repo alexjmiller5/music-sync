@@ -96,6 +96,26 @@ not a script catalog; one-offs go in `scripts/` and run directly.
 | `just sync-secrets` | Push `.env.tpl` -> Modal secret store |
 | `just deploy` | test + sync-secrets + `modal deploy` |
 
+**Resumable metadata backfill:** with `LIFE_HUB_URL` and `LIFE_HUB_TOKEN`
+in the environment, run `uv run scripts/backfill_derive.py`. The same script
+can run as `python -u scripts/backfill_derive.py` in a container with httpx
+and `src/core` available. It calls only the hub's pull/derive interfaces.
+`--col title`, `--col deezer_genres`, or `--col mb_tags` narrows the source;
+each also checks/refreshes `first_year`. `--col first_year` checks only years.
+
+Each request derives one recording/source. Current hub provenance skips
+completed sources, including Spotify no-match and legitimate null years.
+Source attempts trigger a final year derivation; restarting also detects
+changed year inputs from provenance. Each failed pair gets at most three
+attempts, waiting 5 then 15 seconds. Five consecutive recordings exhausting
+timeout/transport retries pause only that source for the run; record-specific
+HTTP errors such as 502 do not pause it. Other records/sources continue.
+Progress separates recordings, source writes, and reused checkpoints. The
+last stdout line is JSON with unresolved `failed` entries, `stopped_sources`,
+and `deferred` counts; failures/deferred work exit 1. Keep that output in the
+job logs and rerun the same command to resume from provenance. No local
+checkpoint files or service changes are needed.
+
 ## Manual setup (the only steps that can't be codified)
 
 1. **Spotify developer app** - "AI Agent" at
