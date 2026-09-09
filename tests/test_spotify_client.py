@@ -51,18 +51,24 @@ def test_playlist_items_uses_items_path_market_and_fields(settings, mocker):
     assert "external_ids" in seen[0].params["fields"]
 
 
-def test_like_uses_query_param_chunks_of_50(settings, mocker):
+@pytest.mark.parametrize("count", [0, 40, 41, 81])
+def test_like_chunks_library_saves_at_40_and_preserves_order(settings, mocker, count):
     calls = []
+    uris = [f"spotify:track:{i}" for i in range(count)]
 
     def handler(req):
         if req.url.host == "accounts.spotify.com":
             return token_resp()
-        calls.append((req.method, req.url.path, req.url.params.get("uris")))
+        batch = req.url.params.get("uris").split(",")
+        if len(batch) > 40:
+            return httpx.Response(400, json={"error": "too many uris"})
+        calls.append((req.method, req.url.path, batch))
         return httpx.Response(200)
 
-    make(handler, settings, mocker).like([f"spotify:track:{i}" for i in range(51)])
-    assert calls[0][0] == "PUT" and calls[0][1] == "/v1/me/library"
-    assert calls[0][2].count("spotify:track:") == 50 and calls[1][2] == "spotify:track:50"
+    make(handler, settings, mocker).like(uris)
+
+    assert all(method == "PUT" and path == "/v1/me/library" for method, path, _ in calls)
+    assert [uri for _, _, batch in calls for uri in batch] == uris
 
 
 def test_add_and_remove_items_json_bodies(settings, mocker):
