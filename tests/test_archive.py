@@ -30,10 +30,8 @@ def s3(monkeypatch):
     client.close()
 
 
-@pytest.mark.parametrize(
-    "key", ["raw/spotify-pull/x.json.gz", "music-sync/pending-reconcile.json.gz"]
-)
-def test_put_preserves_gzip_bytes_key_and_content_type(settings, s3, key):
+def test_put_preserves_gzip_bytes_key_and_content_type(settings, s3):
+    key = archive.PENDING_KEY
     data = gzip.compress(b'{"operations":[]}')
     with Stubber(s3) as stub:
         stub.add_response(
@@ -122,3 +120,35 @@ def test_key_for():
     assert key.startswith("raw/spotify-pull/2026-09-08T130509Z-")
     assert key.endswith(".json.gz")
     assert key != archive.key_for(now)
+
+
+def test_raw_archives_use_life_api_without_r2_credentials(settings, monkeypatch):
+    calls = []
+    data = gzip.compress(b'{"raw": true}')
+
+    def handler(request):
+        calls.append(request)
+        assert request.url == "https://hub/v1/files/raw/spotify-pull/a.json.gz"
+        assert request.headers["Authorization"] == "Bearer hub-token"
+        if request.method == "PUT":
+            assert request.content == data
+            assert request.headers["Content-Type"] == "application/gzip"
+            return httpx.Response(201, json={"key": "raw/spotify-pull/a.json.gz"})
+        return httpx.Response(200, content=data)
+
+    settings.life_hub_url = "https://hub"
+    settings.life_hub_token = "hub-token"
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(archive, "_client", lambda *_: pytest.fail("raw archive used R2"))
+    monkeypatch.setattr(httpx, "request", client.request)
+    archive.put(settings, "raw/spotify-pull/a.json.gz", data)
+    assert archive.get(settings, "raw/spotify-pull/a.json.gz") == data
+    assert [r.method for r in calls] == ["PUT", "GET"]
+
+
+@pytest.mark.parametrize("status", [403, 500])
+def test_raw_upload_failure_stops_flow(settings, monkeypatch, status):
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(status)))
+    monkeypatch.setattr(httpx, "request", client.request)
+    with pytest.raises(httpx.HTTPStatusError):
+        archive.put(settings, "raw/spotify-pull/a.json.gz", b"x")

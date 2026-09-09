@@ -608,6 +608,10 @@ def test_provision_requests_read_and_write_for_recovery(mocker):
                     ]
                 },
             )
+        if req.url.path == "/accounts":
+            return httpx.Response(200, json={"result": [{"id": "account"}]})
+        if req.url.path.endswith("/r2/buckets"):
+            return httpx.Response(200, json={"result": {"buckets": [{"name": "music-sync-state"}]}})
         if req.method == "GET":
             return httpx.Response(200, json={"result": []})
         bodies.append(json.loads(req.content))
