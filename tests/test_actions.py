@@ -122,3 +122,62 @@ def test_hub_error_is_recorded_not_raised():
     assert log.errors and "boom" in log.errors[0]
     tables = {t for t, _ in hub.pushed}
     assert tables == set()
+
+
+def test_pending_preserves_explicit_timestamps_and_null_through_rejection():
+    import copy
+    import json
+
+    import httpx
+
+    from core.hub import Hub
+
+    supplied = "2026-09-08T10:11:12.987Z"
+    rows = [
+        {"id": "A", "updated_at": supplied, "liked": 1},
+        {"id": "B", "updated_at": None, "liked": 0},
+        {"id": "C", "liked": 0},
+    ]
+    plan = [Action("upsert_song", row=row) for row in rows]
+    original = copy.deepcopy(rows)
+    saved, bodies = [], []
+
+    def checkpoint(ops):
+        saved.append(json.loads(json.dumps(ops)))
+
+    def handler(req):
+        body = json.loads(req.content)
+        bodies.append(body)
+        return httpx.Response(
+            200,
+            json={"upserted": 2, "rejected": [{"id": "B", "rule": "updated_at required"}]},
+        )
+
+    hub = Hub("https://hub.test", "dummy", httpx.Client(transport=httpx.MockTransport(handler)))
+    out = actions.apply(plan, FakeSpotify(), hub, False, checkpoint=checkpoint)
+    assert out.errors and "updated_at required" in out.errors[0]
+    assert len(saved) == 1  # A rejected operation stays pending.
+    assert saved[0][0]["rows"][:2] == original[:2]
+    assert saved[0][0]["rows"][2].get("updated_at") is not None
+    pending = copy.deepcopy(saved[0])
+    out = actions.apply(plan, FakeSpotify(), hub, False, checkpoint=checkpoint, pending=pending)
+    assert out.errors
+    assert bodies[0]["rows"] == bodies[1]["rows"] == saved[0][0]["rows"]
+    assert pending == saved[0] and rows == original
+
+
+def test_dry_run_does_not_prepare_or_checkpoint_pending(mocker):
+    clock = mocker.patch.object(actions, "datetime", create=True)
+    clock.now.side_effect = AssertionError("dry run must not generate a timestamp")
+    sp, hub = FakeSpotify(), FakeHub()
+    pending = [{"kind": "hub", "table": "songs", "rows": [{"id": "A"}], "counts": {}}]
+
+    def checkpoint(ops):
+        raise AssertionError("dry run must not save")
+
+    for intent in (None, pending):
+        out = actions.apply(ACTS, sp, hub, True, checkpoint=checkpoint, pending=intent)
+        assert out.dry_run and not out.errors and not out.applied
+        assert sp.calls == [] and hub.pushed == []
+    assert pending[0]["rows"] == [{"id": "A"}]
+    assert clock.now.call_count == 0
