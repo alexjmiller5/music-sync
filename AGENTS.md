@@ -12,6 +12,9 @@ Only `app.py` imports `modal` - it is the deployment shim (image, secrets,
 cron, endpoints). This keeps the logic portable: the same `core` package
 runs in tests, locally, or on any future platform.
 
+- Spotify uses its own Music Sync developer app and OAuth refresh grant. Never
+  reuse a terminal client or another service's client credentials. Development
+  Mode quota is shared across the owning developer account, even with separate apps.
 - Endpoints use `requires_proxy_auth=True` - callers send `Modal-Key` +
   `Modal-Secret` headers (mint tokens in the Modal dashboard → Settings →
   Proxy Auth Tokens). Never expose an unauthenticated endpoint.
@@ -29,7 +32,12 @@ runs in tests, locally, or on any future platform.
   actual liked values and full memberships; never persist hypothetical FIFO,
   auto-like, relink, undo, rule or expiry changes during review.
 - Every Spotify mutation flow archives its pre-write pull, including capture
-  and resumed reconciliation. R2 pending intent lives at
+  and resumed reconciliation. Raw pulls belong to Life Data and are uploaded
+  through `/v1/files/` under `raw/spotify-pull/` and `raw/spotify-capture/`
+  using the scoped hub token. This is an
+  approved shared-service contract; no Life Data R2 credentials reach this app.
+  Recovery state belongs to this project's `music-sync-state` R2 bucket.
+  R2 pending intent lives at
   `music-sync/pending-reconcile.json.gz`, outside raw-backup lifecycle rules.
   Archive credentials require object read and write. A failure stops remaining
   operations and preserves the pending batches; resume before taking a new
@@ -74,7 +82,7 @@ src/core/
   capture.py                  /capture: resolve a Shazam result, add to inbox, record the edge
   config.py                  Settings (env vars only)
   model.py                    dataclasses shared across core
-  archive.py                  archive a raw pull to R2
+  archive.py                  raw files via life-data, recovery via project-owned R2
 scripts/
   provision.py                mints R2/Modal tokens; resolves R2_ACCESS_KEY_ID after R2_API_TOKEN
   sync_secrets.py             push .env.tpl -> Modal secret store

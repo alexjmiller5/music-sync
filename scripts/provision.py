@@ -7,8 +7,8 @@ provision contract: --list prints mintable field names; --field NAME prints
 ONLY the value to stdout, progress on stderr).
 
 R2_API_TOKEN: a Cloudflare API token scoped to object reads and writes on ONE bucket
-(the life-data archive), recreated on every mint because CF never re-reveals
-a token. Needs the AI Agent CF token (User API Tokens: Edit).
+(the project-owned recovery bucket). Existing credentials are never revoked
+by provisioning; rotation must verify the replacement before revocation. Needs the AI Agent CF token (User API Tokens: Edit).
 R2_ACCESS_KEY_ID: resolves the named token's ID after R2_API_TOKEN is minted.
 The existing token value stays in the environment item; no R2 cache is written.
 
@@ -34,9 +34,8 @@ from pathlib import Path
 
 import httpx
 
-CF_ACCOUNT = "1e69de15e5dc3dddea6db7b3ae8087bc"
-BUCKET = "life-data-archive"
-NAME = "music-sync-r2"
+BUCKET = "music-sync-state"
+NAME = "music-sync-state-r2"
 OP_CF_TOKEN = "op://4eeyrkqibibn7k4j6rz2fbzvxm/mxxpo6neiz3grdyrjj7rv7nume/credential"
 
 PROJECT = "music-sync"  # also the Modal profile name for this project's CI token
@@ -63,6 +62,21 @@ def op_read(ref: str) -> str:
     ).stdout.strip()
 
 
+def account_id(client: httpx.Client | None = None) -> str:
+    if value := os.environ.get("CLOUDFLARE_ACCOUNT_ID"):
+        return value
+    if client is None:
+        with httpx.Client(
+            base_url="https://api.cloudflare.com/client/v4",
+            headers={"Authorization": f"Bearer {op_read(OP_CF_TOKEN)}"},
+        ) as client:
+            return account_id(client)
+    accounts = client.get("/accounts").raise_for_status().json()["result"]
+    if len(accounts) != 1:
+        raise RuntimeError("Set CLOUDFLARE_ACCOUNT_ID to choose the account")
+    return accounts[0]["id"]
+
+
 def mint_r2_token() -> str:
     admin = op_read(OP_CF_TOKEN)
     c = httpx.Client(
@@ -73,8 +87,12 @@ def mint_r2_token() -> str:
         c.get("/user/tokens", params={"per_page": 100}).raise_for_status().json()["result"] or []
     ):
         if t["name"] == NAME:
-            log(f"deleting existing token {NAME} (value not re-readable)")
-            c.delete(f"/user/tokens/{t['id']}").raise_for_status()
+            raise RuntimeError(f"{NAME} exists; preserve it until a replacement is verified")
+    account = account_id(c)
+    bucket_route = f"/accounts/{account}/r2/buckets"
+    buckets = c.get(bucket_route).raise_for_status().json()["result"]["buckets"]
+    if not any(bucket["name"] == BUCKET for bucket in buckets):
+        c.post(bucket_route, json={"name": BUCKET}).raise_for_status()
     groups = c.get("/user/tokens/permission_groups").raise_for_status().json()["result"]
     permissions = [
         g
@@ -91,9 +109,7 @@ def mint_r2_token() -> str:
             "policies": [
                 {
                     "effect": "allow",
-                    "resources": {
-                        f"com.cloudflare.edge.r2.bucket.{CF_ACCOUNT}_default_{BUCKET}": "*"
-                    },
+                    "resources": {f"com.cloudflare.edge.r2.bucket.{account}_default_{BUCKET}": "*"},
                     "permission_groups": [{"id": g["id"]} for g in permissions],
                 }
             ],
@@ -164,7 +180,7 @@ def main() -> None:
         case ["--field", "R2_ACCESS_KEY_ID"]:
             print(r2_access_key_id())
         case ["--field", "R2_ACCOUNT_ID"]:
-            print(CF_ACCOUNT)
+            print(account_id())
         case ["--field", "R2_BUCKET"]:
             print(BUCKET)
         case ["--field", name] if name in MODAL_FIELDS:
