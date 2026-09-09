@@ -146,16 +146,17 @@ checkpoint files or service changes are needed.
    ```
    op-project-bootstrap ~/Desktop/coding/active-projects/music-sync/.env.tpl --repo alexjmiller5/music-sync
    ```
-5. **Modal auth** (before any local deploy): `uv run modal token new`
+5. **Deploy** - push to `main`; CI reads the project's own Modal credential.
 
 ## Secrets
 
 `.env.tpl` holds 1Password `op://` references only, pointing at the
 `Music Sync` vault's `Music Sync ENV` item. Run everything through
 `op run --env-file=.env.tpl -- <cmd>`. The hub token stored there
-(`LIFE_HUB_TOKEN`) is named `music-sync-modal` on the hub, scoped
-`tables:write` - life-data is written ONLY by this app; agents and the user
-write Spotify directly (see AGENTS.md).
+(`LIFE_HUB_TOKEN`) is named `music-sync-storage` on the hub, scoped to
+`tables:read,tables:write` and read/write file grants for `raw/spotify-pull/`
+and `raw/spotify-capture/`. Only this app writes the mirrored music catalog;
+agents and the user write Spotify directly (see AGENTS.md).
 
 Reconciliation is gated by `RECONCILE_ENABLED=1` in the `music-sync` Modal
 secret. The canonical `.env.tpl` includes it and `scripts/provision.py`
