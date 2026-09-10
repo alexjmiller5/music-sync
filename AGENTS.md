@@ -15,6 +15,12 @@ runs in tests, locally, or on any future platform.
 - Spotify uses its own Music Sync developer app and OAuth refresh grant. Never
   reuse a terminal client or another service's client credentials. Development
   Mode quota is shared across the owning developer account, even with separate apps.
+- Notion uses the dedicated Music Sync connection stored in this project's ENV
+  item. Its read, insert and update capabilities cover the Tasks database and
+  this project's page for flag tasks and their project relation. No user
+  information, comments or agent access is enabled. Notion applies capabilities
+  across all granted content; the app updates only its own flag tasks. Never
+  substitute the agent's integration or grant the entire Projects database.
 - Endpoints use `requires_proxy_auth=True` - callers send `Modal-Key` +
   `Modal-Secret` headers (mint tokens in the Modal dashboard → Settings →
   Proxy Auth Tokens). Never expose an unauthenticated endpoint.
@@ -87,7 +93,7 @@ scripts/
   provision.py                R2 field minters + atomic, memory-only Modal token batch
   sync_secrets.py             push .env.tpl -> Modal secret store
   spotify_auth.py             mint/re-mint the Spotify refresh token
-  create_50s_playlist.py      one-off, deleted after migration step 9
+  create_50s_playlist.py      one-off playlist creation
 tests/                        pytest
 ```
 
