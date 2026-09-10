@@ -98,6 +98,7 @@ def run(hub, table: str, col: str | None, sleep=None) -> dict:
         "failed": [],
         "stopped_sources": [],
         "deferred": {},
+        "retry_at": {},
     }
     outages = dict.fromkeys(groups, 0)
     for row in rows:
@@ -131,6 +132,16 @@ def run(hub, table: str, col: str | None, sleep=None) -> dict:
                     f"{json.dumps(errors)}",
                     flush=True,
                 )
+                cooldowns = []
+                for error in errors:
+                    delay = error.get("retry_after")
+                    valid_delay = type(delay) is int and delay > 0
+                    if error.get("status") == 429 or (error.get("status") == 503 and valid_delay):
+                        cooldowns.append(delay if valid_delay else 60)
+                if cooldowns:
+                    out["retry_at"][source] = time.time() + max(cooldowns)
+                    out["stopped_sources"].append(source)
+                    break
             if errors:
                 row_ok = False
                 out["failed"].append(
