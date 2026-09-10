@@ -267,10 +267,11 @@ def test_record_specific_failures_continue_and_success_resets_timeout_streak():
 
 
 @pytest.mark.parametrize("status", [429, 503])
-def test_upstream_cooldown_defers_source_without_short_retries(status, monkeypatch):
+@pytest.mark.parametrize("retry_after", [0, 6000])
+def test_upstream_cooldown_defers_source_without_short_retries(status, retry_after, monkeypatch):
     service = Service(3)
     error = failure("S0000", "title", "source temporarily unavailable")
-    error["failed"][0].update(status=status, retry_after=6000)
+    error["failed"][0].update(status=status, retry_after=retry_after)
     service.replies[("S0000", "title")] = [error]
     sleeps = []
     monkeypatch.setattr(backfill_derive.time, "time", lambda: 1000)
@@ -282,7 +283,7 @@ def test_upstream_cooldown_defers_source_without_short_retries(status, monkeypat
         "mb_tags": 3,
         "first_year": 3,
     }
-    assert out["retry_at"] == {"title": 7000}
+    assert out["retry_at"] == {"title": 1000 + max(1, retry_after)}
     assert out["stopped_sources"] == ["title"]
     assert out["deferred"] == {"title": 2}
     assert out["failed"][0]["attempts"] == 1
