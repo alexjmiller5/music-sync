@@ -135,9 +135,9 @@ def run(hub, table: str, col: str | None, sleep=None) -> dict:
                 cooldowns = []
                 for error in errors:
                     delay = error.get("retry_after")
-                    valid_delay = type(delay) is int and delay > 0
+                    valid_delay = type(delay) is int and delay >= 0
                     if error.get("status") == 429 or (error.get("status") == 503 and valid_delay):
-                        cooldowns.append(delay if valid_delay else 60)
+                        cooldowns.append(max(1, delay) if valid_delay else 60)
                 if cooldowns:
                     out["retry_at"][source] = time.time() + max(cooldowns)
                     out["stopped_sources"].append(source)
