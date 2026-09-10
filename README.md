@@ -107,7 +107,12 @@ Each request derives one recording/source. Current hub provenance skips
 completed sources, including Spotify no-match and legitimate null years.
 Source attempts trigger a final year derivation; restarting also detects
 changed year inputs from provenance. Each failed pair gets at most three
-attempts, waiting 5 then 15 seconds. Five consecutive recordings exhausting
+attempts, waiting 5 then 15 seconds. A rate limit (`429`) or a service outage
+(`503`) carrying `retry_after` immediately defers that source for the rest
+of the run, without a short retry. The JSON summary's `retry_at` maps source
+columns to Unix timestamps for the earliest retry; wait until that time
+before resuming that source. Missing or malformed `429` delays use 60 seconds.
+Five consecutive recordings exhausting
 timeout/transport retries pause only that source for the run; record-specific
 HTTP errors such as 502 do not pause it. Other records/sources continue.
 Progress separates recordings, source writes, and reused checkpoints. The

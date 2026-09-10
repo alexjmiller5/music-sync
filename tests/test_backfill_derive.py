@@ -266,6 +266,46 @@ def test_record_specific_failures_continue_and_success_resets_timeout_streak():
     assert ("S0011", "first_year") in service.calls
 
 
+@pytest.mark.parametrize("status", [429, 503])
+def test_upstream_cooldown_defers_source_without_short_retries(status, monkeypatch):
+    service = Service(3)
+    error = failure("S0000", "title", "source temporarily unavailable")
+    error["failed"][0].update(status=status, retry_after=6000)
+    service.replies[("S0000", "title")] = [error]
+    sleeps = []
+    monkeypatch.setattr(backfill_derive.time, "time", lambda: 1000)
+    out = backfill_derive.run(service.hub, "songs", None, sleep=sleeps.append)
+    assert sleeps == []
+    assert Counter(col for _, col in service.calls) == {
+        "title": 1,
+        "deezer_genres": 3,
+        "mb_tags": 3,
+        "first_year": 3,
+    }
+    assert out["retry_at"] == {"title": 7000}
+    assert out["stopped_sources"] == ["title"]
+    assert out["deferred"] == {"title": 2}
+    assert out["failed"][0]["attempts"] == 1
+    assert out["completed_recordings"] == 0
+    service.calls.clear()
+    resumed = service.run()
+    assert resumed["completed_recordings"] == 3
+    assert resumed["failed"] == []
+    assert service.calls == [(id, col) for id in service.rows for col in ("title", "first_year")]
+
+
+@pytest.mark.parametrize("retry_after", [None, "bad", -1, "NaN", True])
+def test_rate_limit_without_valid_delay_still_stops_premature_retries(retry_after, monkeypatch):
+    service = Service()
+    error = failure("S0000", "title", "rate limited")
+    error["failed"][0].update(status=429, retry_after=retry_after)
+    service.replies[("S0000", "title")] = [error]
+    monkeypatch.setattr(backfill_derive.time, "time", lambda: 1000)
+    out = service.run("title")
+    assert service.calls == [("S0000", "title"), ("S0000", "first_year")]
+    assert out["retry_at"] == {"title": 1060}
+
+
 def test_empty_success_is_failure_and_cli_exits_nonzero(monkeypatch, capsys):
     service = Service()
     service.replies[("S0000", "first_year")] = [{"derived": 0, "failed": []}] * 3

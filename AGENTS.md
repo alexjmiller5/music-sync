@@ -72,6 +72,10 @@ runs in tests, locally, or on any future platform.
   Spotify directly (the `spotify_player` CLI via the `spotify` skill, or the
   Spotify app itself) - never life-data. The hourly reconcile is what mirrors
   those Spotify changes into the catalog.
+- Metadata backfill uses the hub's derivation API and reuses provenance.
+  Structured rate limits defer the source immediately; `retry_at` in the
+  summary is the earliest Unix timestamp for resuming it. Other sources
+  continue, and failed/deferred work never counts as complete.
 
 ## Layout
 
