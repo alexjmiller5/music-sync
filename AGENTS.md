@@ -127,6 +127,11 @@ sockets while permitting the OAuth callback tests on loopback.
 
 ## Credential provisioning
 
+Music Sync owns its Modal app, runtime Secret and independently minted CI
+token in its own vault. Modal Starter personal tokens retain workspace-level
+permissions; separate tokens allow independent rotation but do not restrict
+access to one app. Environment-scoped service users require Team or Enterprise.
+
 `op-project-bootstrap` calls `scripts/provision.py --batch modal-token` once
 for the Modal CI pair and saves both fields through JSON stdin. The operator
 opens the stderr approval URL in the configured remote browser session and
