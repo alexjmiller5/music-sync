@@ -157,6 +157,15 @@ def test_pending_ids_are_sent_in_batches():
     assert out["derived"] == 10 and out["attempts"] == 6
 
 
+def test_first_year_uses_smaller_batches_than_other_sources():
+    service = Service(45)
+    out = backfill_derive.run(
+        service.hub, "songs", "first_year", sleep=lambda _: None, batch_size=50
+    )
+    assert [len(batch) for batch in service.batch_calls] == [20, 20, 5]
+    assert out["completed_recordings"] == 45 and out["failed"] == []
+
+
 def test_partial_batch_failure_retries_only_failed_id():
     service = Service(3)
     service.replies[("S0001", "title")] = [failure("S0001", "title")]
