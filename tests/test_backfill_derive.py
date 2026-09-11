@@ -59,6 +59,7 @@ class Service:
         self.rows = {f"S{i:04}": {"id": f"S{i:04}", "deleted_at": None} for i in range(n)}
         self.proofs = {}
         self.calls = []
+        self.batch_calls = []
         self.replies = {}
         self.outputs = deepcopy(OUTPUTS)
         self.hub = Hub(
@@ -101,21 +102,30 @@ class Service:
                 200, json={"rows": [{c: r.get(c) for c in body["columns"]} for r in rows]}
             )
         assert body["table"] == "songs"
-        assert len(body["ids"]) == 1, "one recording per request"
+        self.batch_calls.append(body["ids"])
+        assert 1 <= len(body["ids"]) <= 50
         assert body.get("col") in SOURCES, "one source per request"
-        id, col = body["ids"][0], body["col"]
-        self.calls.append((id, col))
-        replies = self.replies.get((id, col), [])
-        if replies:
-            reply = replies.pop(0)
-            if isinstance(reply, Exception):
-                raise reply
-            return httpx.Response(200, json=reply)
-        self.persist(id, col)
-        return httpx.Response(200, json={"derived": 1, "failed": []})
+        col = body["col"]
+        failures = []
+        derived = 0
+        for id in body["ids"]:
+            self.calls.append((id, col))
+            replies = self.replies.get((id, col), [])
+            if replies:
+                reply = replies.pop(0)
+                if isinstance(reply, Exception):
+                    raise reply
+                if reply.get("failed"):
+                    failures.extend(reply["failed"])
+                else:
+                    derived += reply.get("derived", 0)
+                continue
+            self.persist(id, col)
+            derived += 1
+        return httpx.Response(200, json={"derived": derived, "failed": failures})
 
     def run(self, col=None):
-        return backfill_derive.run(self.hub, "songs", col, sleep=lambda _: None)
+        return backfill_derive.run(self.hub, "songs", col, sleep=lambda _: None, batch_size=1)
 
 
 def failure(id, col, error="endpoint musicbrainz_isrc returned 502"):
@@ -126,11 +136,34 @@ def test_requests_counts_and_no_other_writes(capsys):
     service = Service(2)
     service.rows["deleted"] = {"id": "deleted", "deleted_at": "t"}
     out = service.run()
-    assert service.calls == [(id, col) for id in ("S0000", "S0001") for col in SOURCES]
+    assert service.calls == [(id, col) for col in SOURCES for id in ("S0000", "S0001")]
     assert out["total_recordings"] == out["completed_recordings"] == 2
     assert out["total_sources"] == out["derived"] == out["attempts"] == 8
     assert out["skipped"] == 0 and out["failed"] == []
     assert "recordings 2/2" in capsys.readouterr().out
+
+
+def test_pending_ids_are_sent_in_batches():
+    service = Service(5)
+    out = backfill_derive.run(service.hub, "songs", "title", sleep=lambda _: None, batch_size=2)
+    assert service.batch_calls == [
+        ["S0000", "S0001"],
+        ["S0002", "S0003"],
+        ["S0004"],
+        ["S0000", "S0001"],
+        ["S0002", "S0003"],
+        ["S0004"],
+    ]
+    assert out["derived"] == 10 and out["attempts"] == 6
+
+
+def test_partial_batch_failure_retries_only_failed_id():
+    service = Service(3)
+    service.replies[("S0001", "title")] = [failure("S0001", "title")]
+    out = backfill_derive.run(service.hub, "songs", "title", sleep=lambda _: None, batch_size=3)
+    assert service.batch_calls[:2] == [["S0000", "S0001", "S0002"], ["S0001"]]
+    assert out["failed"] == []
+    assert out["derived"] == 6 and out["attempts"] == 3
 
 
 def test_resume_accepts_no_match_and_null_year_with_proofs():
@@ -275,7 +308,7 @@ def test_upstream_cooldown_defers_source_without_short_retries(status, retry_aft
     service.replies[("S0000", "title")] = [error]
     sleeps = []
     monkeypatch.setattr(backfill_derive.time, "time", lambda: 1000)
-    out = backfill_derive.run(service.hub, "songs", None, sleep=sleeps.append)
+    out = backfill_derive.run(service.hub, "songs", None, sleep=sleeps.append, batch_size=1)
     assert sleeps == []
     assert Counter(col for _, col in service.calls) == {
         "title": 1,
@@ -292,7 +325,10 @@ def test_upstream_cooldown_defers_source_without_short_retries(status, retry_aft
     resumed = service.run()
     assert resumed["completed_recordings"] == 3
     assert resumed["failed"] == []
-    assert service.calls == [(id, col) for id in service.rows for col in ("title", "first_year")]
+    assert service.calls == [
+        *((id, "title") for id in service.rows),
+        *((id, "first_year") for id in service.rows),
+    ]
 
 
 @pytest.mark.parametrize("retry_after", [None, "bad", -1, "NaN", True])

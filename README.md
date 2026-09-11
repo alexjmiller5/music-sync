@@ -103,8 +103,10 @@ and `src/core` available. It calls only the hub's pull/derive interfaces.
 `--col title`, `--col deezer_genres`, or `--col mb_tags` narrows the source;
 each also checks/refreshes `first_year`. `--col first_year` checks only years.
 
-Each request derives one recording/source. Current hub provenance skips
-completed sources, including Spotify no-match and legitimate null years.
+Pending recordings are sent in batches of up to 50 IDs per source request.
+When the hub returns an exact partial failure, retries narrow to the failed
+IDs; ambiguous responses fail the whole batch safely. Current hub provenance
+skips completed sources, including Spotify no-match and legitimate null years.
 Source attempts trigger a final year derivation; restarting also detects
 changed year inputs from provenance. Each failed pair gets at most three
 attempts, waiting 5 then 15 seconds. A rate limit (`429`) or a service outage
