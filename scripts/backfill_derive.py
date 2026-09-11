@@ -44,6 +44,7 @@ PROOF_COLS = ["id", "from_kind", "inputs_hash", "rel", "asserted_by", "deleted_a
 RETRY_DELAYS = (5, 15)
 OUTAGE_LIMIT = 5
 BATCH_SIZE = 50
+SOURCE_BATCH_SIZES = {"first_year": 20}
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -123,8 +124,9 @@ def run(hub, table: str, col: str | None, sleep=None, batch_size: int = BATCH_SI
                 refresh_year.add(row_id)
             pending.append(row_id)
 
-        for start in range(0, len(pending), batch_size):
-            batch = pending[start : start + batch_size]
+        source_batch_size = min(batch_size, SOURCE_BATCH_SIZES.get(source, batch_size))
+        for start in range(0, len(pending), source_batch_size):
+            batch = pending[start : start + source_batch_size]
             unresolved = list(batch)
             attempts_by_id = dict.fromkeys(batch, 0)
             last_errors = {}
