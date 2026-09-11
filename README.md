@@ -101,9 +101,13 @@ can run as `python -u scripts/backfill_derive.py` in a container with httpx
 and `src/core` available. It calls only the hub's pull/derive interfaces.
 `--col title`, `--col deezer_genres`, or `--col mb_tags` narrows the source;
 each also checks/refreshes `first_year`. `--col first_year` checks only years.
-Use `--batch-size N` to tune the request size from 1 to 50; the default is 50.
+Use `--batch-size N` to tune normal source requests from 1 to 50; the default
+is 50. `first_year` is automatically capped at 20 IDs per hub request because
+that derivation also records provenance and must stay inside the hub's SQL
+budget.
 
-Pending recordings are sent in batches of up to 50 IDs per source request.
+Pending recordings are sent in batches of up to 50 IDs per normal source
+request.
 When the hub returns an exact partial failure, retries narrow to the failed
 IDs; ambiguous responses fail the whole batch safely. Current hub provenance
 skips completed sources, including Spotify no-match and legitimate null years.
