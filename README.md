@@ -25,7 +25,6 @@ scripts/
   provision.py       mints R2/Modal tokens; resolves R2_ACCESS_KEY_ID after R2_API_TOKEN
   sync_secrets.py     push .env.tpl -> Modal secret store
   spotify_auth.py     mint/re-mint the Spotify refresh token
-  create_50s_playlist.py  one-off, deleted after migration step 9
 tests/            pytest
 data/raw/         Spotify GDPR export zips (gitignored - personal data, NEVER commit)
 .env.tpl          secrets manifest (1Password op:// refs, committed)
@@ -102,6 +101,7 @@ can run as `python -u scripts/backfill_derive.py` in a container with httpx
 and `src/core` available. It calls only the hub's pull/derive interfaces.
 `--col title`, `--col deezer_genres`, or `--col mb_tags` narrows the source;
 each also checks/refreshes `first_year`. `--col first_year` checks only years.
+Use `--batch-size N` to tune the request size from 1 to 50; the default is 50.
 
 Pending recordings are sent in batches of up to 50 IDs per source request.
 When the hub returns an exact partial failure, retries narrow to the failed
