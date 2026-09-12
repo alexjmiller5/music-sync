@@ -1,4 +1,7 @@
 from datetime import datetime, timezone
+import gzip
+import json
+from copy import deepcopy
 
 import pytest
 
@@ -197,3 +200,53 @@ def test_capture_trims_inbox(settings):
     for call in sp.calls:
         if call[0] == "remove":
             assert "spotify:track:9" not in call[2]
+
+
+@pytest.mark.parametrize("known", [False, True])
+def test_capture_first_write_keeps_resolved_and_expiring_metadata(settings, mocker, known):
+    tr = track("resolved", "Title", "Artist", isrc="USAAA2600001")
+    tr.update(duration_ms=123456, linked_from={"id": "original"})
+    old = {
+        "added_at": "2020-01-01T00:00:00Z",
+        "track": track("old", "Old title", "Old artist", isrc="USAAA2600002"),
+    }
+    sp = FakeSpotify([tr], [old])
+    hub = FakeHub(INBOX, songs=[{"id": "USAAA2600001", "liked": 1}] if known else [])
+    settings.inbox_cap = 1
+    saved = {}
+    before = deepcopy(sp.inbox_items)
+
+    def archive(settings, key, data):
+        assert sp.calls == [] and hub.pushed == []
+        saved[key] = json.loads(gzip.decompress(data))
+
+    mocker.patch("core.archive.put", side_effect=archive)
+    out = capture.capture({"title": "Title", "artist": "Artist"}, sp, hub, settings, NOW)
+    assert out["ok"]
+    source, body = next(iter(saved.items()))
+    assert body == {"playlist_id": "IN", "items": before, "resolved_track": tr}
+    songs = [r for table, rows in hub.pushed if table == "songs" for r in rows]
+    resolved = next(r for r in songs if r["id"] == "USAAA2600001")
+    assert resolved["title"] == "Title" and resolved["duration_ms"] == 123456
+    assert resolved["album"] == "a" and resolved["album_year"] == 2017
+    assert resolved["spotify_ids"] == ["original", "resolved"]
+    assert ("liked" in resolved) is (not known)
+    expired = next(r for r in songs if r["id"] == "USAAA2600002")
+    assert expired["title"] == "Old title" and expired["spotify_ids"] == ["old"]
+    assert ("remove", "IN", ["spotify:track:old"]) in sp.calls
+    edges = [r for table, rows in hub.pushed if table == "provenance" for r in rows]
+    direct = [r for r in edges if r["rel"] == "evidence_of"]
+    assert direct and all(r["from_ref"] == source for r in direct)
+    assert all(r["observed_at"] == "2026-09-08T12:00:00.000Z" for r in direct)
+    origin = next(r for r in edges if r["from_kind"] == "shazam")
+    assert origin["rel"] == "imported_from" and origin["detail"]["created_row"] == int(not known)
+
+
+def test_known_capture_refreshes_metadata_even_when_already_in_inbox(settings):
+    tr = track("observed", "Title", "Artist", isrc="USAAA2600001")
+    sp = FakeSpotify([tr], [{"added_at": "2020-01-01T00:00:00Z", "item": tr}])
+    hub = FakeHub(INBOX, songs=[{"id": "USAAA2600001", "liked": 1, "title": "Stale title"}])
+    assert capture.capture({"title": "Title", "artist": "Artist"}, sp, hub, settings, NOW)["ok"]
+    assert sp.calls == []
+    song = next(r for table, rows in hub.pushed if table == "songs" for r in rows)
+    assert song["title"] == "Title" and "liked" not in song

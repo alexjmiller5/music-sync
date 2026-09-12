@@ -3,8 +3,8 @@
 import dataclasses
 from datetime import datetime, timedelta, timezone
 
-from core import rules
-from core.model import Action, Live, Mirror, Song
+from core import metadata, rules
+from core.model import Action, Live, Membership, Mirror, Song
 
 ORDER = [
     "like",
@@ -42,9 +42,12 @@ def plan(
     undo_days: int = 7,
     today: str | None = None,
     observation_only: bool = False,
+    *,
+    source_ref: str | None = None,
+    market: str | None = None,
 ) -> list[Action]:
     if observation_only:
-        return observe(mirror, live, now)
+        return observe(mirror, live, now, source_ref=source_ref, market=market)
     today = today or now.date().isoformat()
     now_s = _iso(now)
     acts: list[Action] = []
@@ -58,6 +61,12 @@ def plan(
     no_isrc: list[str] = []
     flags: list[str] = []
     rule_flags: list[str] = []
+    observed = metadata.observations(live)
+    evidence = metadata.evidence_by_song(mirror)
+    available = {
+        isrc: metadata.availability(evidence[isrc], items, market)
+        for isrc, items in observed.items()
+    }
 
     # Index earliest observation; decide duplicate repairs after final membership.
     actual = {}
@@ -151,6 +160,10 @@ def plan(
                 )
             )
 
+    acts = metadata.merge_actions(
+        acts, metadata.observation_actions(mirror, live, now, source_ref=source_ref, market=market)
+    )
+
     # un-heart (rule 4): remove from every non-inbox playlist it is in - both a playlist
     # pulled this run (via `actual`) and one skipped this run (via the mirror membership,
     # since `actual` has no entry at all for a playlist whose items weren't fetched)
@@ -232,6 +245,38 @@ def plan(
             )
     liked_effective = (liked_now | set(to_like)) - unhearted
 
+    view = dataclasses.replace(
+        mirror,
+        songs={i: dataclasses.replace(s) for i, s in mirror.songs.items()},
+        memberships=dict(mirror.memberships),
+        captures=set(mirror.captures),
+    )
+    for a in acts:
+        if a.kind == "upsert_song":
+            s = view.songs.get(a.isrc) or Song(a.isrc, 0, None, now_s)
+            view.songs[a.isrc] = dataclasses.replace(s, **a.row)
+        elif a.kind == "upsert_membership":
+            row = {k: v for k, v in a.row.items() if k != "id"}
+            view.memberships[(a.playlist_id, a.isrc)] = Membership(**row)
+        elif a.kind == "delete_membership":
+            view.memberships.pop((a.playlist_id, a.isrc), None)
+        elif a.kind == "edge" and a.row["rel"] == "imported_from":
+            view.captures.add((a.isrc, a.row["from_kind"]))
+
+    def routing_uri(isrc, fallback=None):
+        verified = sorted(tid for tid, ok in available.get(isrc, {}).items() if ok)
+        live_ids = sorted({it.track_id for it in observed.get(isrc, []) if it.track_id})
+        member_ids = sorted(
+            {
+                m.spotify_track_id
+                for m in mirror.memberships.values()
+                if m.isrc == isrc and m.spotify_track_id
+            }
+        )
+        ids = verified or live_ids or ([fallback] if fallback else member_ids)
+        s = view.songs.get(isrc)
+        return f"spotify:track:{ids[0]}" if ids else preferred_uri(s) if s else None
+
     # undo (rule 5)
     cutoff = _iso(now - timedelta(days=undo_days))
     for m in mirror.deleted_memberships:
@@ -243,9 +288,9 @@ def plan(
             and kind_of.get(m.playlist_id) == "curated"
             and (m.deleted_at or "") >= cutoff
             and (m.playlist_id, m.isrc) not in actual
-            and s.spotify_ids
+            and routing_uri(m.isrc, m.spotify_track_id)
         ):
-            uri = preferred_uri(s)
+            uri = routing_uri(m.isrc, m.spotify_track_id)
             acts.append(
                 Action(
                     "add_item",
@@ -297,15 +342,7 @@ def plan(
             )
             actual.pop((pid, it.isrc), None)
 
-    # smart materialization (rule 7), on a mirror view that reflects this run's liked state.
-    # Songs are copied (not shared) so mutating .liked here never touches the caller's mirror.
-    view = Mirror(
-        {isrc: dataclasses.replace(s) for isrc, s in mirror.songs.items()},
-        mirror.playlists,
-        dict(mirror.memberships),
-        [],
-        mirror.captures,
-    )
+    # smart materialization (rule 7), including freshly observed songs and gestures.
     for isrc in liked_effective:
         if isrc in view.songs:
             view.songs[isrc].liked = 1
@@ -326,7 +363,7 @@ def plan(
             continue
         have = {isrc for (q, isrc) in actual if q == pid}
         for isrc in sorted(want - have):
-            uri = preferred_uri(mirror.songs[isrc]) if isrc in mirror.songs else None
+            uri = routing_uri(isrc)
             if not uri:
                 flags.append(f"{p.name}: {isrc} has no Spotify id yet")
                 continue
@@ -373,13 +410,15 @@ def plan(
 
     # unplayable relink (rule 8): inbox is exempt, same as dedupe (rule 9)
     for (pid, isrc), it in list(actual.items()):
-        if it.playable or pid in inbox_ids:
+        if it.playable is not False or pid in inbox_ids:
             continue
-        s = mirror.songs.get(isrc)
-        alt = (
-            s.spotify_ids[0]
-            if s and s.spotify_playable and s.spotify_ids and s.spotify_ids[0] != it.track_id
-            else None
+        alt = next(
+            (
+                tid
+                for tid, ok in sorted(available.get(isrc, {}).items())
+                if ok and tid != it.track_id
+            ),
+            None,
         )
         if alt:
             actual[(pid, isrc)] = dataclasses.replace(
@@ -532,7 +571,14 @@ def plan(
     )
 
 
-def observe(mirror: Mirror, live: Live, now: datetime) -> list[Action]:
+def observe(
+    mirror: Mirror,
+    live: Live,
+    now: datetime,
+    *,
+    source_ref: str | None = None,
+    market: str | None = None,
+) -> list[Action]:
     """Import observations only. Never run enforcement against the review baseline."""
     stamp = _iso(now)
     acts = []
@@ -609,4 +655,6 @@ def observe(mirror: Mirror, live: Live, now: datetime) -> list[Action]:
                 )
             )
         acts.append(Action("upsert_song", isrc=isrc, row=row))
-    return acts
+    return metadata.merge_actions(
+        acts, metadata.observation_actions(mirror, live, now, source_ref=source_ref, market=market)
+    )

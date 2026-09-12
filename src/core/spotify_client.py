@@ -19,7 +19,7 @@ TOKEN_URL = "https://accounts.spotify.com/api/token"
 API = "https://api.spotify.com"
 ITEM_FIELDS = (
     "next,items(added_at,item(id,uri,name,is_local,is_playable,external_ids,"
-    "artists(name),album(name,release_date)))"
+    "duration_ms,linked_from(id),artists(name),album(name,release_date)))"
 )
 MAX_429_RETRIES = 5
 

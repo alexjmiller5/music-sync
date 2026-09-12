@@ -6,10 +6,10 @@ import re
 from uuid import uuid4
 from datetime import datetime
 
-from core import archive
+from core import archive, metadata
 from core import mirror as mirror_mod
 from core.config import Settings
-from core.model import ISRC_RE
+from core.model import Live
 
 _STRIP = re.compile(r"\s+-.*$|\s*[\(\[].*$")
 _PUNCT = re.compile(r"[^\w\s]")
@@ -46,8 +46,9 @@ def capture(payload: dict, spotify, hub, settings: Settings, now: datetime) -> d
             "message": f"Could not find {title} by {artist} on Spotify",
             "isrc": None,
         }
-    isrc = ((tr.get("external_ids") or {}).get("isrc") or "").upper()
-    if not re.match(ISRC_RE, isrc):
+    resolved = mirror_mod.item_from_raw({"track": tr})
+    isrc = resolved.isrc
+    if not isrc:
         return {"ok": False, "message": f"{title} by {artist} has no ISRC on Spotify", "isrc": None}
     m = mirror_mod.load_mirror(hub)
     inbox = next((p for p in m.playlists.values() if p.kind == "inbox"), None)
@@ -61,25 +62,42 @@ def capture(payload: dict, spotify, hub, settings: Settings, now: datetime) -> d
             "isrc": isrc,
         }
     raw_items = spotify.get_playlist_items(inbox.id, settings.spotify_market)
+    source_ref = f"raw/spotify-capture/{now.strftime('%Y-%m-%dT%H%M%S')}-{uuid4().hex}.json.gz"
     archive.put(
         settings,
-        f"raw/spotify-capture/{now.strftime('%Y-%m-%dT%H%M%S')}-{uuid4().hex}.json.gz",
-        gzip.compress(json.dumps({"playlist_id": inbox.id, "items": raw_items}).encode()),
-    )
-    existing = next(
-        (
-            mirror_mod.item_from_raw(r)
-            for r in raw_items
-            if mirror_mod.item_from_raw(r).isrc == isrc
+        source_ref,
+        gzip.compress(
+            json.dumps(
+                {
+                    "playlist_id": inbox.id,
+                    "items": raw_items,
+                    "resolved_track": tr,
+                }
+            ).encode()
         ),
-        None,
+    )
+    observed_items = [mirror_mod.item_from_raw(r) for r in raw_items]
+    existing = next((it for it in observed_items if it.isrc == isrc), None)
+    observations = metadata.observation_actions(
+        m,
+        Live({}, {}, {}, [resolved, *observed_items]),
+        now,
+        source_ref=source_ref,
+        market=settings.spotify_market,
     )
     now_s = _iso(now)
     if existing is None:
         spotify.add_items(inbox.id, [tr["uri"]])
     created = isrc not in m.songs
-    if created:
-        hub.push("songs", [{"id": isrc, "liked": 0, "liked_at": None, "first_seen": now_s}])
+    song_rows = []
+    for a in observations:
+        if a.kind == "upsert_song":
+            row = a.row
+            if a.isrc not in m.songs:
+                row = {"liked": 0, "liked_at": None, "first_seen": now_s, **row}
+            song_rows.append(row)
+    if song_rows:
+        hub.push("songs", song_rows)
     hub.push(
         "playlist_songs",
         [
@@ -90,7 +108,7 @@ def capture(payload: dict, spotify, hub, settings: Settings, now: datetime) -> d
                 "spotify_track_id": existing.track_id if existing else tr["id"],
                 "added_at": existing.added_at if existing else now_s,
                 "deleted_at": None,
-            }
+            },
         ],
     )
     ref = str(payload.get("apple_music_id") or isrc)
@@ -109,7 +127,8 @@ def capture(payload: dict, spotify, hub, settings: Settings, now: datetime) -> d
                     "created_row": 1 if created else 0,
                     "shazam_url": payload.get("shazam_url"),
                 },
-            }
+            },
+            *(a.row for a in observations if a.kind == "edge"),
         ],
     )
     items = sorted(

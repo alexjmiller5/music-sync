@@ -18,6 +18,9 @@ class Song:
     mb_tags: list[str] = field(default_factory=list)
     title: str | None = None
     artists: list[str] = field(default_factory=list)
+    album: str | None = None
+    album_year: int | None = None
+    duration_ms: int | None = None
 
 
 @dataclass
@@ -58,6 +61,7 @@ class Mirror:
     memberships: dict[tuple[str, str], Membership]
     deleted_memberships: list[Membership]
     captures: set[tuple[str, str]]  # (isrc, from_kind)
+    observations: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -66,10 +70,14 @@ class LiveItem:
     track_id: str | None
     uri: str | None
     added_at: str
-    playable: bool
+    playable: bool | None
     is_local: bool
     name: str | None
     artists: list[str]
+    album: str | None = None
+    album_year: int | None = None
+    duration_ms: int | None = None
+    linked_from_id: str | None = None
 
 
 @dataclass
@@ -86,6 +94,7 @@ class Live:
     playlists: dict[str, LivePlaylist]
     liked: dict[str, LiveItem]
     raw: dict
+    observations: list[LiveItem] = field(default_factory=list)
 
 
 @dataclass
