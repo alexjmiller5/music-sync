@@ -94,7 +94,7 @@ git commit -m "fix: preserve observed Spotify metadata during ingestion"
 
 **Files:**
 - Create: `src/core/metadata_replay.py`, `tests/test_metadata_replay.py`
-- Modify: `app.py`, `tests/test_app.py`, `README.md`
+- Modify: `app.py`, `src/core/run.py`, `src/core/capture.py`, `tests/test_app.py`, `tests/test_run.py`, `tests/test_capture.py`, `README.md`
 
 **Interfaces:**
 - Consumes: Task 1's `observation_actions(..., fill_only=True)` and existing `archive.get`, `load_mirror`, `actions.apply`.
@@ -125,7 +125,7 @@ Define `replay_env` in this test file with one existing song missing title, an a
 # The critical semantic boundary: only already-cataloged recordings.
 actions = observation_actions(
     mirror, live, observed_time, source_ref=archive_key,
-    market=settings.spotify_market, fill_only=True,
+    market=live.raw.get("market"), fill_only=True,
 )
 actions = [a for a in actions if a.isrc in mirror.songs]
 ```
