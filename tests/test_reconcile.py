@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from core import reconcile
 from core.model import Live, LiveItem, LivePlaylist, Membership, Mirror, Playlist, Song
 
@@ -48,6 +50,140 @@ def live_pl(pid, name, items, desc=None):
 
 def kinds(actions, kind):
     return [a for a in actions if a.kind == kind]
+
+
+def test_new_song_keeps_observed_metadata_without_derivation():
+    live = Live({}, {"A": item("A", track_id="observed")}, {})
+    actions = reconcile.plan(Mirror({}, {}, {}, [], set()), live, NOW)
+    row = next(a.row for a in actions if a.kind == "upsert_song")
+    assert row["title"] == "n"
+    assert row["artists"] == ["a"]
+    assert row["spotify_ids"] == ["observed"]
+
+
+@pytest.mark.parametrize("observation_only", [False, True])
+def test_first_song_write_and_fifo_keep_metadata_in_both_paths(observation_only):
+    m = Mirror({}, {"IN": pl("IN", "inbox", "inbox")}, {}, [], set())
+    live = Live({"IN": live_pl("IN", "inbox", [item("A")])}, {}, {})
+    acts = reconcile.plan(
+        m,
+        live,
+        NOW,
+        inbox_cap=0,
+        observation_only=observation_only,
+        source_ref="raw/spotify-pull/test.json.gz",
+        market="US",
+    )
+    row = kinds(acts, "upsert_song")[0].row
+    assert row["title"] == "n" and row["spotify_ids"] == ["tA"]
+    assert row["liked"] == 0 and row["first_seen"] == "2026-09-08T12:00:00.000Z"
+    assert bool(kinds(acts, "remove_item")) is (not observation_only)
+    assert any(a.row["rel"] == "evidence_of" for a in kinds(acts, "edge"))
+
+
+def test_first_import_enters_smart_pool_using_observed_id():
+    m = Mirror({}, {"SM": pl("SM", "pool", "smart", {"v": 1})}, {}, [], set())
+    live = Live({"SM": live_pl("SM", "pool", [])}, {"A": item("A", "observed")}, {})
+    acts = reconcile.plan(m, live, NOW)
+    assert [(a.playlist_id, a.uri) for a in kinds(acts, "add_item")] == [
+        ("SM", "spotify:track:observed")
+    ]
+    assert m.songs == {}
+
+
+def test_existing_membership_id_is_usable_without_catalog_aliases():
+    m = Mirror(
+        {"A": song("A", ids=[])},
+        {"SM": pl("SM", "pool", "smart", {"v": 1})},
+        {("CU", "A"): Membership("CU", "A", "member-id", T)},
+        [],
+        set(),
+    )
+    li = LiveItem("A", None, None, T, None, False, None, [])
+    acts = reconcile.plan(m, Live({"SM": live_pl("SM", "pool", [])}, {"A": li}, {}), NOW)
+    assert [a.uri for a in kinds(acts, "add_item")] == ["spotify:track:member-id"]
+
+
+def test_undo_uses_retained_membership_id_without_alias_search():
+    m = Mirror(
+        {"A": song("A", liked=0, ids=[])},
+        {"CU": pl("CU", "curated", "curated")},
+        {},
+        [Membership("CU", "A", "undo-id", T, "2026-09-07T00:00:00.000Z")],
+        set(),
+    )
+    li = LiveItem("A", None, None, T, None, False, None, [])
+    acts = reconcile.plan(m, Live({"CU": live_pl("CU", "curated", [])}, {"A": li}, {}), NOW)
+    assert [a.uri for a in kinds(acts, "add_item")] == ["spotify:track:undo-id"]
+
+
+@pytest.mark.parametrize("availability", [None, False])
+def test_unknown_and_unverified_alias_never_trigger_relink(availability):
+    m = Mirror(
+        {"A": song("A", ids=["unverified", "actual"])},
+        {"CU": pl("CU", "curated", "curated")},
+        {},
+        [],
+        set(),
+    )
+    it = item("A", "actual", playable=availability)
+    acts = reconcile.plan(m, Live({"CU": live_pl("CU", "curated", [it])}, {"A": it}, {}), NOW)
+    assert not kinds(acts, "add_item") and not kinds(acts, "remove_item")
+    assert bool(kinds(acts, "flag")) is (availability is False)
+
+
+@pytest.mark.parametrize("market, expected", [("US", ["spotify:track:verified"]), ("GB", [])])
+def test_relink_uses_retained_positive_evidence_only_in_observed_market(market, expected):
+    m = Mirror(
+        {"A": song("A", ids=["legacy", "actual", "verified"])},
+        {"CU": pl("CU", "curated", "curated")},
+        {},
+        [],
+        set(),
+        observations=[
+            {
+                "id": "observation",
+                "to_ref": "A",
+                "detail": {
+                    "field": "spotify_playable",
+                    "track_id": "verified",
+                    "value": True,
+                    "market": "US",
+                },
+            }
+        ],
+    )
+    it = item("A", "actual", playable=False)
+    acts = reconcile.plan(
+        m, Live({"CU": live_pl("CU", "curated", [it])}, {"A": it}, {}), NOW, market=market
+    )
+    assert [a.uri for a in kinds(acts, "add_item")] == expected
+
+
+def test_display_representative_does_not_choose_unavailable_routing_target():
+    from core.mirror import load_mirror
+    from tests.test_metadata import observe, live as metadata_live, raw, persisted, ISRC
+    from tests.test_mirror import FakeHub
+
+    m = load_mirror(FakeHub(persisted(observe(state=metadata_live(raw("display"))))))
+    m.playlists["SM"] = pl("SM", "pool", "smart", {"v": 1})
+    display = item(ISRC, "display", playable=False)
+    good = item(ISRC, "playable", playable=True)
+    state = Live({"SM": live_pl("SM", "pool", [])}, {ISRC: display}, {}, [display, good])
+    acts = reconcile.plan(m, state, NOW, market="US", source_ref="raw/spotify-pull/next.json.gz")
+    assert [a.uri for a in kinds(acts, "add_item")] == ["spotify:track:playable"]
+    title = next(a.row for a in kinds(acts, "edge") if a.row["detail"].get("field") == "title")
+    assert title["detail"]["track_id"] == "display"
+
+
+def test_smart_pool_does_not_readd_newly_observed_unhearted_song():
+    m = Mirror({"A": song("A")}, {"SM": pl("SM", "pool", "smart", {"v": 1})}, {}, [], set())
+    acts = reconcile.plan(
+        m, Live({"SM": live_pl("SM", "pool", [item("A", "new-alias")])}, {}, {}), NOW
+    )
+    assert not kinds(acts, "add_item") and not kinds(acts, "like")
+    assert [a.uri for a in kinds(acts, "remove_item")] == ["spotify:track:new-alias"]
+    assert any(a.row.get("spotify_ids") == ["tA", "new-alias"] for a in kinds(acts, "upsert_song"))
 
 
 def base():
@@ -250,7 +386,7 @@ def test_unplayable_relink_or_flag():
             "SM": live_pl("SM", "pop", []),
             "IN": live_pl("IN", "new songs", []),
         },
-        {"A": item("A"), "B": item("B")},
+        {"A": item("A", "tA2"), "B": item("B", playable=False)},
         {},
     )
     acts = reconcile.plan(m, live, NOW)

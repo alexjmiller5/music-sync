@@ -68,6 +68,12 @@ runs in tests, locally, or on any future platform.
 - Dry-run responses include structured `planned` actions with recording and
   playlist identity, reason and proposed changes; `applied` is confirmed work
   only. No Spotify/hub/archive/Notion writes occur during dry runs.
+- Observed Spotify base fields use `metadata.observation_actions` in reconcile,
+  observation import and capture. Display fields retain per-field archive
+  evidence (`takeout` / `evidence_of`); album and year form one release pair.
+  Playability evidence is per track and market. Missing availability is unknown;
+  legacy alias lists alone never authorize a replacement. Capture archives the
+  full `resolved_track` with its pre-write inbox items.
 - **life-data is written ONLY by this app.** Agents and the user write
   Spotify directly (the `spotify_player` CLI via the `spotify` skill, or the
   Spotify app itself) - never life-data. The hourly reconcile is what mirrors
@@ -85,6 +91,7 @@ src/core/
   spotify_client.py          Spotify Web API client (post-2026-02 Development Mode endpoint set)
   hub.py                     life-data hub HTTP client (pull, push, derive)
   mirror.py                  load the mirror (songs, playlists, playlist_songs) from the hub
+  metadata.py                pure observed base-field patches and per-field archive evidence
   rules.py                   rule JSON validation, -> SQL, -> description
   reconcile.py                pure diff: (mirror, live) -> list of actions
   actions.py                 apply actions to Spotify and the hub; run log

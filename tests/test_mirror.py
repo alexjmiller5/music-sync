@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from core import mirror
 from core.model import Playlist
 
@@ -128,6 +130,68 @@ def test_item_from_raw_validates_isrc_and_local():
         },
     }
     assert mirror.item_from_raw(local).isrc is None and mirror.item_from_raw(local).is_local
+
+
+@pytest.mark.parametrize("envelope", ["item", "track"])
+@pytest.mark.parametrize("playable", [None, False, True])
+def test_normalize_metadata_envelopes_without_inventing_availability(envelope, playable):
+    track = {
+        "id": "observed",
+        "external_ids": {"isrc": " usaaa2600001 "},
+        "name": "Observed",
+        "artists": [{"name": "Artist"}],
+        "album": {"name": "Release", "release_date": "2018-02-03"},
+        "duration_ms": 123456,
+        "linked_from": {"id": "original"},
+    }
+    if playable is not None:
+        track["is_playable"] = playable
+    it = mirror.item_from_raw({envelope: track})
+    assert it.playable is playable
+    assert (it.album, it.album_year, it.duration_ms, it.linked_from_id) == (
+        "Release",
+        2018,
+        123456,
+        "original",
+    )
+    assert it.isrc == "USAAA2600001"
+
+
+def test_load_mirror_retains_base_fields_and_only_direct_observation_provenance():
+    observation = {
+        "id": "observation",
+        "from_kind": "takeout",
+        "from_ref": "raw/spotify-pull/x.json.gz",
+        "to_kind": "songs",
+        "to_ref": "USAAA2600001",
+        "rel": "evidence_of",
+        "asserted_by": "music-sync",
+        "observed_at": "2026-09-12T12:00:00.000Z",
+        "detail": '{"kind":"spotify_observation","field":"title","track_id":"observed","value":"Title"}',
+    }
+    m = mirror.load_mirror(
+        FakeHub(
+            {
+                "songs": [
+                    {
+                        "id": "USAAA2600001",
+                        "album": "Release",
+                        "album_year": 2018,
+                        "duration_ms": 123456,
+                    }
+                ],
+                "provenance": [
+                    observation,
+                    {**observation, "id": "deleted", "deleted_at": "t"},
+                    {**observation, "id": "legacy", "rel": "derived_from"},
+                ],
+            }
+        )
+    )
+    s = m.songs["USAAA2600001"]
+    assert (s.album, s.album_year, s.duration_ms) == ("Release", 2018, 123456)
+    assert [r["id"] for r in m.observations] == ["observation"]
+    assert m.observations[0]["detail"]["track_id"] == "observed"
 
 
 def test_pull_live_skips_unchanged_snapshots_and_foreign_playlists():
