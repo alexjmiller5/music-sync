@@ -39,6 +39,18 @@ def capture(payload: dict, spotify, hub, settings: Settings, now: datetime) -> d
     title, artist = (payload.get("title") or "").strip(), (payload.get("artist") or "").strip()
     if not title or not artist:
         return {"ok": False, "message": "title and artist required", "isrc": None}
+    pending = archive.get(settings, archive.PENDING_KEY)
+    if pending and json.loads(gzip.decompress(pending)):
+        return {
+            "ok": False,
+            "message": "Pending recovery; retry after the original operation completes",
+            "isrc": None,
+        }
+    from core.hub import Hub
+    from core.spotify_client import SpotifyClient
+
+    spotify = spotify or SpotifyClient(settings)
+    hub = hub or Hub(settings.life_hub_url, settings.life_hub_token)
     tr = best_match(title, artist, spotify.search_track(title, artist, settings.spotify_market))
     if not tr:
         return {
@@ -54,13 +66,6 @@ def capture(payload: dict, spotify, hub, settings: Settings, now: datetime) -> d
     inbox = next((p for p in m.playlists.values() if p.kind == "inbox"), None)
     if not inbox:
         return {"ok": False, "message": "no inbox playlist in life-data", "isrc": isrc}
-    pending = archive.get(settings, archive.PENDING_KEY)
-    if pending and json.loads(gzip.decompress(pending)):
-        return {
-            "ok": False,
-            "message": "Pending reconcile recovery; retry after reconciliation",
-            "isrc": isrc,
-        }
     raw_items = spotify.get_playlist_items(inbox.id, settings.spotify_market)
     source_ref = f"raw/spotify-capture/{now.strftime('%Y-%m-%dT%H%M%S')}-{uuid4().hex}.json.gz"
     archive.put(

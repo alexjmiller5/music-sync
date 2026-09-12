@@ -49,6 +49,13 @@ runs in tests, locally, or on any future platform.
   operations and preserves the pending batches; resume before taking a new
   baseline. Do not remove retry evidence manually. Capture cannot overtake a
   pending reconcile. An observation import may resume without enabling writes.
+- Metadata-only replay uses the same pending key with `intent=metadata_replay`.
+  Reconcile and capture check pending intent before Spotify setup; replay
+  resumes only its own archive key and observation time, through the serialized
+  worker. It defaults to dry-run and explicit boolean false permits apply
+  without enabling enforcement. It fills existing songs only and checkpoints
+  remaining provenance with song patches. Retained source market is used only
+  when explicitly present in the archive; otherwise evidence market is null.
 - R2 object reads/writes use boto3's S3 API with bucket-scoped permissions.
   `R2_ACCESS_KEY_ID` is the token ID; the S3 secret is derived in memory as
   SHA-256 of `R2_API_TOKEN`. Only `NoSuchKey` means a missing object; other
@@ -94,6 +101,7 @@ src/core/
   hub.py                     life-data hub HTTP client (pull, push, derive)
   mirror.py                  load the mirror (songs, playlists, playlist_songs) from the hub
   metadata.py                pure observed base-field patches and per-field archive evidence
+  metadata_replay.py         metadata-only recovery from one retained Spotify archive
   rules.py                   rule JSON validation, -> SQL, -> description
   reconcile.py                pure diff: (mirror, live) -> list of actions
   actions.py                 apply actions to Spotify and the hub; run log
