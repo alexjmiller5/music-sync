@@ -152,9 +152,11 @@ Spotify by that ISRC and accepts only a candidate carrying the same ISRC.
 Without one, matching requires normalized exact title and artist identity,
 including version words such as live or remix.
 
-The selected Spotify track and payload identity are stored before Spotify or
-hub side effects. A successful capture is acknowledged only after that state
-is replaced by a durable receipt in Music Sync's R2:
+Only a selected Spotify track with a valid ISRC, track ID and URI is stored
+with the payload identity before Spotify or hub side effects. An incomplete
+candidate is not stored, so the same capture UUID can resolve it on a later
+retry. A successful capture is acknowledged only after that state is replaced
+by a durable receipt in Music Sync's R2:
 
 ```json
 {"ok":true,"capture_id":"3d2ed84e-9413-4a4a-a7e1-c596201bf84d","isrc":"USAAA2600001"}

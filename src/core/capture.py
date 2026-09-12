@@ -40,7 +40,7 @@ def resolve_track(payload: dict, spotify, settings: Settings) -> dict | None:
 
         spotify = SpotifyClient(settings)
     if isrc := payload.get("isrc"):
-        return next(
+        track = next(
             (
                 track
                 for track in spotify.search_isrc(isrc, settings.spotify_market)
@@ -48,7 +48,14 @@ def resolve_track(payload: dict, spotify, settings: Settings) -> dict | None:
             ),
             None,
         )
-    return best_match(title, artist, spotify.search_track(title, artist, settings.spotify_market))
+    else:
+        track = best_match(
+            title, artist, spotify.search_track(title, artist, settings.spotify_market)
+        )
+    if track is None:
+        return None
+    resolved = mirror_mod.item_from_raw({"track": track})
+    return track if resolved.isrc and resolved.track_id and resolved.uri else None
 
 
 def capture(

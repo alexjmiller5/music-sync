@@ -299,6 +299,37 @@ def test_receipt_failure_retry_keeps_first_selected_recording(capture_api, setti
     ]
 
 
+def test_incomplete_selection_is_not_pinned_and_later_retry_can_resolve(capture_api, monkeypatch):
+    from core import capture_clients, hub, spotify_client
+    from tests.test_capture import FakeHub, FakeSpotify, INBOX, track
+
+    post, objects = capture_api
+    token = issue_capture_token(post)["token"]
+    spotify = FakeSpotify([track("a", "Song", "Artist", isrc=None)])
+    fake_hub = FakeHub(INBOX)
+    monkeypatch.setattr(spotify_client, "SpotifyClient", lambda settings: spotify)
+    monkeypatch.setattr(hub, "Hub", lambda *args: fake_hub)
+
+    first = post("/capture-consumer", CONSUMER_BODY, token)
+
+    assert first.status_code == 422
+    assert not any(key.startswith(capture_clients.RECEIPTS_PREFIX) for key in objects)
+    assert spotify.calls == [] and fake_hub.pushed == []
+
+    spotify.tracks = [track("a", "Song", "Artist", isrc="USAAA2600001")]
+    retry = post("/capture-consumer", CONSUMER_BODY, token)
+
+    assert retry.status_code == 200
+    assert retry.json() == {"ok": True, "capture_id": CAPTURE_ID, "isrc": "USAAA2600001"}
+    assert spotify.searches == [
+        ("metadata", "Song", "Artist", "US"),
+        ("metadata", "Song", "Artist", "US"),
+    ]
+    assert [call for call in spotify.calls if call[0] == "add"] == [
+        ("add", "IN", ["spotify:track:a"])
+    ]
+
+
 @pytest.fixture
 def replay_client(settings, replay_env, monkeypatch):
     import asyncio
