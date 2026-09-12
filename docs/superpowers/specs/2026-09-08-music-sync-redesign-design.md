@@ -2,6 +2,9 @@
 
 **Date:** 2026-09-08
 **Status:** approved in chat, awaiting written review
+**Metadata amendment:** [Preserve observed Spotify metadata](2026-09-12-observed-spotify-metadata-design.md)
+records the approved ownership correction; its detailed written design is
+awaiting review and is not yet implemented.
 **Supersedes:** the GDPR-export → Notion sandbox prototype in this repo (everything under `src/core/` except `spotify_client.py`, all `scripts/`, `sandbox_config.json`).
 
 ## 1. What this is
