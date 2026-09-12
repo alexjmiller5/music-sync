@@ -73,6 +73,8 @@ patch = {
 
 Union aliases even during fill-only recovery; keep display representative separate from choosing a currently known playable target. An observed unavailable alias must not downgrade a different playable alias. Unknown must not enter the unplayable-relink branch. Relinking requires a positively observed playable alternative, never a legacy unverified search alias. Existing live/membership IDs remain usable for normal routing and undo.
 
+Coherent album replacement protects existing release facts. When both existing album fields are empty, retain either supplied initial half without inventing the other; never combine retained and newly observed halves. Store observation time inside provenance `detail.observed_at`, not a new top-level column.
+
 Metadata actions must merge into the FIRST new-song write, not follow a skeletal insert. Reconciliation must include freshly observed/new songs in its effective rule view and choose IDs from that view; do not let this inclusion change unheart precedence. Store raw source_ref once per pull before planning, carry it into checkpointed provenance, and leave pending intent intact on failure. Dry runs may calculate a reference but must not create an archive or provenance rows externally.
 
 Capture archives `resolved_track` alongside the pre-write inbox payload before Spotify mutation, normalizes both through the same helper, and saves metadata for already-known as well as new songs. Capture origin edges remain unchanged and distinct from field evidence. Preserve metadata for observed inbox items that are about to age out. Do not broaden this task into the unrelated capture retry/FIFO repair backlog.

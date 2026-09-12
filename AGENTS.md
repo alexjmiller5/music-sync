@@ -70,7 +70,9 @@ runs in tests, locally, or on any future platform.
   only. No Spotify/hub/archive/Notion writes occur during dry runs.
 - Observed Spotify base fields use `metadata.observation_actions` in reconcile,
   observation import and capture. Display fields retain per-field archive
-  evidence (`takeout` / `evidence_of`); album and year form one release pair.
+  evidence (`takeout` / `evidence_of`, timestamp in `detail.observed_at`).
+  Album and year form one release pair; an initial partial pair is retained
+  without combining it with a later partial observation.
   Playability evidence is per track and market. Missing availability is unknown;
   legacy alias lists alone never authorize a replacement. Capture archives the
   full `resolved_track` with its pre-write inbox items.

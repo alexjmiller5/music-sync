@@ -69,7 +69,7 @@ def observation_actions(
         profiles = [r for r in by_song[isrc] if r["detail"]["field"] in DISPLAY_FIELDS]
         previous = max(
             profiles,
-            key=lambda r: (r["observed_at"], r["detail"]["field"] == "title", r["id"]),
+            key=lambda r: (r["detail"]["observed_at"], r["detail"]["field"] == "title", r["id"]),
             default=None,
         )
         representative = previous["detail"]["track_id"] if previous else None
@@ -89,10 +89,9 @@ def observation_actions(
             "album_year": chosen.album_year,
             "duration_ms": chosen.duration_ms,
         }
-        # An album is a release pair. Recovery cannot combine a retained half with a new half.
-        if not (present(chosen.album) and present(chosen.album_year)) or (
-            fill_only and (present(existing.get("album")) or present(existing.get("album_year")))
-        ):
+        # Keep an initial partial release, but never mix it with a later observation.
+        has_album = present(existing.get("album")) or present(existing.get("album_year"))
+        if has_album and (fill_only or not (present(chosen.album) and present(chosen.album_year))):
             observed.pop("album")
             observed.pop("album_year")
         patch = {
@@ -139,8 +138,8 @@ def observation_actions(
                 "to_ref": isrc,
                 "rel": "evidence_of",
                 "asserted_by": "music-sync",
-                "observed_at": stamp,
                 "detail": {
+                    "observed_at": stamp,
                     "kind": "spotify_observation",
                     "field": field,
                     "value": value,
