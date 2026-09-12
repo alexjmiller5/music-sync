@@ -8,7 +8,7 @@ in Spotify from rules over that catalog, deployed on
 ## Layout
 
 ```
-app.py            Modal shim - one serialized worker, hourly trigger, /reconcile and /capture
+app.py            Modal shim - one serialized worker, hourly trigger and HTTPS endpoints
 src/core/         business logic (plain Python, portable, no Modal imports)
   spotify_client.py  Spotify Web API client (post-2026-02 Development Mode endpoint set)
   hub.py              life-data hub HTTP client (pull, push, derive)
@@ -18,6 +18,7 @@ src/core/         business logic (plain Python, portable, no Modal imports)
   actions.py          apply actions to Spotify and the hub; run log
   flags.py            batch flags into one Notion Chore task
   capture.py           /capture: resolve a Shazam result, add to inbox, record the edge
+  capture_clients.py   capture-only credentials and idempotent delivery receipts
   config.py           Settings (env vars only)
   model.py             dataclasses shared across core
   archive.py           archive raw pulls through the life-data file API
@@ -56,8 +57,9 @@ full event table.
 
 ## Endpoints
 
-Both require Modal proxy auth (`Modal-Key` / `Modal-Secret` headers, minted
-in the Modal dashboard under Settings -> Proxy Auth Tokens).
+`/reconcile`, the legacy capture endpoint and capture-client administration
+require Modal proxy auth (`Modal-Key` / `Modal-Secret` headers). The consumer
+capture endpoint uses an app-issued Bearer token instead.
 
 **`POST /reconcile`** - runs the reconciler on demand (same logic as the
 hourly cron). Body:
@@ -127,6 +129,55 @@ Response: `{"ok": true, "message": "<title> by <artist> added to new songs", "is
 on success, or `{"ok": false, "message": "..."}` with a flag filed to Notion
 when the track can't be matched on Spotify. An expired Spotify refresh token
 returns `503` and also files a flag.
+
+**`POST capture-consumer endpoint`** - the endpoint URL labeled
+`capture-consumer` in Modal deploy output. It does not require Modal provider
+credentials. Send `Authorization: Bearer <capture-token>` and exactly these
+JSON fields:
+
+```json
+{
+  "capture_id": "3d2ed84e-9413-4a4a-a7e1-c596201bf84d",
+  "title": "...",
+  "artist": "...",
+  "apple_music_id": "...",
+  "shazam_url": "..."
+}
+```
+
+All fields are strings, `capture_id` is a UUID, and `title` and `artist` are
+nonempty. A successful capture is acknowledged only after its receipt is
+stored in Music Sync's R2:
+
+```json
+{"ok":true,"capture_id":"3d2ed84e-9413-4a4a-a7e1-c596201bf84d","isrc":"USAAA2600001"}
+```
+
+Repeating the same client, capture UUID and payload replays that receipt
+without repeating the Spotify capture. Reusing the UUID with a changed payload
+returns `409`. Missing, invalid or revoked credentials return `401`; malformed
+requests return `422`; storage or capture availability failures return `503`.
+Only a response with HTTP 200, `ok: true`, the matching `capture_id` and a
+nonempty `isrc` is a delivery acknowledgement.
+
+**`POST capture-access endpoint`** - the endpoint URL labeled `capture-access`
+in Modal deploy output. It requires the existing Modal proxy-auth headers.
+Issue a client:
+
+```json
+{"action":"issue","label":"phone"}
+```
+
+The response is `{"ok":true,"client_id":"<uuid>","token":"<capture-token>"}`.
+The token is shown only in this response. Revoke that client without affecting
+other clients:
+
+```json
+{"action":"revoke","client_id":"<uuid>"}
+```
+
+The response is `{"ok":true,"revoked":true}`. Store the consumer endpoint URL
+and returned token in the app's supported configuration and Keychain.
 
 ## Commands
 
@@ -205,16 +256,21 @@ still apply). The live catalog is not asserted to have changed: follow the
    App credentials are never shared with Derivations or a terminal client.
    Spotify Development Mode apps still share their developer account quota
    ([Spotify quota policy](https://developer.spotify.com/blog/2026-07-23-web-api-quota-updates)).
-3. **Modal proxy-auth token for the Shazam shortcut** - minted once in the
+3. **Modal proxy-auth token for the legacy Shazam shortcut** - minted once in the
    Modal dashboard under Settings -> Proxy Auth Tokens, stored as `MODAL_KEY`
    / `MODAL_SECRET` in `iOS Shortcuts ENV`. The shortcut posts to `/capture`
    with those headers.
-4. **`op-project-bootstrap`** - fills the `Music Sync ENV` 1Password item and
+4. **Consumer capture enrollment** - call the deployed `capture-access`
+   endpoint with the operator's Modal proxy-auth headers and
+   `{"action":"issue","label":"<device>"}`. Configure the app with the
+   `capture-consumer` endpoint URL and the one-time returned token. The app
+   stores the token in Keychain; it never receives Modal or R2 credentials.
+5. **`op-project-bootstrap`** - fills the `Music Sync ENV` 1Password item and
    mints the Modal CI token, both via `scripts/provision.py`:
    ```
    op-project-bootstrap ~/Desktop/coding/active-projects/music-sync/.env.tpl --repo alexjmiller5/music-sync
    ```
-5. **Deploy** - push to `main`; CI reads the project's own Modal credential.
+6. **Deploy** - push to `main`; CI reads the project's own Modal credential.
 
 ## Secrets
 
@@ -284,7 +340,8 @@ after a failed run are reconciled on the subsequent fresh run. A persistently
 failing operation requires operator attention; do not delete pending evidence
 or advance the mirror to bypass it.
 
-Recovery checkpoints use the project-owned `music-sync-state` R2 bucket.
+Recovery checkpoints, capture-client credential hashes and delivery receipts
+use the project-owned `music-sync-state` R2 bucket.
 Retained raw pulls and captures use the life-data `/v1/files/` API with
 scoped grants for `raw/spotify-pull/` and `raw/spotify-capture/`.
 
@@ -298,6 +355,9 @@ existing read/write token, populate its ID without reminting it. See
 Only `NoSuchKey` means an absent object; bucket, permission, transport and
 incomplete-read failures stop the flow. Keep `music-sync/` outside raw archive
 lifecycle expiration, and reserve its pending object for this one worker/account.
+The credential registry is `music-sync/capture-clients.json.gz`; receipts are
+stored below `music-sync/capture-receipts/<client-id>/<capture-id>.json.gz`.
+Tokens are independently random and only their SHA-256 hashes are stored.
 
 ### Without 1Password
 
