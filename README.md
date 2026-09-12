@@ -162,9 +162,9 @@ is replaced by a durable receipt in Music Sync's R2:
 
 Repeating the same client, capture UUID and payload resumes the stored track or
 replays its completed receipt without selecting a different recording. The
-optional ISRC participates in payload identity. Reusing the UUID with a changed payload
-returns `409`. Missing, invalid or revoked credentials return `401`; malformed
-requests return `422`; storage or capture availability failures return `503`.
+optional ISRC participates in payload identity. Reusing the UUID with a changed
+payload returns `409`. Missing, invalid or revoked credentials return `401`;
+malformed requests return `422`; storage or capture availability failures return `503`.
 Only a response with HTTP 200, `ok: true`, the matching `capture_id` and a
 nonempty `isrc` is a delivery acknowledgement.
 

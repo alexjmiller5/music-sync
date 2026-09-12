@@ -64,8 +64,8 @@ runs in tests, locally, or on any future platform.
   without enabling enforcement. It fills existing songs only and checkpoints
   remaining provenance with song patches. Retained source market is used only
   when explicitly present in the archive; otherwise evidence market is null.
-- Consumer capture accepts the original five required string fields plus an
-  optional ISRC. A supplied ISRC is normalized, searched directly and must
+- Consumer capture accepts five required string fields plus an optional ISRC.
+  A supplied ISRC is normalized, searched directly and must
   match the returned recording. Without one, capture requires normalized exact
   title and artist identity; it never strips version suffixes or accepts an
   artist-free title match.
