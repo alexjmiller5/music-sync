@@ -11,13 +11,42 @@ PLAYLISTS = json.loads((FIX / "live_playlists.json").read_text())
 ITEMS = json.loads((FIX / "live_items.json").read_text())
 LIKED = json.loads((FIX / "live_liked.json").read_text())
 
+# Supported provenance columns used by Music Sync, independent of production projections.
+PROVENANCE_COLUMNS = {
+    "id",
+    "from_kind",
+    "from_ref",
+    "to_kind",
+    "to_ref",
+    "rel",
+    "asserted_by",
+    "detail",
+    "updated_at",
+    "deleted_at",
+}
+
 
 class FakeHub:
     def __init__(self, tables):
         self.tables = tables
 
     def pull(self, table, columns, since=""):
+        if table == "provenance":
+            assert not set(columns) - PROVENANCE_COLUMNS, "unknown provenance projection"
         return [{c: r.get(c) for c in columns} for r in self.tables.get(table, [])]
+
+    def push(self, table, rows):
+        for row in rows:
+            if table == "provenance":
+                assert not row.keys() - PROVENANCE_COLUMNS, "unknown provenance write"
+            existing = next(
+                (r for r in self.tables.setdefault(table, []) if r["id"] == row["id"]), None
+            )
+            if existing is None:
+                self.tables[table].append(dict(row))
+            else:
+                existing.update(row)
+        return {"upserted": len(rows), "rejected": []}
 
 
 class FakeSpotify:
@@ -166,8 +195,7 @@ def test_load_mirror_retains_base_fields_and_only_direct_observation_provenance(
         "to_ref": "USAAA2600001",
         "rel": "evidence_of",
         "asserted_by": "music-sync",
-        "observed_at": "2026-09-12T12:00:00.000Z",
-        "detail": '{"kind":"spotify_observation","field":"title","track_id":"observed","value":"Title"}',
+        "detail": '{"kind":"spotify_observation","field":"title","track_id":"observed","value":"Title","observed_at":"2026-09-12T12:00:00.000Z"}',
     }
     m = mirror.load_mirror(
         FakeHub(
@@ -192,6 +220,7 @@ def test_load_mirror_retains_base_fields_and_only_direct_observation_provenance(
     assert (s.album, s.album_year, s.duration_ms) == ("Release", 2018, 123456)
     assert [r["id"] for r in m.observations] == ["observation"]
     assert m.observations[0]["detail"]["track_id"] == "observed"
+    assert m.observations[0]["detail"]["observed_at"] == "2026-09-12T12:00:00.000Z"
 
 
 def test_pull_live_skips_unchanged_snapshots_and_foreign_playlists():

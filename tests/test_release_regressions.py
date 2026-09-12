@@ -917,7 +917,6 @@ def test_direct_imports_keep_hub_timestamp_fallback(settings, archive_store, flo
             "songs",
             "playlist_songs",
             "provenance",
-            "provenance",
             "playlist_songs",
         ]
     else:
