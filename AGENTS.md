@@ -88,9 +88,18 @@ runs in tests, locally, or on any future platform.
   Spotify app itself) - never life-data. The hourly reconcile is what mirrors
   those Spotify changes into the catalog.
 - Metadata backfill uses the hub's derivation API and reuses provenance.
+  Only Deezer, MusicBrainz and first_year are enrichment targets; album_year
+  remains an observed input. Completion requires actual current rows and source
+  proofs, not derived counts. Empty/partial results remain unresolved.
   Structured rate limits defer the source immediately; `retry_at` in the
   summary is the earliest Unix timestamp for resuming it. Other sources
   continue, and failed/deferred work never counts as complete.
+- `metadata.require_observed_contract` gates fresh and pending mutations,
+  capture, replay apply and backfill. All seven Spotify base properties must
+  exist without derivation bindings. Dry previews remain available.
+  Live cutover is required; this code does not establish remote catalog state.
+  Follow `docs/observed-metadata-rollout.md` with deployment/capture downtime
+  approval, preserve historical provenance options and leave cron disabled.
 
 ## Layout
 

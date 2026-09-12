@@ -81,6 +81,11 @@ class FakeSpotify:
 
 
 class FakeHub:
+    def catalog(self):
+        from tests.test_metadata_contract import catalog
+
+        return catalog()
+
     def __init__(self, playlists, songs=(), memberships=()):
         self.tables = {
             "playlists": playlists,

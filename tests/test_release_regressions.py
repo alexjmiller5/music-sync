@@ -32,6 +32,11 @@ def raw(isrc=A, tid="a", added=T, playable=True):
 
 
 class Store:
+    def catalog(self):
+        from tests.test_metadata_contract import catalog
+
+        return catalog()
+
     def __init__(self, kind="curated", liked=1, member=True):
         self.tables = {
             "songs": {
@@ -173,6 +178,8 @@ def test_mixed_hub_patches_preserve_identity_and_explicit_null():
     bodies = []
 
     def handler(req):
+        if req.url.path == "/v1/catalog":
+            return httpx.Response(200, json=store.catalog())
         body = json.loads(req.content)
         bodies.append(body)
         # The live worker rejects missing/null updated_at before catalog validation.
@@ -651,6 +658,8 @@ def test_observation_import_meets_hub_datetime_contract_and_recovers(
     sp.liked = [raw(added=liked_at)]
 
     def handler(req):
+        if req.url.path == "/v1/catalog":
+            return httpx.Response(200, json=store.catalog())
         body = json.loads(req.content)
         table = body["table"]
         if req.url.path.endswith("/pull"):
@@ -814,6 +823,8 @@ def test_retry_timestamp_survives_restart_and_preserves_newer_edit(
     mocker.patch.object(run.archive, "put", side_effect=put)
 
     def handler(req):
+        if req.url.path == "/v1/catalog":
+            return httpx.Response(200, json=store.catalog())
         nonlocal interrupted
         body = json.loads(req.content)
         table = body["table"]
@@ -893,6 +904,8 @@ def test_direct_imports_keep_hub_timestamp_fallback(settings, archive_store, flo
     received = []
 
     def handler(req):
+        if req.url.path == "/v1/catalog":
+            return httpx.Response(200, json=store.catalog())
         body = json.loads(req.content)
         table = body["table"]
         if req.url.path.endswith("/pull"):
