@@ -8,3 +8,4 @@ __pycache__/
 data/
 sandbox_config.json
 .DS_Store
+.worktrees/
