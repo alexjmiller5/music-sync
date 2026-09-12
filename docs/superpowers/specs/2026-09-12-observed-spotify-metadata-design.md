@@ -59,6 +59,8 @@ No LLM shall supply these facts.
    breaking ties by track ID. A profile change shall take fields from one
    track response. Album name and year shall move together only when both
    are present; otherwise retain the previous pair and its source attribution.
+   When neither album field is known yet, preserve either supplied half without
+   inventing the other. Do not combine retained and newly observed halves.
    Other absent fields shall retain their previous values and attribution.
    Existing raw archives preserve all alternate observations.
 6. Metadata provenance shall identify the source archive, track and time

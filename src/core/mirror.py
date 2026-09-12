@@ -43,7 +43,6 @@ PROV_COLS = [
     "rel",
     "deleted_at",
     "asserted_by",
-    "observed_at",
     "detail",
 ]
 

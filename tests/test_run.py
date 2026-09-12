@@ -136,7 +136,7 @@ def test_real_ingestion_keeps_metadata_archive_and_provenance_without_enrichment
         a["row"] for a in out.planned if a["kind"] == "edge" and a["row"]["rel"] == "evidence_of"
     ]
     assert direct and all(r["from_ref"] == "raw/spotify-pull/dummy.json.gz" for r in direct)
-    assert all(r["observed_at"] == "2026-09-12T12:00:00.000Z" for r in direct)
+    assert all(r["detail"]["observed_at"] == "2026-09-12T12:00:00.000Z" for r in direct)
     assert key.call_count == 1
     if dry_run:
         assert not saved and not out.applied and not sp.calls
@@ -179,7 +179,7 @@ def test_metadata_retry_keeps_original_archive_reference_and_observation_time(
         if r["rel"] == "evidence_of"
     ]
     assert direct and all(r["from_ref"] in objects for r in direct)
-    assert all(r["observed_at"] == "2026-09-12T12:00:00.000Z" for r in direct)
+    assert all(r["detail"]["observed_at"] == "2026-09-12T12:00:00.000Z" for r in direct)
     save = run.archive.put
 
     def fail_raw(settings, key, data):

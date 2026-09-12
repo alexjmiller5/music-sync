@@ -237,7 +237,7 @@ def test_capture_first_write_keeps_resolved_and_expiring_metadata(settings, mock
     edges = [r for table, rows in hub.pushed if table == "provenance" for r in rows]
     direct = [r for r in edges if r["rel"] == "evidence_of"]
     assert direct and all(r["from_ref"] == source for r in direct)
-    assert all(r["observed_at"] == "2026-09-08T12:00:00.000Z" for r in direct)
+    assert all(r["detail"]["observed_at"] == "2026-09-08T12:00:00.000Z" for r in direct)
     origin = next(r for r in edges if r["from_kind"] == "shazam")
     assert origin["rel"] == "imported_from" and origin["detail"]["created_row"] == int(not known)
 

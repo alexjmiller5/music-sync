@@ -87,7 +87,7 @@ def test_observation_patch_preserves_base_facts_without_input_mutation():
     ]
     assert state == before
     edge = evidence(acts, "title")[0]
-    assert (edge["from_kind"], edge["rel"], edge["from_ref"], edge["observed_at"]) == (
+    assert (edge["from_kind"], edge["rel"], edge["from_ref"], edge["detail"]["observed_at"]) == (
         "takeout",
         "evidence_of",
         SOURCE,
@@ -239,3 +239,103 @@ def test_all_alias_evidence_keeps_its_actual_response_identity():
         ("b", "b"),
         ("original", "b"),
     ]
+
+
+def test_observation_evidence_roundtrips_through_supported_provenance_schema():
+    from core import actions
+
+    hub = FakeHub({})
+    result = actions.apply(observe(), object(), hub, dry_run=False, writes=False)
+    assert not result.errors
+    m = load_mirror(hub)
+    assert m.songs[ISRC].title == "Observed title"
+    title = next(r for r in m.observations if r["detail"]["field"] == "title")
+    assert title["from_ref"] == SOURCE
+    assert title["detail"]["observed_at"] == STAMP
+    assert observe(m, fill_only=True) == []
+
+
+def test_representative_uses_latest_time_in_detail_after_reload():
+    from core.metadata import observation_actions
+
+    tables = persisted(observe(state=live(raw("old"))))
+    newer = datetime(2026, 9, 12, 13, tzinfo=timezone.utc)
+    # Keep the old title evidence while a new profile supplies a complete album pair.
+    refresh = observation_actions(
+        load_mirror(FakeHub(tables)),
+        live(
+            raw(
+                "recent",
+                name=None,
+                artists=[],
+                duration_ms=None,
+                album={"name": "Recent release", "release_date": "2025"},
+            )
+        ),
+        newer,
+        source_ref="raw/spotify-pull/recent.json.gz",
+        market="US",
+    )
+    m = load_mirror(FakeHub(persisted(refresh, tables)))
+    acts = observation_actions(
+        m,
+        live(raw("old", name="Older"), raw("recent", name="Newer")),
+        newer,
+        source_ref="raw/spotify-pull/next.json.gz",
+        market="US",
+    )
+    assert rows(acts)[0]["title"] == "Newer"
+    assert evidence(acts, "title")[0]["detail"]["track_id"] == "recent"
+
+
+@pytest.mark.parametrize("fill_only", [False, True])
+@pytest.mark.parametrize(
+    "album, expected",
+    [
+        ({"name": "Partial release"}, {"album": "Partial release"}),
+        ({"release_date": "2018-02-03"}, {"album_year": 2018}),
+    ],
+)
+def test_initial_partial_album_is_preserved_without_inventing_other_half(
+    fill_only, album, expected
+):
+    acts = observe(state=live(raw(album=album)), fill_only=fill_only)
+    album_patch = {k: v for k, v in rows(acts)[0].items() if k in {"album", "album_year"}}
+    assert album_patch == expected
+    album_evidence = [
+        r for r in rows(acts, "edge") if r["detail"]["field"] in {"album", "album_year"}
+    ]
+    assert {r["detail"]["field"]: r["detail"]["value"] for r in album_evidence} == expected
+    assert all(
+        r["from_ref"] == SOURCE and r["detail"]["observed_at"] == STAMP for r in album_evidence
+    )
+
+
+@pytest.mark.parametrize("fill_only", [False, True])
+@pytest.mark.parametrize(
+    "initial, other",
+    [
+        ({"name": "Initial release"}, {"release_date": "2025"}),
+        ({"release_date": "2018"}, {"name": "Other release"}),
+    ],
+)
+def test_retained_partial_album_never_combines_with_another_observation(fill_only, initial, other):
+    first = observe(state=live(raw("first", album=initial)))
+    tables = persisted(first)
+    m = load_mirror(FakeHub(tables))
+    next_actions = observe(m, live(raw("next", album=other)), fill_only=fill_only)
+    assert not any({"album", "album_year"} & r.keys() for r in rows(next_actions))
+    assert not evidence(next_actions, "album") and not evidence(next_actions, "album_year")
+    after = persisted(next_actions, tables)
+    assert [r for r in after["provenance"] if r["detail"]["field"] in {"album", "album_year"}] == [
+        r for r in tables["provenance"] if r["detail"]["field"] in {"album", "album_year"}
+    ]
+    complete = observe(
+        m,
+        live(raw("next", album={"name": "Complete release", "release_date": "2025"})),
+        fill_only=fill_only,
+    )
+    album_patch = {
+        k: v for r in rows(complete) for k, v in r.items() if k in {"album", "album_year"}
+    }
+    assert album_patch == ({} if fill_only else {"album": "Complete release", "album_year": 2025})
