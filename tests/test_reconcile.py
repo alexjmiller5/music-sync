@@ -95,7 +95,10 @@ def test_existing_membership_id_is_usable_without_catalog_aliases():
     m = Mirror(
         {"A": song("A", ids=[])},
         {"SM": pl("SM", "pool", "smart", {"v": 1})},
-        {("CU", "A"): Membership("CU", "A", "member-id", T)},
+        {
+            ("OTHER", "A"): Membership("OTHER", "A", "z-member-id", T),
+            ("CU", "A"): Membership("CU", "A", "member-id", T),
+        },
         [],
         set(),
     )
@@ -115,6 +118,51 @@ def test_undo_uses_retained_membership_id_without_alias_search():
     li = LiveItem("A", None, None, T, None, False, None, [])
     acts = reconcile.plan(m, Live({"CU": live_pl("CU", "curated", [])}, {"A": li}, {}), NOW)
     assert [a.uri for a in kinds(acts, "add_item")] == ["spotify:track:undo-id"]
+
+
+@pytest.mark.parametrize("route", ["verified", "live", "fallback", "membership"])
+def test_routing_membership_inspections_are_bounded(route):
+    class CountedMemberships(dict):
+        inspections = 0
+
+        def values(self):
+            for membership in super().values():
+                self.inspections += 1
+                yield membership
+
+    ids = [f"S{i:03}" for i in range(100)]
+    members = CountedMemberships(
+        {("OTHER", i): Membership("OTHER", i, f"member-{i}", T) for i in ids}
+    )
+    undo = route == "fallback"
+    m = Mirror(
+        {i: song(i, liked=0 if undo else 1, ids=[f"alias-{i}"]) for i in ids},
+        {
+            "TARGET": pl(
+                "TARGET", "target", "curated" if undo else "smart", None if undo else {"v": 1}
+            )
+        },
+        members,
+        [Membership("TARGET", i, f"undo-{i}", T, "2026-09-07T00:00:00.000Z") for i in ids]
+        if undo
+        else [],
+        set(),
+    )
+    liked = {
+        i: item(i, f"live-{i}", playable=None)
+        if route in ("verified", "live")
+        else LiveItem(i, None, None, T, None, False, None, [])
+        for i in ids
+    }
+    observations = [item(i, f"verified-{i}") for i in ids] if route == "verified" else []
+    acts = reconcile.plan(
+        m, Live({"TARGET": live_pl("TARGET", "target", [])}, liked, {}, observations), NOW
+    )
+    prefix = {"verified": "verified", "live": "live", "fallback": "undo", "membership": "member"}[
+        route
+    ]
+    assert [a.uri for a in kinds(acts, "add_item")] == [f"spotify:track:{prefix}-{i}" for i in ids]
+    assert members.inspections <= (100 if route == "membership" else 0)
 
 
 @pytest.mark.parametrize("availability", [None, False])

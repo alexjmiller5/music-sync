@@ -449,14 +449,180 @@ def test_confirmation_error_preserves_rate_limit(monkeypatch):
     service.replies[("S0000", "mb_tags")] = [error]
     original = service.hub.pull
 
-    def pull(table, cols):
+    def pull(table, cols, since=""):
         if service.calls == [("S0000", "mb_tags")] and table == "provenance":
             # Fail confirmation once; later sources must still proceed.
             monkeypatch.setattr(service.hub, "pull", original)
             raise HubError("confirmation unavailable")
-        return original(table, cols)
+        return original(table, cols, since)
 
     monkeypatch.setattr(service.hub, "pull", pull)
     out = service.run("mb_tags")
     assert out["failed"][0]["errors"][0]["status"] == 429
     assert "mb_tags" in out["retry_at"]
+
+
+class IncrementalService(Service):
+    """Exercise real Hub HTTP calls with the route's inclusive hub_at predicate."""
+
+    def __init__(self, n=1):
+        super().__init__(n)
+        self.tick = 0
+        self.pulls = []
+        self.before_pull = lambda body: None
+        for row in self.rows.values():
+            row["hub_at"] = self.stamp("songs")
+
+    def stamp(self, table):
+        # Independent server cursors; client updated_at must never select deltas.
+        year = 2026 if table == "songs" else 2027
+        return f"{year}-01-01T00:00:00.{self.tick:06}Z"
+
+    def persist(self, id, col, values=None):
+        fields = (
+            values
+            if values is not None
+            else ({"first_year": None} if col == "first_year" else self.outputs[col])
+        )
+        super().persist(id, col, values)
+        self.tick += 1
+        self.rows[id]["hub_at"] = self.stamp("songs")
+        self.rows[id]["updated_at"] = "2099-01-01T00:00:00.000Z"
+        for field in fields:
+            self.proofs[f"songs:{id}:{field}"]["hub_at"] = self.stamp("provenance")
+
+    def respond(self, request):
+        if request.url.path != "/v1/rows/pull":
+            return super().respond(request)
+        body = json.loads(request.content)
+        self.before_pull(body)
+        rows = self.rows.values() if body["table"] == "songs" else self.proofs.values()
+        rows = [r for r in rows if not body["since"] or (r.get("hub_at") or "") >= body["since"]]
+        self.pulls.append((body["table"], body["since"], len(rows)))
+        return httpx.Response(
+            200, json={"rows": [{c: r.get(c) for c in body["columns"]} for r in rows]}
+        )
+
+
+@pytest.mark.parametrize("n", [100, 1000])
+def test_incremental_confirmation_has_bounded_row_transfers(n):
+    service = IncrementalService(n)
+    out = backfill_derive.run(service.hub, "songs", None, sleep=lambda _: None)
+    assert out["completed_recordings"] == n and not out["failed"]
+    counts = Counter()
+    for table, since, count in service.pulls:
+        counts[table] += count
+        if since:
+            assert since.startswith("2026-" if table == "songs" else "2027-")
+    # Initial rows share a stamp and are inclusively reread once after batch 1.
+    assert counts["songs"] <= 6 * n
+    assert counts["provenance"] <= 6 * n
+    assert [table for table, _, _ in service.pulls] == ["provenance", "songs"] * (
+        len(service.pulls) // 2
+    )
+
+
+def test_incremental_confirmation_keeps_inclusive_ties():
+    service = IncrementalService(2)
+    original = service.persist
+
+    def persist(id, col, values=None):
+        original(id, col, values)
+        # New writes arrive at the preceding read's exact cursor.
+        for row in service.rows.values():
+            row["hub_at"] = "2026-01-01T00:00:00.000000Z"
+        for proof in service.proofs.values():
+            proof["hub_at"] = "2027-01-01T00:00:00.000000Z"
+
+    service.persist = persist
+    out = service.run()
+    assert out["completed_recordings"] == 2 and not out["failed"]
+    assert any(since == "2027-01-01T00:00:00.000000Z" for _, since, _ in service.pulls)
+
+
+@pytest.mark.parametrize("change", ["song_deleted", "proof_deleted", "proof_rel", "proof_author"])
+def test_incremental_confirmation_evicts_rows_and_nonqualifying_proofs(change):
+    service = IncrementalService()
+    service.persist("S0000", "first_year")
+
+    def invalidate(body):
+        if not service.calls:
+            return
+        if change == "song_deleted":
+            service.rows["S0000"]["deleted_at"] = "deleted"
+        else:
+            proof = service.proofs["songs:S0000:first_year"]
+            key = {
+                "proof_deleted": "deleted_at",
+                "proof_rel": "rel",
+                "proof_author": "asserted_by",
+            }[change]
+            proof[key] = "invalid"
+            proof["hub_at"] = service.stamp("provenance")
+
+    service.before_pull = invalidate
+    out = service.run("mb_tags")
+    assert out["completed_recordings"] == 0
+    assert any(f["col"] == "first_year" for f in out["failed"])
+
+
+@pytest.mark.parametrize("failed_table", ["provenance", "songs"])
+def test_failed_incremental_read_retries_without_advancing_or_stale_completion(failed_table):
+    service = IncrementalService()
+    service.persist("S0000", "first_year")
+    failed_cursors = []
+    retried_cursors = []
+    proof_cursors = []
+
+    def fail_once(body):
+        if service.calls and body["table"] == "provenance":
+            proof_cursors.append(body["since"])
+        if service.calls and body["table"] == failed_table:
+            if not failed_cursors:
+                failed_cursors.append(body["since"])
+                raise httpx.ReadTimeout("confirmation failed")
+            retried_cursors.append(body["since"])
+
+    service.before_pull = fail_once
+    out = service.run("mb_tags")
+    assert out["completed_recordings"] == 1 and not out["failed"]
+    assert service.calls[:2] == [("S0000", "mb_tags")] * 2
+    assert retried_cursors[0] == failed_cursors[0] != ""
+    assert proof_cursors[0] == proof_cursors[1] != ""
+    assert out["derived"] == 2
+
+
+def test_repeated_confirmation_failure_cannot_claim_success():
+    service = IncrementalService()
+    failures = []
+
+    def fail_confirmation(body):
+        if service.calls and body["table"] == "songs" and len(failures) < 3:
+            failures.append(body["since"])
+            raise httpx.ReadTimeout("confirmation failed")
+
+    service.before_pull = fail_confirmation
+    out = service.run("mb_tags")
+    assert out["completed_recordings"] == 0
+    assert out["derived"] == 1  # Only the later first_year confirmation succeeded.
+    assert out["failed"][0]["col"] == "mb_tags"
+    assert out["failed"][0]["attempts"] == 3
+    assert len(set(failures)) == 1
+
+
+def test_unstamped_state_stays_on_full_refresh_and_evicts_absent_proofs():
+    service = IncrementalService()
+    service.rows["S0000"]["hub_at"] = None
+    service.persist("S0000", "first_year")
+    service.rows["S0000"]["hub_at"] = None
+    service.proofs["songs:S0000:first_year"]["hub_at"] = None
+
+    def remove_proof(body):
+        if service.calls and body["table"] == "provenance":
+            service.proofs.pop("songs:S0000:first_year", None)
+
+    service.before_pull = remove_proof
+    out = service.run("mb_tags")
+    assert out["completed_recordings"] == 0
+    assert all(since == "" for _, since, _ in service.pulls)
+    assert any(f["col"] == "first_year" for f in out["failed"])

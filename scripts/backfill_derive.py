@@ -30,10 +30,16 @@ SOURCES = {
 YEARS = ("album_year", "deezer_year", "mb_first_year")
 COLS = list(
     dict.fromkeys(
-        ["id", "deleted_at", *YEARS, *[c for _, fields in SOURCES.values() for c in fields]]
+        [
+            "id",
+            "hub_at",
+            "deleted_at",
+            *YEARS,
+            *[c for _, fields in SOURCES.values() for c in fields],
+        ]
     )
 )
-PROOF_COLS = ["id", "from_kind", "inputs_hash", "rel", "asserted_by", "deleted_at"]
+PROOF_COLS = ["id", "hub_at", "from_kind", "inputs_hash", "rel", "asserted_by", "deleted_at"]
 RETRY_DELAYS = (5, 15)
 OUTAGE_LIMIT = 5
 BATCH_SIZE = 50
@@ -77,18 +83,37 @@ def run(hub, table: str, col: str | None, sleep=None, batch_size: int = BATCH_SI
     if col is not None and col not in SOURCES:
         raise ValueError(f"unknown source column: {col}")
     require_observed_contract(hub)
+    proofs, current = {}, {}
+    cursors = {"provenance": "", table: ""}
 
     def read_state():
-        # Read proofs before rows so changed inputs invalidate older proofs.
-        proofs = {
-            p["id"]: p
-            for p in hub.pull("provenance", PROOF_COLS)
-            if not p.get("deleted_at")
-            and p.get("rel") == "derived_from"
-            and p.get("asserted_by") == "hub"
-        }
-        rows = {r["id"]: r for r in hub.pull(table, COLS) if not r.get("deleted_at")}
-        return proofs, rows
+        # Proofs first: newer row inputs must invalidate older proofs. Commit
+        # neither cache nor cursor until BOTH reads succeed. hub_at is inclusive.
+        changes = [
+            ("provenance", proofs, hub.pull("provenance", PROOF_COLS, cursors["provenance"] or "")),
+            (table, current, hub.pull(table, COLS, cursors[table] or "")),
+        ]
+        for name, state, delta in changes:
+            cursor = cursors[name]
+            if not cursor:
+                state.clear()
+            for row in delta:
+                if row.get("deleted_at") or (
+                    name == "provenance"
+                    and (row.get("rel") != "derived_from" or row.get("asserted_by") != "hub")
+                ):
+                    state.pop(row["id"], None)
+                else:
+                    state[row["id"]] = row
+            # A legacy unstamped row can change without appearing in a delta.
+            # Keep that table on full refreshes for the rest of this run.
+            stamps = [row.get("hub_at") for row in delta]
+            cursors[name] = (
+                None
+                if cursor is None or any(not isinstance(s, str) or not s for s in stamps)
+                else max([cursor, *stamps])
+            )
+        return proofs, current
 
     proofs, current = read_state()
     rows = sorted(current.values(), key=lambda r: r["id"])

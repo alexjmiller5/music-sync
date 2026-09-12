@@ -91,6 +91,10 @@ runs in tests, locally, or on any future platform.
   Only Deezer, MusicBrainz and first_year are enrichment targets; album_year
   remains an observed input. Completion requires actual current rows and source
   proofs, not derived counts. Empty/partial results remain unresolved.
+  Confirmation merges incremental pulls by ID with independent inclusive
+  server `hub_at` cursors. Read proofs before songs and commit both caches and
+  cursors only after both reads succeed; evict deleted rows and nonqualifying
+  proofs. Any missing stamp keeps that table on full refreshes for the run.
   Structured rate limits defer the source immediately; `retry_at` in the
   summary is the earliest Unix timestamp for resuming it. Other sources
   continue, and failed/deferred work never counts as complete.
