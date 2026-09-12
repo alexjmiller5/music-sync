@@ -1,9 +1,9 @@
 # Preserve observed Spotify metadata
 
 **Date:** 2026-09-12
-**Status:** ownership principle approved; written amendment awaiting review.
-**Implementation:** not applied. No deployment, catalog migration or backfill
-is authorized by recording this design.
+**Status:** approved for implementation on 2026-09-12.
+**Rollout:** deployment, live catalog migration and backfill execution require
+a separate operational handoff.
 **Amends:** the Spotify metadata ownership and recovery portions of
 [the redesign spec](2026-09-08-music-sync-redesign-design.md), especially
 sections 2-4. Other behavior remains unchanged.
