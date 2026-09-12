@@ -11,31 +11,18 @@ from core import mirror as mirror_mod
 from core.config import Settings
 from core.model import Live
 
-_STRIP = re.compile(r"\s+-.*$|\s*[\(\[].*$")
 _PUNCT = re.compile(r"[^\w\s]")
 
 
-def _norm(s: str) -> str:
-    return _PUNCT.sub("", _STRIP.sub("", s or "")).casefold().strip()
-
-
 def _exact_norm(s: str) -> str:
-    return _PUNCT.sub("", s or "").casefold().strip()
+    return " ".join(_PUNCT.sub("", s or "").casefold().split())
 
 
 def best_match(title: str, artist: str, tracks: list[dict]) -> dict | None:
-    t, a = _norm(title), _norm(artist)
-    exact_title = _exact_norm(title)
+    title, artist = _exact_norm(title), _exact_norm(artist)
     for tr in tracks:
-        names = [_norm(x.get("name", "")) for x in tr.get("artists") or []]
-        if _exact_norm(tr.get("name", "")) == exact_title and any(a in n or n in a for n in names):
-            return tr
-    for tr in tracks:
-        names = [_norm(x.get("name", "")) for x in tr.get("artists") or []]
-        if _norm(tr.get("name", "")) == t and any(a in n or n in a for n in names):
-            return tr
-    for tr in tracks:
-        if _norm(tr.get("name", "")) == t:
+        names = [_exact_norm(x.get("name", "")) for x in tr.get("artists") or []]
+        if _exact_norm(tr.get("name", "")) == title and artist in names:
             return tr
     return None
 
@@ -44,7 +31,34 @@ def _iso(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
 
 
-def capture(payload: dict, spotify, hub, settings: Settings, now: datetime) -> dict:
+def resolve_track(payload: dict, spotify, settings: Settings) -> dict | None:
+    title, artist = (payload.get("title") or "").strip(), (payload.get("artist") or "").strip()
+    if not title or not artist:
+        return None
+    if spotify is None:
+        from core.spotify_client import SpotifyClient
+
+        spotify = SpotifyClient(settings)
+    if isrc := payload.get("isrc"):
+        return next(
+            (
+                track
+                for track in spotify.search_isrc(isrc, settings.spotify_market)
+                if (track.get("external_ids") or {}).get("isrc") == isrc
+            ),
+            None,
+        )
+    return best_match(title, artist, spotify.search_track(title, artist, settings.spotify_market))
+
+
+def capture(
+    payload: dict,
+    spotify,
+    hub,
+    settings: Settings,
+    now: datetime,
+    resolved_track: dict | None = None,
+) -> dict:
     title, artist = (payload.get("title") or "").strip(), (payload.get("artist") or "").strip()
     if not title or not artist:
         return {"ok": False, "message": "title and artist required", "isrc": None}
@@ -61,7 +75,7 @@ def capture(payload: dict, spotify, hub, settings: Settings, now: datetime) -> d
     spotify = spotify or SpotifyClient(settings)
     hub = hub or Hub(settings.life_hub_url, settings.life_hub_token)
     metadata.require_observed_contract(hub)
-    tr = best_match(title, artist, spotify.search_track(title, artist, settings.spotify_market))
+    tr = resolved_track if resolved_track is not None else resolve_track(payload, spotify, settings)
     if not tr:
         return {
             "ok": False,
