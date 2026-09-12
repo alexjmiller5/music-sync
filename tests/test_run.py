@@ -40,6 +40,11 @@ class LiveSpotify:
 
 
 class FailingHub:
+    def catalog(self):
+        from tests.test_metadata_contract import catalog
+
+        return catalog()
+
     def push(self, table, rows):
         raise HubError("boom")
 

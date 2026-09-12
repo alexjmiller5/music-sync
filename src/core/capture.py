@@ -51,6 +51,7 @@ def capture(payload: dict, spotify, hub, settings: Settings, now: datetime) -> d
 
     spotify = spotify or SpotifyClient(settings)
     hub = hub or Hub(settings.life_hub_url, settings.life_hub_token)
+    metadata.require_observed_contract(hub)
     tr = best_match(title, artist, spotify.search_track(title, artist, settings.spotify_market))
     if not tr:
         return {

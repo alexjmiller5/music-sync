@@ -192,6 +192,9 @@ def run(settings, archive_key: str, observed_at: str, *, dry_run: bool = True, h
     identity = {"intent": "metadata_replay", "archive_key": archive_key, "observed_at": stamp}
     if pending and any(pending.get(k) != v for k, v in identity.items()):
         raise RuntimeError("Pending recovery must finish with its original operation and source")
+    hub = hub or Hub(settings.life_hub_url, settings.life_hub_token)
+    if not dry_run:
+        metadata.require_observed_contract(hub)
     if pending:
         plan = [Action(**a) for a in pending["planned"]]
         outcomes = pending["outcomes"]

@@ -145,7 +145,7 @@ not a script catalog; one-offs go in `scripts/` and run directly.
 in the environment, run `uv run scripts/backfill_derive.py`. The same script
 can run as `python -u scripts/backfill_derive.py` in a container with httpx
 and `src/core` available. It calls only the hub's pull/derive interfaces.
-`--col title`, `--col deezer_genres`, or `--col mb_tags` narrows the source;
+`--col deezer_genres` or `--col mb_tags` narrows the enrichment source;
 each also checks/refreshes `first_year`. `--col first_year` checks only years.
 Use `--batch-size N` to tune normal source requests from 1 to 50; the default
 is 50. `first_year` is automatically capped at 20 IDs per hub request because
@@ -155,10 +155,12 @@ budget.
 Pending recordings are sent in batches of up to 50 IDs per normal source
 request.
 When the hub returns an exact partial failure, retries narrow to the failed
-IDs; ambiguous responses fail the whole batch safely. Current hub provenance
-skips completed sources, including Spotify no-match and legitimate null years.
-Source attempts trigger a final year derivation; restarting also detects
-changed year inputs from provenance. Each failed pair gets at most three
+IDs. Counts alone never establish completion: current rows and matching source
+proofs must confirm every required field. Empty or partial source results remain
+unresolved; no new negative cache is created. Existing complete proofs can reuse
+legitimate null years. Confirmed upstream writes trigger a final year refresh;
+current year inputs and proofs are reread before deciding, including after partial
+writes. Each failed pair gets at most three
 attempts, waiting 5 then 15 seconds. A rate limit (`429`) or a service outage
 (`503`) carrying `retry_after` immediately defers that source for the rest
 of the run, without a short retry. The JSON summary's `retry_at` maps source
@@ -172,6 +174,15 @@ last stdout line is JSON with unresolved `failed` entries, `stopped_sources`,
 and `deferred` counts; failures/deferred work exit 1. Keep that output in the
 job logs and rerun the same command to resume from provenance. No local
 checkpoint files or service changes are needed.
+
+Spotify base fields are observations, never backfill targets. `album_year` is
+the observed Spotify release year; enriched `first_year` uses that year together
+with Deezer and MusicBrainz evidence. `--col title` is rejected.
+Mutating imports, capture, pending recovery, replay apply and enrichment backfill
+require all seven base properties to exist without derivation bindings. Read-only
+previews remain available before cutover (existing pending recovery interlocks
+still apply). The live catalog is not asserted to have changed: follow the
+[staged rollout](docs/observed-metadata-rollout.md) under separate approval.
 
 ## Manual setup (the only steps that can't be codified)
 

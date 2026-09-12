@@ -34,6 +34,15 @@ class Hub:
             "rows"
         ]
 
+    def catalog(self) -> dict:
+        try:
+            r = self._http.get(f"{self.base}/v1/catalog", headers=self._headers)
+        except httpx.HTTPError as e:
+            raise HubError(f"hub unreachable: {type(e).__name__}") from e
+        if r.status_code >= 400:
+            raise HubError(f"hub HTTP {r.status_code}: {r.text[:300]}")
+        return r.json()
+
     def push(self, table: str, rows: list[dict]) -> dict:
         if not rows:
             return {"upserted": 0, "rejected": []}
