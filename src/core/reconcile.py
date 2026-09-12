@@ -263,19 +263,26 @@ def plan(
         elif a.kind == "edge" and a.row["rel"] == "imported_from":
             view.captures.add((a.isrc, a.row["from_kind"]))
 
+    member_ids = None
+
     def routing_uri(isrc, fallback=None):
+        nonlocal member_ids
         verified = sorted(tid for tid, ok in available.get(isrc, {}).items() if ok)
         live_ids = sorted({it.track_id for it in observed.get(isrc, []) if it.track_id})
-        member_ids = sorted(
-            {
-                m.spotify_track_id
-                for m in mirror.memberships.values()
-                if m.isrc == isrc and m.spotify_track_id
-            }
-        )
-        ids = verified or live_ids or ([fallback] if fallback else member_ids)
+        ids = verified or live_ids or ([fallback] if fallback else [])
+        if ids:
+            return f"spotify:track:{ids[0]}"
+        if member_ids is None:
+            member_ids = {}
+            for m in mirror.memberships.values():
+                if m.spotify_track_id:
+                    member_ids[m.isrc] = min(
+                        member_ids.get(m.isrc, m.spotify_track_id), m.spotify_track_id
+                    )
+        if isrc in member_ids:
+            return f"spotify:track:{member_ids[isrc]}"
         s = view.songs.get(isrc)
-        return f"spotify:track:{ids[0]}" if ids else preferred_uri(s) if s else None
+        return preferred_uri(s) if s else None
 
     # undo (rule 5)
     cutoff = _iso(now - timedelta(days=undo_days))
