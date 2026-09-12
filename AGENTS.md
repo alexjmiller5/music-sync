@@ -24,7 +24,9 @@ runs in tests, locally, or on any future platform.
 - Reconcile, legacy capture and capture-client issue/revoke use Modal proxy
   auth (`Modal-Key` + `Modal-Secret`). The consumer capture endpoint is public
   at the Modal edge and requires an app-issued capture-only Bearer token. Only
-  its SHA-256 hash is retained; each client can be revoked independently.
+  its SHA-256 hash is retained; each client can be revoked independently. The
+  worker rechecks active status after queueing so a completed revoke blocks
+  later queued work.
 - Cron: Modal is the PREFERRED home for schedules - but the Starter plan
   allows **5 deployed crons across ALL apps**, so track the budget. Overflow
   goes to GHA cron or CF Cron Triggers.
@@ -45,8 +47,10 @@ runs in tests, locally, or on any future platform.
   approved shared-service contract; no Life Data R2 credentials reach this app.
   Recovery state belongs to this project's `music-sync-state` R2 bucket.
   Capture-client hashes live at `music-sync/capture-clients.json.gz`; durable
-  delivery receipts live below `music-sync/capture-receipts/`, keyed by client
-  and capture UUID. Both use the supported `core.archive` R2 abstraction.
+  delivery state lives below `music-sync/capture-receipts/`, keyed by client
+  and capture UUID. The selected Spotify track is stored there before side
+  effects and replaced by the success receipt only after completion. Both use
+  the supported `core.archive` R2 abstraction.
   R2 pending intent lives at
   `music-sync/pending-reconcile.json.gz`, outside raw-backup lifecycle rules.
   Archive credentials require object read and write. A failure stops remaining
@@ -60,6 +64,11 @@ runs in tests, locally, or on any future platform.
   without enabling enforcement. It fills existing songs only and checkpoints
   remaining provenance with song patches. Retained source market is used only
   when explicitly present in the archive; otherwise evidence market is null.
+- Consumer capture accepts the original five required string fields plus an
+  optional ISRC. A supplied ISRC is normalized, searched directly and must
+  match the returned recording. Without one, capture requires normalized exact
+  title and artist identity; it never strips version suffixes or accepts an
+  artist-free title match.
 - R2 object reads/writes use boto3's S3 API with bucket-scoped permissions.
   `R2_ACCESS_KEY_ID` is the token ID; the S3 secret is derived in memory as
   SHA-256 of `R2_API_TOKEN`. Only `NoSuchKey` means a missing object; other

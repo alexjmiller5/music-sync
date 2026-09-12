@@ -132,8 +132,8 @@ returns `503` and also files a flag.
 
 **`POST capture-consumer endpoint`** - the endpoint URL labeled
 `capture-consumer` in Modal deploy output. It does not require Modal provider
-credentials. Send `Authorization: Bearer <capture-token>` and exactly these
-JSON fields:
+credentials. Send `Authorization: Bearer <capture-token>` and these five
+required JSON fields:
 
 ```json
 {
@@ -146,15 +146,23 @@ JSON fields:
 ```
 
 All fields are strings, `capture_id` is a UUID, and `title` and `artist` are
-nonempty. A successful capture is acknowledged only after its receipt is
-stored in Music Sync's R2:
+nonempty. When Shazam supplies an ISRC, add the optional string field
+`"isrc":"USAAA2600001"`; hyphens and case are normalized. Music Sync searches
+Spotify by that ISRC and accepts only a candidate carrying the same ISRC.
+Without one, matching requires normalized exact title and artist identity,
+including version words such as live or remix.
+
+The selected Spotify track and payload identity are stored before Spotify or
+hub side effects. A successful capture is acknowledged only after that state
+is replaced by a durable receipt in Music Sync's R2:
 
 ```json
 {"ok":true,"capture_id":"3d2ed84e-9413-4a4a-a7e1-c596201bf84d","isrc":"USAAA2600001"}
 ```
 
-Repeating the same client, capture UUID and payload replays that receipt
-without repeating the Spotify capture. Reusing the UUID with a changed payload
+Repeating the same client, capture UUID and payload resumes the stored track or
+replays its completed receipt without selecting a different recording. The
+optional ISRC participates in payload identity. Reusing the UUID with a changed payload
 returns `409`. Missing, invalid or revoked credentials return `401`; malformed
 requests return `422`; storage or capture availability failures return `503`.
 Only a response with HTTP 200, `ok: true`, the matching `capture_id` and a
@@ -355,9 +363,11 @@ existing read/write token, populate its ID without reminting it. See
 Only `NoSuchKey` means an absent object; bucket, permission, transport and
 incomplete-read failures stop the flow. Keep `music-sync/` outside raw archive
 lifecycle expiration, and reserve its pending object for this one worker/account.
-The credential registry is `music-sync/capture-clients.json.gz`; receipts are
-stored below `music-sync/capture-receipts/<client-id>/<capture-id>.json.gz`.
-Tokens are independently random and only their SHA-256 hashes are stored.
+The credential registry is `music-sync/capture-clients.json.gz`; delivery state
+is stored below `music-sync/capture-receipts/<client-id>/<capture-id>.json.gz`.
+Before capture it holds the selected Spotify track and canonical payload hash;
+after success it holds the receipt ISRC. Tokens are independently random and
+only their SHA-256 hashes are stored.
 
 ### Without 1Password
 

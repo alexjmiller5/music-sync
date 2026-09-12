@@ -123,9 +123,18 @@ def test_consumer_capture_requires_valid_bearer_token(capture_api):
 def test_operator_can_issue_and_revoke_one_consumer_without_affecting_another(
     capture_api, monkeypatch
 ):
+    from core import capture as capture_mod
+
     post, _ = capture_api
+    monkeypatch.setattr(capture_mod, "resolve_track", lambda *args: {"id": "selected"})
     monkeypatch.setattr(
-        app, "_capture", lambda body: {"ok": True, "message": "added", "isrc": "USAAA2600001"}
+        app,
+        "_capture",
+        lambda body, selected=None: {
+            "ok": True,
+            "message": "added",
+            "isrc": "USAAA2600001",
+        },
     )
     first = issue_capture_token(post)
     second = issue_capture_token(post)
@@ -158,10 +167,19 @@ def test_operator_can_issue_and_revoke_one_consumer_without_affecting_another(
 
 
 def test_consumer_capture_rejects_malformed_body_and_changed_replay(capture_api, monkeypatch):
+    from core import capture as capture_mod
+
     post, _ = capture_api
     token = issue_capture_token(post)["token"]
+    monkeypatch.setattr(capture_mod, "resolve_track", lambda *args: {"id": "selected"})
     monkeypatch.setattr(
-        app, "_capture", lambda body: {"ok": True, "message": "added", "isrc": "USAAA2600001"}
+        app,
+        "_capture",
+        lambda body, selected=None: {
+            "ok": True,
+            "message": "added",
+            "isrc": "USAAA2600001",
+        },
     )
 
     malformed = post("/capture-consumer", {**CONSUMER_BODY, "capture_id": "bad"}, token)
@@ -172,11 +190,14 @@ def test_consumer_capture_rejects_malformed_body_and_changed_replay(capture_api,
 
 
 def test_consumer_capture_replays_receipt_without_recapturing(capture_api, monkeypatch):
+    from core import capture as capture_mod
+
     post, _ = capture_api
     token = issue_capture_token(post)["token"]
     calls = []
+    monkeypatch.setattr(capture_mod, "resolve_track", lambda *args: {"id": "selected"})
 
-    def perform(body):
+    def perform(body, selected=None):
         calls.append(body)
         return {"ok": True, "message": "added", "isrc": "USAAA2600001"}
 
@@ -207,6 +228,75 @@ def test_consumer_capture_returns_safe_unavailable_when_receipt_write_fails(
     response = post("/capture-consumer", CONSUMER_BODY, token)
     assert response.status_code == 503
     assert response.json() == {"ok": False, "message": "capture unavailable"}
+
+
+def test_queued_consumer_rechecks_revocation_inside_worker(capture_api, settings, monkeypatch):
+    from core import capture_clients
+
+    post, _ = capture_api
+    issued = issue_capture_token(post)
+    captures = []
+    monkeypatch.setattr(
+        app,
+        "_capture",
+        lambda body: (
+            captures.append(body) or {"ok": True, "message": "added", "isrc": "USAAA2600001"}
+        ),
+    )
+    raw_worker = app.worker.get_raw_f()
+
+    def revoke_before_worker(operation, body=None):
+        if operation == "consumer_capture":
+            capture_clients.revoke(settings, body["client_id"])
+        return raw_worker(operation, body)
+
+    monkeypatch.setattr(app.worker, "remote", revoke_before_worker)
+    response = post("/capture-consumer", CONSUMER_BODY, issued["token"])
+
+    assert response.status_code == 401
+    assert captures == []
+
+
+def test_receipt_failure_retry_keeps_first_selected_recording(capture_api, settings, monkeypatch):
+    import gzip
+    import json
+
+    from core import archive, capture_clients, hub, spotify_client
+    from tests.test_capture import FakeHub, FakeSpotify, INBOX, track
+
+    post, objects = capture_api
+    token = issue_capture_token(post)["token"]
+    first = track("a", "Song", "Artist", isrc="USAAA2600001")
+    second = track("b", "Song", "Artist", isrc="USAAA2600002")
+    spotify = FakeSpotify([first])
+    fake_hub = FakeHub(INBOX)
+    monkeypatch.setattr(spotify_client, "SpotifyClient", lambda settings: spotify)
+    monkeypatch.setattr(hub, "Hub", lambda *args: fake_hub)
+    failed = False
+
+    def fail_first_completed_receipt(settings, key, value):
+        nonlocal failed
+        decoded = json.loads(gzip.decompress(value))
+        if key.startswith(capture_clients.RECEIPTS_PREFIX) and "isrc" in decoded and not failed:
+            failed = True
+            raise RuntimeError("R2 unavailable after capture")
+        objects[key] = value
+
+    monkeypatch.setattr(archive, "put", fail_first_completed_receipt)
+    first_response = post("/capture-consumer", CONSUMER_BODY, token)
+    assert first_response.status_code == 503
+    state_key = next(key for key in objects if key.startswith(capture_clients.RECEIPTS_PREFIX))
+    selected_state = json.loads(gzip.decompress(objects[state_key]))
+    assert selected_state["selected_track"]["id"] == "a" and "isrc" not in selected_state
+    spotify.tracks = [second]
+
+    retry = post("/capture-consumer", CONSUMER_BODY, token)
+
+    assert retry.status_code == 200
+    assert retry.json() == {"ok": True, "capture_id": CAPTURE_ID, "isrc": "USAAA2600001"}
+    assert [call for call in spotify.calls if call[0] == "add"] == [
+        ("add", "IN", ["spotify:track:a"])
+    ]
 
 
 @pytest.fixture
