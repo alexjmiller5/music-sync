@@ -49,6 +49,8 @@ def test_playlist_items_uses_items_path_market_and_fields(settings, mocker):
     assert seen[0].path == "/v1/playlists/P/items"
     assert seen[0].params["market"] == "US" and seen[0].params["limit"] == "50"
     assert "external_ids" in seen[0].params["fields"]
+    assert "duration_ms" in seen[0].params["fields"]
+    assert "linked_from(id)" in seen[0].params["fields"]
 
 
 @pytest.mark.parametrize("count", [0, 40, 41, 81])

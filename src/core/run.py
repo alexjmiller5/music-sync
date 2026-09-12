@@ -68,10 +68,9 @@ def reconcile_run(
     else:
         m = mirror.load_mirror(hub)
         live = mirror.pull_live(spotify, settings.spotify_market, me, m, full=not writes)
+        source_ref = archive.key_for(now)
         if not dry_run:
-            archive.put(
-                settings, archive.key_for(now), gzip.compress(json.dumps(live.raw).encode())
-            )
+            archive.put(settings, source_ref, gzip.compress(json.dumps(live.raw).encode()))
         plan = reconcile_mod.plan(
             m,
             live,
@@ -80,6 +79,8 @@ def reconcile_run(
             settings.undo_days,
             today,
             observation_only=not writes,
+            source_ref=source_ref,
+            market=settings.spotify_market,
         )
         for a in plan:
             lp = live.playlists.get(a.playlist_id)

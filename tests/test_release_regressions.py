@@ -237,6 +237,7 @@ def test_failed_mutation_preserves_baseline_and_recovers_next_run(settings, arch
         sp.items, sp.fail = [], "add"
     elif gesture == "relink":
         hub.tables["songs"][A]["spotify_ids"] = ["new", "a"]
+        sp.liked = [raw(tid="new", playable=True)]
         sp.items, sp.fail = [raw(playable=False)], "add"
     else:
         sp.items, sp.fail = [raw(), raw()], "add"
@@ -915,6 +916,7 @@ def test_direct_imports_keep_hub_timestamp_fallback(settings, archive_store, flo
         assert [body["table"] for body in received] == [
             "songs",
             "playlist_songs",
+            "provenance",
             "provenance",
             "playlist_songs",
         ]
