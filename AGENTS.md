@@ -48,9 +48,10 @@ runs in tests, locally, or on any future platform.
   Recovery state belongs to this project's `music-sync-state` R2 bucket.
   Capture-client hashes live at `music-sync/capture-clients.json.gz`; durable
   delivery state lives below `music-sync/capture-receipts/`, keyed by client
-  and capture UUID. The selected Spotify track is stored there before side
-  effects and replaced by the success receipt only after completion. Both use
-  the supported `core.archive` R2 abstraction.
+  and capture UUID. A selected Spotify track with a valid ISRC, track ID and
+  URI is stored there before side effects and replaced by the success receipt
+  only after completion. Incomplete selections remain unstored and retryable.
+  Both use the supported `core.archive` R2 abstraction.
   R2 pending intent lives at
   `music-sync/pending-reconcile.json.gz`, outside raw-backup lifecycle rules.
   Archive credentials require object read and write. A failure stops remaining
