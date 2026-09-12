@@ -21,6 +21,7 @@ src/core/         business logic (plain Python, portable, no Modal imports)
   config.py           Settings (env vars only)
   model.py             dataclasses shared across core
   archive.py           archive raw pulls through the life-data file API
+  metadata_replay.py   fill missing metadata from one retained Spotify archive
 scripts/
   provision.py       mints R2/Modal tokens; resolves R2_ACCESS_KEY_ID after R2_API_TOKEN
   sync_secrets.py     push .env.tpl -> Modal secret store
@@ -70,6 +71,51 @@ Response:
 ```json
 {"summary": "...", "planned": [], "applied": {}, "flags": [], "errors": []}
 ```
+
+For metadata-only recovery, send the same endpoint:
+
+```json
+{"metadata_replay":{"archive_key":"raw/spotify-pull/example.json.gz","observed_at":"2026-01-01T00:00:00.000Z"},"dry_run":true}
+```
+
+Replay defaults to dry-run. Applying requires the explicit JSON boolean
+`"dry_run": false`; strings, numbers, null and extra request fields are rejected
+with HTTP 422. `observed_at` is the archive's observation time, with an explicit
+timezone, normalized to UTC milliseconds. Keys must be normalized `.json.gz`
+objects below `raw/spotify-pull/` or `raw/spotify-capture/`; missing objects return
+404. Both normalized pull envelopes and capture envelopes are accepted,
+including captures without `resolved_track`.
+
+Recovery uses the same serialized worker, without requiring
+`RECONCILE_ENABLED=1`. It reads one retained archive and the current mirror,
+fills missing base metadata on existing recordings, and unions observed track
+IDs. It preserves nonempty facts, likes, membership, capture history,
+`first_seen`, enrichment and existing provenance. Album facts are filled only
+when both existing album fields are empty. It makes no Spotify or enrichment
+provider requests. Evidence records the archive's explicit `market`, or null
+when the retained envelope has no market; current configuration is not evidence
+of the archive's market.
+
+Responses contain `recovered`, `already_present`, `conflicting`, `missing_source`
+and `failed` counters, per-ISRC `rows` (including field conflicts), structured
+`planned` actions and `errors`, and confirmed batch counts in `applied`.
+Each catalog or archived recording receives one outcome. Missing catalog rows,
+recordings absent from this archive, and gaps without usable source metadata
+are `missing_source`; replay never creates songs. Conflicts take precedence
+over recovered even when other fields are filled. Dry-run counters describe
+the proposal and `applied` stays empty. Failed plans are reported conservatively
+as failed for affected rows; `applied` separately records confirmed fills.
+Repeating a completed replay makes no further writes, including provenance or
+timestamps. Dry runs write nothing to the hub, archives, Spotify or Notion.
+
+Replay checkpoints use the existing pending object with `intent=metadata_replay`.
+Pending reconciliation blocks replay with HTTP 409. A pending replay blocks
+reconcile and capture before Spotify setup; resume through the replay request
+with the same archive key and observation time. Its saved operations and
+attribution survive partial hub failures and source retention expiry. Retry
+does not replan after a successful song patch, so remaining provenance is kept.
+Catalog read outages return HTTP 503. Do not delete pending intent to bypass
+recovery.
 
 **`POST /capture`** - used by the Shazam shortcut. Body:
 

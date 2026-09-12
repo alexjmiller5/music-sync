@@ -45,6 +45,8 @@ def worker(operation: str, body: dict | None = None):
         return _capture(body)
     if operation != "reconcile":
         raise ValueError("unknown operation")
+    if "metadata_replay" in body:
+        return _metadata_replay(body)
     dry_run = body.get("dry_run") is True
     if not dry_run and os.environ.get("RECONCILE_ENABLED") != "1":
         return {"skipped": True}
@@ -68,6 +70,37 @@ def capture(body: dict):
     return worker.remote("capture", body)
 
 
+def _metadata_replay(body: dict):
+    from fastapi.responses import JSONResponse
+
+    from core import metadata_replay
+    from core.config import Settings
+    from core.hub import HubError
+
+    try:
+        request = body["metadata_replay"]
+        if (
+            not isinstance(request, dict)
+            or set(request) != {"archive_key", "observed_at"}
+            or set(body) - {"metadata_replay", "dry_run"}
+        ):
+            raise ValueError("metadata_replay requires exactly archive_key and observed_at")
+        dry_run = body.get("dry_run", True)
+        metadata_replay.validate_request(**request, dry_run=dry_run)
+        return metadata_replay.run(Settings(), **request, dry_run=dry_run)
+    except (ValueError, FileNotFoundError, RuntimeError) as exc:
+        status = (
+            422
+            if isinstance(exc, ValueError)
+            else 404
+            if isinstance(exc, FileNotFoundError)
+            else 503
+            if isinstance(exc, HubError)
+            else 409
+        )
+        return JSONResponse({"errors": [{"code": status, "message": str(exc)}]}, status_code=status)
+
+
 def _flag_quietly(settings, flags: list[str], errors: list[str]) -> None:
     """flags.file (Notion) can fail on its own; never let that turn the
     documented capture response into an opaque 500."""
@@ -89,15 +122,14 @@ def _capture(body: dict):
 
     from core import capture as cap
     from core.config import Settings
-    from core.hub import Hub
-    from core.spotify_client import SpotifyAuthError, SpotifyClient
+    from core.spotify_client import SpotifyAuthError
 
     s = Settings()
     try:
         out = cap.capture(
             body or {},
-            SpotifyClient(s),
-            Hub(s.life_hub_url, s.life_hub_token),
+            None,
+            None,
             s,
             datetime.now(timezone.utc),
         )

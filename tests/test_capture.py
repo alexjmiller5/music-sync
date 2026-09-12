@@ -250,3 +250,19 @@ def test_known_capture_refreshes_metadata_even_when_already_in_inbox(settings):
     assert sp.calls == []
     song = next(r for table, rows in hub.pushed if table == "songs" for r in rows)
     assert song["title"] == "Title" and "liked" not in song
+
+
+def test_pending_replay_blocks_capture_before_search_or_hub_read(settings, monkeypatch):
+    pending = gzip.compress(
+        json.dumps(
+            {
+                "intent": "metadata_replay",
+                "writes": False,
+                "planned": [],
+                "operations": [],
+            }
+        ).encode()
+    )
+    monkeypatch.setattr(capture.archive, "get", lambda *args: pending)
+    out = capture.capture({"title": "Title", "artist": "Artist"}, object(), object(), settings, NOW)
+    assert not out["ok"] and "recovery" in out["message"]

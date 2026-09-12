@@ -100,6 +100,8 @@ IDs without overwriting existing nonempty facts, likes, memberships,
 `first_seen`, capture edges or newer observation provenance. Repeating a
 replay shall produce no further data changes. Conflicting existing values
 shall be reported for direct-observation refresh, not silently rewritten.
+An archive without a recorded request market shall retain unknown market
+attribution; replay shall not substitute the current Spotify market setting.
 
 Existing search-derived values and their evidence shall not be deleted or
 relabeled as observations. Rows without recoverable evidence shall remain

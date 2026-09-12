@@ -195,3 +195,32 @@ def test_metadata_retry_keeps_original_archive_reference_and_observation_time(
     assert not run.reconcile(settings, spotify=sp, hub=hub, now=second, writes=writes).errors
     assert all(hub.tables["provenance"][r["id"]] == r for r in direct)
     assert json.loads(gzip.decompress(objects[run.archive.PENDING_KEY])) is None
+
+
+@pytest.mark.parametrize("writes", [False, True])
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_pending_replay_blocks_reconcile_before_spotify_setup(
+    settings, monkeypatch, writes, dry_run
+):
+    pending = gzip.compress(
+        json.dumps(
+            {
+                "intent": "metadata_replay",
+                "writes": False,
+                "planned": [],
+                "operations": [],
+            }
+        ).encode()
+    )
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("pending replay reached Spotify, hub, Notion or archive write")
+
+    monkeypatch.setattr(run.archive, "get", lambda *args: pending)
+    monkeypatch.setattr(run.archive, "put", forbidden)
+    monkeypatch.setattr(run, "SpotifyClient", forbidden)
+    monkeypatch.setattr(run, "Hub", forbidden)
+    monkeypatch.setattr(run.flags, "file", forbidden)
+    out = run.reconcile(settings, dry_run=dry_run, writes=writes)
+    assert out.errors and "metadata" in out.errors[0].lower()
+    assert not out.applied and not out.planned

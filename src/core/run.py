@@ -29,6 +29,25 @@ def reconcile_run(
 ) -> actions.RunLog:
     now = now or datetime.now(timezone.utc)
     today = now.date().isoformat()
+    saved = archive.get(settings, archive.PENDING_KEY)
+    pending = json.loads(gzip.decompress(saved)) if saved else None
+    if pending and pending.get("intent") == "metadata_replay":
+        return actions.RunLog(
+            dry_run=dry_run,
+            errors=["Pending metadata replay recovery must finish through metadata_replay"],
+        )
+    if pending and dry_run:
+        return actions.RunLog(
+            dry_run=True,
+            errors=[
+                "Activation preview blocked by pending recovery; "
+                "complete recovery, then request a fresh dry run"
+            ],
+        )
+    if pending and pending["writes"] and not writes:
+        return actions.RunLog(
+            errors=["Pending reconcile recovery must finish before observation import"]
+        )
     http = http or httpx.Client(timeout=60)
     spotify = spotify or SpotifyClient(settings)
     hub = hub or Hub(settings.life_hub_url, settings.life_hub_token)
@@ -42,20 +61,6 @@ def reconcile_run(
         if not dry_run:
             flags.file(settings, http, [], out.errors, today)
         return out
-    saved = archive.get(settings, archive.PENDING_KEY)
-    pending = json.loads(gzip.decompress(saved)) if saved else None
-    if pending and dry_run:
-        return actions.RunLog(
-            dry_run=True,
-            errors=[
-                "Activation preview blocked by pending recovery; "
-                "complete recovery, then request a fresh dry run"
-            ],
-        )
-    if pending and pending["writes"] and not writes:
-        return actions.RunLog(
-            errors=["Pending reconcile recovery must finish before observation import"]
-        )
     if pending:
         if not dry_run:
             live = mirror.pull_live(
