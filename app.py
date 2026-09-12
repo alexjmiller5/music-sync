@@ -1,13 +1,15 @@
 """Modal deployment shim - ALL infrastructure lives here, as code.
 
 Business logic stays in src/core/ (plain Python, no Modal imports). This file
-maps it onto Modal: image, secrets, the hourly reconcile, and two proxy-auth
-endpoints (/reconcile on demand, /capture for the Shazam shortcut).
+maps it onto Modal: image, secrets, the hourly reconcile, operator endpoints,
+and the app-issued-token capture endpoint.
 """
 
 import os
+from typing import Annotated
 
 import modal
+from fastapi import Header
 
 APP_NAME = "music-sync"  # also the Modal secret name (see justfile sync-secrets)
 
@@ -43,6 +45,10 @@ def worker(operation: str, body: dict | None = None):
     body = body or {}
     if operation == "capture":
         return _capture(body)
+    if operation == "consumer_capture":
+        return _consumer_capture(body)
+    if operation == "capture_access":
+        return _capture_access(body)
     if operation != "reconcile":
         raise ValueError("unknown operation")
     if "metadata_replay" in body:
@@ -68,6 +74,84 @@ def reconcile(body: dict | None = None):
 @modal.fastapi_endpoint(method="POST", requires_proxy_auth=True)
 def capture(body: dict):
     return worker.remote("capture", body)
+
+
+@app.function(image=image, secrets=secrets, timeout=1500)
+@modal.fastapi_endpoint(method="POST", label="capture-consumer")
+def capture_consumer(body: dict, authorization: Annotated[str | None, Header()] = None):
+    from fastapi.responses import JSONResponse
+
+    from core import capture_clients
+    from core.config import Settings
+
+    scheme, separator, token = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not separator or not token:
+        return JSONResponse(
+            {"ok": False, "message": "unauthorized"},
+            status_code=401,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    try:
+        client_id = capture_clients.authenticate(Settings(), token)
+    except capture_clients.Unauthorized:
+        return JSONResponse(
+            {"ok": False, "message": "unauthorized"},
+            status_code=401,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except Exception:
+        return JSONResponse({"ok": False, "message": "capture unavailable"}, status_code=503)
+    return worker.remote("consumer_capture", {"client_id": client_id, "capture": body})
+
+
+@app.function(image=image, timeout=1500)
+@modal.fastapi_endpoint(method="POST", label="capture-access", requires_proxy_auth=True)
+def capture_access(body: dict):
+    return worker.remote("capture_access", body)
+
+
+def _capture_access(body: dict):
+    from fastapi.responses import JSONResponse
+
+    from core import capture_clients
+    from core.config import Settings
+
+    try:
+        if not isinstance(body, dict):
+            raise capture_clients.InvalidRequest("body must be an object")
+        if body.get("action") == "issue" and set(body) == {"action", "label"}:
+            return capture_clients.issue(Settings(), body["label"])
+        if body.get("action") == "revoke" and set(body) == {"action", "client_id"}:
+            revoked = capture_clients.revoke(Settings(), body["client_id"])
+            if not revoked:
+                return JSONResponse(
+                    {"ok": False, "message": "capture client not found"}, status_code=404
+                )
+            return {"ok": True, "revoked": True}
+        raise capture_clients.InvalidRequest("action must be issue or revoke with exact fields")
+    except capture_clients.InvalidRequest as exc:
+        return JSONResponse({"ok": False, "message": str(exc)}, status_code=422)
+    except Exception:
+        return JSONResponse({"ok": False, "message": "capture access unavailable"}, status_code=503)
+
+
+def _consumer_capture(body: dict):
+    from fastapi.responses import JSONResponse
+
+    from core import capture_clients
+    from core.config import Settings
+
+    try:
+        result = capture_clients.deliver(Settings(), body["client_id"], body["capture"], _capture)
+        if result.get("ok") is not True:
+            return JSONResponse(result, status_code=422)
+        return result
+    except capture_clients.InvalidRequest as exc:
+        return JSONResponse({"ok": False, "message": str(exc)}, status_code=422)
+    except capture_clients.Conflict as exc:
+        return JSONResponse({"ok": False, "message": str(exc)}, status_code=409)
+    except Exception:
+        return JSONResponse({"ok": False, "message": "capture unavailable"}, status_code=503)
 
 
 def _metadata_replay(body: dict):

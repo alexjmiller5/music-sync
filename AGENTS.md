@@ -21,16 +21,17 @@ runs in tests, locally, or on any future platform.
   information, comments or agent access is enabled. Notion applies capabilities
   across all granted content; the app updates only its own flag tasks. Never
   substitute the agent's integration or grant the entire Projects database.
-- Endpoints use `requires_proxy_auth=True` - callers send `Modal-Key` +
-  `Modal-Secret` headers (mint tokens in the Modal dashboard → Settings →
-  Proxy Auth Tokens). Never expose an unauthenticated endpoint.
+- Reconcile, legacy capture and capture-client issue/revoke use Modal proxy
+  auth (`Modal-Key` + `Modal-Secret`). The consumer capture endpoint is public
+  at the Modal edge and requires an app-issued capture-only Bearer token. Only
+  its SHA-256 hash is retained; each client can be revoked independently.
 - Cron: Modal is the PREFERRED home for schedules - but the Starter plan
   allows **5 deployed crons across ALL apps**, so track the budget. Overflow
   goes to GHA cron or CF Cron Triggers.
 - **Cron and mutating manual reconciliation require `RECONCILE_ENABLED=1`.**
   The manifest carries the field; provisioning initializes it to `0`. Explicit
   dry runs are allowed while disabled; capture is independently authorized.
-- All three entrypoints synchronously call one `worker.remote(...)` with
+- Every mutating endpoint synchronously calls one `worker.remote(...)` with
   `max_containers=1` and `@modal.concurrent(max_inputs=1)`. Keep the full
   read/archive/plan/apply cycle inside it; endpoint container caps alone do
   not serialize different functions. FastAPI is a production dependency.
@@ -43,6 +44,9 @@ runs in tests, locally, or on any future platform.
   using the scoped hub token. This is an
   approved shared-service contract; no Life Data R2 credentials reach this app.
   Recovery state belongs to this project's `music-sync-state` R2 bucket.
+  Capture-client hashes live at `music-sync/capture-clients.json.gz`; durable
+  delivery receipts live below `music-sync/capture-receipts/`, keyed by client
+  and capture UUID. Both use the supported `core.archive` R2 abstraction.
   R2 pending intent lives at
   `music-sync/pending-reconcile.json.gz`, outside raw-backup lifecycle rules.
   Archive credentials require object read and write. A failure stops remaining
@@ -120,6 +124,7 @@ src/core/
   actions.py                 apply actions to Spotify and the hub; run log
   flags.py                   batch flags into one Notion Chore task
   capture.py                  /capture: resolve a Shazam result, add to inbox, record the edge
+  capture_clients.py          capture-only credentials and idempotent delivery receipts
   config.py                  Settings (env vars only)
   model.py                    dataclasses shared across core
   archive.py                  raw files via life-data, recovery via project-owned R2
