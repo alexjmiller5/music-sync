@@ -20,26 +20,19 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from core.hub import HubError  # noqa: E402
+from core.metadata import require_observed_contract  # noqa: E402
 
 SOURCES = {
-    "title": (
-        "spotify_isrc",
-        (
-            "spotify_ids",
-            "spotify_playable",
-            "title",
-            "artists",
-            "album",
-            "album_year",
-            "duration_ms",
-        ),
-    ),
     "deezer_genres": ("deezer_isrc", ("deezer_genres", "deezer_year")),
     "mb_tags": ("musicbrainz_isrc", ("mb_tags", "mb_first_year")),
     "first_year": ("first_year", ("first_year",)),
 }
 YEARS = ("album_year", "deezer_year", "mb_first_year")
-COLS = ["id", "deleted_at", *[c for _, fields in SOURCES.values() for c in fields]]
+COLS = list(
+    dict.fromkeys(
+        ["id", "deleted_at", *YEARS, *[c for _, fields in SOURCES.values() for c in fields]]
+    )
+)
 PROOF_COLS = ["id", "from_kind", "inputs_hash", "rel", "asserted_by", "deleted_at"]
 RETRY_DELAYS = (5, 15)
 OUTAGE_LIMIT = 5
@@ -57,8 +50,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def complete(row: dict, table: str, col: str, proofs: dict) -> bool:
     name, fields = SOURCES[col]
-    if col == "title" and row.get("spotify_ids") in ([], "[]"):
-        fields = ("spotify_ids", "spotify_playable")  # Spotify no-match omits title/year.
+    if col != "first_year" and not any(row.get(c) not in (None, "", [], "[]") for c in fields):
+        return False
     values = [row.get(c) for c in YEARS] if col == "first_year" else [row["id"]]
     # D1 binds JS Number inputs as REAL even for catalog int years. Match
     # validate.js inputsHash's SQLite rendering; text and NULL stay unchanged.
@@ -69,7 +62,8 @@ def complete(row: dict, table: str, col: str, proofs: dict) -> bool:
         ).fetchone()[0]
     digest = hashlib.sha256(raw.encode()).hexdigest()
     return all(
-        (p := proofs.get(f"{table}:{row['id']}:{field}", {})).get("inputs_hash") == digest
+        field in row
+        and (p := proofs.get(f"{table}:{row['id']}:{field}", {})).get("inputs_hash") == digest
         and p.get("from_kind") == f"http:{name}"
         for field in fields
     )
@@ -82,17 +76,22 @@ def run(hub, table: str, col: str | None, sleep=None, batch_size: int = BATCH_SI
     groups = list(SOURCES) if col is None else list(dict.fromkeys([col, "first_year"]))
     if col is not None and col not in SOURCES:
         raise ValueError(f"unknown source column: {col}")
-    # Read proofs before rows, so newly observed input changes invalidate older proofs.
-    proofs = {
-        p["id"]: p
-        for p in hub.pull("provenance", PROOF_COLS)
-        if not p.get("deleted_at")
-        and p.get("rel") == "derived_from"
-        and p.get("asserted_by") == "hub"
-    }
-    rows = sorted(
-        (r for r in hub.pull(table, COLS) if not r.get("deleted_at")), key=lambda r: r["id"]
-    )
+    require_observed_contract(hub)
+
+    def read_state():
+        # Read proofs before rows so changed inputs invalidate older proofs.
+        proofs = {
+            p["id"]: p
+            for p in hub.pull("provenance", PROOF_COLS)
+            if not p.get("deleted_at")
+            and p.get("rel") == "derived_from"
+            and p.get("asserted_by") == "hub"
+        }
+        rows = {r["id"]: r for r in hub.pull(table, COLS) if not r.get("deleted_at")}
+        return proofs, rows
+
+    proofs, current = read_state()
+    rows = sorted(current.values(), key=lambda r: r["id"])
     out = {
         "total_recordings": len(rows),
         "completed_recordings": 0,
@@ -109,9 +108,12 @@ def run(hub, table: str, col: str | None, sleep=None, batch_size: int = BATCH_SI
     refresh_year = set()
     outages = dict.fromkeys(groups, 0)
     for source in groups:
+        if source == "first_year":
+            proofs, current = read_state()
         pending = []
         for row in rows:
             row_id = row["id"]
+            row = current.get(row_id, {"id": row_id})
             needs_refresh = source == "first_year" and row_id in refresh_year
             if not needs_refresh and complete(row, table, source, proofs):
                 out["skipped"] += 1
@@ -120,8 +122,6 @@ def run(hub, table: str, col: str | None, sleep=None, batch_size: int = BATCH_SI
             if source in out["stopped_sources"]:
                 out["deferred"][source] = out["deferred"].get(source, 0) + 1
                 continue
-            if source != "first_year":
-                refresh_year.add(row_id)
             pending.append(row_id)
 
         source_batch_size = min(batch_size, SOURCE_BATCH_SIZES.get(source, batch_size))
@@ -136,46 +136,45 @@ def run(hub, table: str, col: str | None, sleep=None, batch_size: int = BATCH_SI
                     sleep(retry_delay)
                 out["attempts"] += 1
                 attempts_by_id.update(dict.fromkeys(unresolved, attempt))
+                failed = {}
                 try:
                     result = hub.derive(table, unresolved, col=source)
-                    failed = {}
                     result_failures = result.get("failed", [])
                     for error in result_failures:
                         error_id = error.get("id")
                         if error_id in unresolved:
                             failed.setdefault(error_id, error)
                     if any(error.get("id") not in unresolved for error in result_failures):
-                        failed = {
-                            row_id: {
+                        for row_id in unresolved:
+                            failed.setdefault(
+                                row_id,
+                                {
+                                    "id": row_id,
+                                    "col": source,
+                                    "error": "hub returned a failure without a matching batch ID",
+                                },
+                            )
+                    proofs, current = read_state()
+                    for row_id in unresolved:
+                        if row_id not in failed and not (
+                            row_id in current and complete(current[row_id], table, source, proofs)
+                        ):
+                            failed[row_id] = {
                                 "id": row_id,
                                 "col": source,
-                                "error": "hub returned a failure without a matching batch ID",
+                                "error": "unresolved: source fields/proofs not confirmed",
                             }
-                            for row_id in unresolved
-                        }
-                    expected = len(unresolved) - len(failed)
-                    if result.get("derived", 0) != expected:
-                        failed = {
-                            row_id: {
-                                "id": row_id,
-                                "col": source,
-                                "error": "expected one confirmed source write per batch ID",
-                            }
-                            for row_id in unresolved
-                        }
-                        successful = set()
-                    else:
-                        successful = set(unresolved) - set(failed)
-                        out["derived"] += result["derived"]
+                    successful = set(unresolved) - set(failed)
+                    out["derived"] += len(successful)
                 except HubError as exc:
-                    failed = {
-                        row_id: {"id": row_id, "col": source, "error": str(exc)}
-                        for row_id in unresolved
-                    }
+                    for row_id in unresolved:
+                        failed.setdefault(row_id, {"id": row_id, "col": source, "error": str(exc)})
                     successful = set()
 
                 for row_id in successful:
                     done[row_id].add(source)
+                    if source != "first_year":
+                        refresh_year.add(row_id)
                 if not failed:
                     unresolved = []
                     last_errors = {}

@@ -14,6 +14,27 @@ def make(handler):
     )
 
 
+def test_catalog_gets_real_shape_with_auth():
+    body = {
+        "tables": [],
+        "properties": [{"tbl": "songs", "col": "title", "derived_by": None}],
+        "rules": [],
+    }
+
+    def handler(req):
+        assert req.method == "GET" and req.url.path == "/v1/catalog"
+        assert req.headers["Authorization"] == "Bearer tok"
+        return httpx.Response(200, json=body)
+
+    assert make(handler).catalog() == body
+
+
+@pytest.mark.parametrize("status", [401, 503])
+def test_catalog_http_errors(status):
+    with pytest.raises(HubError, match=str(status)):
+        make(lambda req: httpx.Response(status, text="unavailable")).catalog()
+
+
 def test_pull_posts_table_columns_since_with_bearer_and_user_agent():
     seen = {}
 

@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import httpx
 import structlog
 
-from core import actions, archive, flags, mirror
+from core import actions, archive, flags, mirror, metadata
 from core import reconcile as reconcile_mod
 from core.config import Settings
 from core.hub import Hub
@@ -51,6 +51,8 @@ def reconcile_run(
     http = http or httpx.Client(timeout=60)
     spotify = spotify or SpotifyClient(settings)
     hub = hub or Hub(settings.life_hub_url, settings.life_hub_token)
+    if not dry_run:
+        metadata.require_observed_contract(hub)
     try:
         me = spotify.me()["id"]
     except SpotifyAuthError as e:

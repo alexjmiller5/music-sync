@@ -6,8 +6,22 @@ from dataclasses import asdict, replace
 from datetime import datetime, timezone
 
 from core.model import Action, Live, LiveItem, Mirror
+from core.hub import HubError
 
 DISPLAY_FIELDS = ("title", "artists", "album", "album_year", "duration_ms")
+
+
+def require_observed_contract(hub) -> None:
+    properties = {
+        p["col"]: p
+        for p in hub.catalog()["properties"]
+        if p.get("tbl") == "songs" and not p.get("deleted_at")
+    }
+    for col in (*DISPLAY_FIELDS, "spotify_ids", "spotify_playable"):
+        if col not in properties or properties[col].get("derived_by") is not None:
+            raise HubError(
+                f"songs.{col} must exist without a derivation binding; live cutover required"
+            )
 
 
 def present(value):
