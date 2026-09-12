@@ -19,8 +19,17 @@ def _norm(s: str) -> str:
     return _PUNCT.sub("", _STRIP.sub("", s or "")).casefold().strip()
 
 
+def _exact_norm(s: str) -> str:
+    return _PUNCT.sub("", s or "").casefold().strip()
+
+
 def best_match(title: str, artist: str, tracks: list[dict]) -> dict | None:
     t, a = _norm(title), _norm(artist)
+    exact_title = _exact_norm(title)
+    for tr in tracks:
+        names = [_norm(x.get("name", "")) for x in tr.get("artists") or []]
+        if _exact_norm(tr.get("name", "")) == exact_title and any(a in n or n in a for n in names):
+            return tr
     for tr in tracks:
         names = [_norm(x.get("name", "")) for x in tr.get("artists") or []]
         if _norm(tr.get("name", "")) == t and any(a in n or n in a for n in names):

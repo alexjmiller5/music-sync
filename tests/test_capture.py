@@ -52,6 +52,15 @@ def test_best_match_hyphen_only_in_suffix():
     assert capture.best_match("Money Trees", "Kendrick Lamar", tracks)["id"] == "2"
 
 
+def test_best_match_prefers_the_exact_release_over_a_live_version():
+    tracks = [
+        track("live", "Song - Live", "Artist"),
+        track("studio", "Song", "Artist"),
+    ]
+
+    assert capture.best_match("Song", "Artist", tracks)["id"] == "studio"
+
+
 class FakeSpotify:
     def __init__(self, tracks, inbox_items=()):
         self.tracks, self.inbox_items, self.calls = tracks, list(inbox_items), []
