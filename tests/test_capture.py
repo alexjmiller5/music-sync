@@ -31,25 +31,23 @@ def track(tid, name, artist, isrc="USUM71703861", playable=True):
 
 def test_best_match_normalizes_title_and_artist():
     tracks = [
-        track("1", "Money Trees (feat. Jay Rock)", "Kendrick Lamar"),
+        track("1", "Money Trees", "Kendrick Lamar"),
         track("2", "Money Trees - Live", "Kendrick Lamar"),
     ]
     assert capture.best_match("money trees", "Kendrick Lamar", tracks)["id"] == "1"
     assert capture.best_match("Nope", "Kendrick Lamar", tracks) is None
 
 
-def test_best_match_hyphen_only_in_suffix():
-    # T-Shirt should not strip at hyphen (no preceding space)
+def test_best_match_preserves_version_suffixes():
     tracks = [
         track("1", "T-Shirt", "Migos"),
         track("2", "T", "Migos"),
     ]
     assert capture.best_match("T-Shirt", "Migos", tracks)["id"] == "1"
-    # " - Live" suffix should be stripped (hyphen preceded by space)
     tracks = [
         track("2", "Money Trees - Live", "Kendrick Lamar"),
     ]
-    assert capture.best_match("Money Trees", "Kendrick Lamar", tracks)["id"] == "2"
+    assert capture.best_match("Money Trees", "Kendrick Lamar", tracks) is None
 
 
 def test_best_match_prefers_the_exact_release_over_a_live_version():
@@ -61,11 +59,32 @@ def test_best_match_prefers_the_exact_release_over_a_live_version():
     assert capture.best_match("Song", "Artist", tracks)["id"] == "studio"
 
 
+@pytest.mark.parametrize(
+    "title,artist,tracks",
+    [
+        ("Song - Remix", "Artist", [track("studio", "Song", "Artist")]),
+        ("Song", "Artist", [track("unrelated", "Song", "Unrelated")]),
+    ],
+)
+def test_best_match_rejects_wrong_version_and_artist(title, artist, tracks):
+    assert capture.best_match(title, artist, tracks) is None
+
+
 class FakeSpotify:
     def __init__(self, tracks, inbox_items=()):
-        self.tracks, self.inbox_items, self.calls = tracks, list(inbox_items), []
+        self.tracks, self.inbox_items, self.calls, self.searches = (
+            tracks,
+            list(inbox_items),
+            [],
+            [],
+        )
 
     def search_track(self, title, artist, market):
+        self.searches.append(("metadata", title, artist, market))
+        return self.tracks
+
+    def search_isrc(self, isrc, market):
+        self.searches.append(("isrc", isrc, market))
         return self.tracks
 
     def add_items(self, pid, uris):
@@ -125,6 +144,19 @@ INBOX = [
         "deleted_at": None,
     }
 ]
+
+
+def test_resolve_track_uses_isrc_and_requires_candidate_isrc(settings):
+    matching = track("match", "Different metadata", "Someone", isrc="USAAA2600001")
+    spotify = FakeSpotify([matching])
+    payload = {"title": "Song", "artist": "Artist", "isrc": "USAAA2600001"}
+
+    assert capture.resolve_track(payload, spotify, settings) == matching
+    assert spotify.searches == [("isrc", "USAAA2600001", "US")]
+
+    spotify = FakeSpotify([track("wrong", "Song", "Artist", isrc="USAAA2600002")])
+    assert capture.resolve_track(payload, spotify, settings) is None
+    assert spotify.searches == [("isrc", "USAAA2600001", "US")]
 
 
 def test_capture_adds_new_song_with_shazam_edge(settings):

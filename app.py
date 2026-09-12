@@ -142,10 +142,26 @@ def _consumer_capture(body: dict):
     from core.config import Settings
 
     try:
-        result = capture_clients.deliver(Settings(), body["client_id"], body["capture"], _capture)
+        settings = Settings()
+        from core import capture as cap
+
+        capture_clients.require_active(settings, body["client_id"])
+        result = capture_clients.deliver(
+            settings,
+            body["client_id"],
+            body["capture"],
+            lambda payload: cap.resolve_track(payload, None, settings),
+            lambda payload, selected: _capture(payload, selected),
+        )
         if result.get("ok") is not True:
             return JSONResponse(result, status_code=422)
         return result
+    except capture_clients.Unauthorized:
+        return JSONResponse(
+            {"ok": False, "message": "unauthorized"},
+            status_code=401,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     except capture_clients.InvalidRequest as exc:
         return JSONResponse({"ok": False, "message": str(exc)}, status_code=422)
     except capture_clients.Conflict as exc:
@@ -199,7 +215,7 @@ def _flag_quietly(settings, flags: list[str], errors: list[str]) -> None:
         print(f"capture: could not file flag: {e}")
 
 
-def _capture(body: dict):
+def _capture(body: dict, resolved_track: dict | None = None):
     from datetime import datetime, timezone
 
     from fastapi.responses import JSONResponse
@@ -216,6 +232,7 @@ def _capture(body: dict):
             None,
             s,
             datetime.now(timezone.utc),
+            resolved_track=resolved_track,
         )
     except SpotifyAuthError as e:
         _flag_quietly(s, [], [f"Spotify refresh token {e}: re-mint with scripts/spotify_auth.py"])
