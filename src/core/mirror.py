@@ -94,7 +94,15 @@ def load_mirror(hub) -> Mirror:
             r["playlist_id"], r["isrc"], r["spotify_track_id"], r["added_at"], r.get("deleted_at")
         )
         (deleted.append(m) if m.deleted_at else memberships.__setitem__((m.playlist_id, m.isrc), m))
-    provenance = hub.pull("provenance", PROV_COLS)
+    # Provenance holds every media source; pull only the two song slices this
+    # mirror reads, or the hub cannot serve the table within its limits.
+    provenance = hub.pull(
+        "provenance", PROV_COLS, where={"to_kind": "songs", "rel": "imported_from"}
+    ) + hub.pull(
+        "provenance",
+        PROV_COLS,
+        where={"to_kind": "songs", "rel": "evidence_of", "asserted_by": "music-sync"},
+    )
     captures = {
         (r["to_ref"], r["from_kind"])
         for r in provenance

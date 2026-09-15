@@ -29,10 +29,13 @@ class Hub:
             raise HubError(f"hub HTTP {r.status_code}: {r.text[:300]}")
         return r.json()
 
-    def pull(self, table: str, columns: list[str], since: str = "") -> list[dict]:
-        return self._post("/v1/rows/pull", {"table": table, "columns": columns, "since": since})[
-            "rows"
-        ]
+    def pull(
+        self, table: str, columns: list[str], since: str = "", where: dict | None = None
+    ) -> list[dict]:
+        body = {"table": table, "columns": columns, "since": since}
+        if where:
+            body["where"] = where
+        return self._post("/v1/rows/pull", body)["rows"]
 
     def catalog(self) -> dict:
         try:

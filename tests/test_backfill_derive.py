@@ -449,12 +449,12 @@ def test_confirmation_error_preserves_rate_limit(monkeypatch):
     service.replies[("S0000", "mb_tags")] = [error]
     original = service.hub.pull
 
-    def pull(table, cols, since=""):
+    def pull(table, cols, since="", where=None):
         if service.calls == [("S0000", "mb_tags")] and table == "provenance":
             # Fail confirmation once; later sources must still proceed.
             monkeypatch.setattr(service.hub, "pull", original)
             raise HubError("confirmation unavailable")
-        return original(table, cols, since)
+        return original(table, cols, since, where)
 
     monkeypatch.setattr(service.hub, "pull", pull)
     out = service.run("mb_tags")
