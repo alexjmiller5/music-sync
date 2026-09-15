@@ -30,10 +30,12 @@ class FakeHub:
     def __init__(self, tables):
         self.tables = tables
 
-    def pull(self, table, columns, since=""):
+    def pull(self, table, columns, since="", where=None):
         if table == "provenance":
             assert not set(columns) - PROVENANCE_COLUMNS, "unknown provenance projection"
-        return [{c: r.get(c) for c in columns} for r in self.tables.get(table, [])]
+        rows = self.tables.get(table, [])
+        rows = [r for r in rows if all(r.get(k) == v for k, v in (where or {}).items())]
+        return [{c: r.get(c) for c in columns} for r in rows]
 
     def push(self, table, rows):
         for row in rows:
