@@ -10,6 +10,7 @@ from typing import Annotated
 
 import httpx
 import modal
+import structlog
 from fastapi import Header
 
 APP_NAME = "music-sync"  # also the Modal secret name (see justfile sync-secrets)
@@ -178,6 +179,8 @@ def _consumer_capture(body: dict):
             )
         return JSONResponse({"ok": False, "message": "capture unavailable"}, status_code=503)
     except Exception:
+        # The client only sees a safe 503; the cause must be visible in the app logs.
+        structlog.get_logger().exception("consumer_capture_failed")
         return JSONResponse({"ok": False, "message": "capture unavailable"}, status_code=503)
 
 
