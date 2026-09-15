@@ -230,6 +230,28 @@ def test_consumer_capture_returns_safe_unavailable_when_receipt_write_fails(
     assert response.json() == {"ok": False, "message": "capture unavailable"}
 
 
+def test_consumer_capture_relays_spotify_rate_limit_as_retry_after(capture_api, monkeypatch):
+    import httpx
+    from core import capture as cap
+
+    post, _ = capture_api
+    token = issue_capture_token(post)["token"]
+
+    def rate_limited(payload, spotify, settings):
+        response = httpx.Response(
+            429,
+            headers={"Retry-After": "120"},
+            request=httpx.Request("GET", "https://api.spotify.com/v1/search"),
+        )
+        raise httpx.HTTPStatusError("429", request=response.request, response=response)
+
+    monkeypatch.setattr(cap, "resolve_track", rate_limited)
+    response = post("/capture-consumer", CONSUMER_BODY, token)
+    assert response.status_code == 503
+    assert response.headers["Retry-After"] == "120"
+    assert response.json() == {"ok": False, "message": "Spotify is rate limiting; retry later"}
+
+
 def test_queued_consumer_rechecks_revocation_inside_worker(capture_api, settings, monkeypatch):
     from core import capture_clients
 
