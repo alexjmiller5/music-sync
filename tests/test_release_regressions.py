@@ -72,8 +72,10 @@ class Store:
             }
         self.fail = None
 
-    def pull(self, table, columns, since=""):
-        return [{c: copy.deepcopy(r.get(c)) for c in columns} for r in self.tables[table].values()]
+    def pull(self, table, columns, since="", where=None):
+        rows = list(self.tables[table].values())
+        rows = [r for r in rows if all(r.get(k) == v for k, v in (where or {}).items())]
+        return [{c: copy.deepcopy(r.get(c)) for c in columns} for r in rows]
 
     def push(self, table, rows):
         if self.fail == table:

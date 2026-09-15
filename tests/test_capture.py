@@ -123,8 +123,10 @@ class FakeHub:
         }
         self.pushed = []
 
-    def pull(self, table, columns, since=""):
-        return [{c: r.get(c) for c in columns} for r in self.tables[table]]
+    def pull(self, table, columns, since="", where=None):
+        rows = self.tables[table]
+        rows = [r for r in rows if all(r.get(k) == v for k, v in (where or {}).items())]
+        return [{c: r.get(c) for c in columns} for r in rows]
 
     def push(self, table, rows):
         self.pushed.append((table, rows))
