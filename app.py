@@ -8,6 +8,7 @@ and the app-issued-token capture endpoint.
 import os
 from typing import Annotated
 
+import httpx
 import modal
 from fastapi import Header
 
@@ -166,6 +167,16 @@ def _consumer_capture(body: dict):
         return JSONResponse({"ok": False, "message": str(exc)}, status_code=422)
     except capture_clients.Conflict as exc:
         return JSONResponse({"ok": False, "message": str(exc)}, status_code=409)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 429:
+            # Spotify's retry budget is spent; tell clients how long to stay away
+            # so their retries stop feeding the rate limit.
+            return JSONResponse(
+                {"ok": False, "message": "Spotify is rate limiting; retry later"},
+                status_code=503,
+                headers={"Retry-After": exc.response.headers.get("Retry-After", "300")},
+            )
+        return JSONResponse({"ok": False, "message": "capture unavailable"}, status_code=503)
     except Exception:
         return JSONResponse({"ok": False, "message": "capture unavailable"}, status_code=503)
 
