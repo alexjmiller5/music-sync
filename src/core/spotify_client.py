@@ -22,6 +22,10 @@ ITEM_FIELDS = (
     "duration_ms,linked_from(id),artists(name),album(name,release_date)))"
 )
 MAX_429_RETRIES = 5
+# A throttled Spotify can ask for minutes or hours; the single worker must not
+# sleep that long with every other caller queued behind it. Longer waits fail
+# fast and reach clients as 503 + Retry-After so they back off instead.
+MAX_429_WAIT = 30.0
 
 
 class SpotifyAuthError(RuntimeError):
@@ -65,6 +69,8 @@ class SpotifyClient:
                     resp.raise_for_status()
                 wait = float(resp.headers.get("Retry-After", "1"))
                 log.warning("spotify_rate_limited", retry_after=wait)
+                if wait > MAX_429_WAIT:
+                    resp.raise_for_status()
                 time.sleep(wait)
                 continue
             consecutive_429s = 0
