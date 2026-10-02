@@ -33,7 +33,12 @@ deploy: test sync-secrets
 
 # --- project-specific recipes below (one-offs live in scripts/, run directly) ---
 
-# Consumer-app capture tokens: `just clients issue "<device>"` prints an
-# enrollment link for Offline Shazam; `just clients revoke <client_id>`.
-clients action *rest:
-    MODAL_TOKEN_ID=op://4eeyrkqibibn7k4j6rz2fbzvxm/2sfxybjpv3c3ohzxhf5qeken4a/token_id MODAL_TOKEN_SECRET=op://4eeyrkqibibn7k4j6rz2fbzvxm/2sfxybjpv3c3ohzxhf5qeken4a/token_secret op run --no-masking -- uv run scripts/capture_clients.py {{action}} {{quote(rest)}}
+# Consumer-app capture tokens: `just clients issue "<device>" [workspace]`
+# prints an enrollment link for Offline Shazam; `just clients revoke <client_id>`.
+clients action arg="" ws="":
+    MODAL_TOKEN_ID=op://4eeyrkqibibn7k4j6rz2fbzvxm/2sfxybjpv3c3ohzxhf5qeken4a/token_id MODAL_TOKEN_SECRET=op://4eeyrkqibibn7k4j6rz2fbzvxm/2sfxybjpv3c3ohzxhf5qeken4a/token_secret op run --no-masking -- uv run scripts/capture_clients.py {{action}} {{quote(arg)}} {{ws}}
+
+# Workspaces (another person's Spotify, hub and Notion): `list`, `show <id>`,
+# `set <id>` (KEY=VALUE on stdin), `connect-link <id>` (Connect Spotify invite)
+workspace action *args:
+    MODAL_TOKEN_ID=op://4eeyrkqibibn7k4j6rz2fbzvxm/2sfxybjpv3c3ohzxhf5qeken4a/token_id MODAL_TOKEN_SECRET=op://4eeyrkqibibn7k4j6rz2fbzvxm/2sfxybjpv3c3ohzxhf5qeken4a/token_secret op run --no-masking -- uv run scripts/workspace.py {{action}} {{args}}

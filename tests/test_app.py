@@ -130,7 +130,7 @@ def test_operator_can_issue_and_revoke_one_consumer_without_affecting_another(
     monkeypatch.setattr(
         app,
         "_capture",
-        lambda body, selected=None: {
+        lambda body, selected=None, settings=None: {
             "ok": True,
             "message": "added",
             "isrc": "USAAA2600001",
@@ -175,7 +175,7 @@ def test_consumer_capture_rejects_malformed_body_and_changed_replay(capture_api,
     monkeypatch.setattr(
         app,
         "_capture",
-        lambda body, selected=None: {
+        lambda body, selected=None, settings=None: {
             "ok": True,
             "message": "added",
             "isrc": "USAAA2600001",
@@ -197,7 +197,7 @@ def test_consumer_capture_replays_receipt_without_recapturing(capture_api, monke
     calls = []
     monkeypatch.setattr(capture_mod, "resolve_track", lambda *args: {"id": "selected"})
 
-    def perform(body, selected=None):
+    def perform(body, selected=None, settings=None):
         calls.append(body)
         return {"ok": True, "message": "added", "isrc": "USAAA2600001"}
 

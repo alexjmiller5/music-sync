@@ -187,7 +187,7 @@ def _plan(m, live, observed_time, key, market):
 def run(settings, archive_key: str, observed_at: str, *, dry_run: bool = True, hub=None) -> dict:
     observed_time = validate_request(archive_key, observed_at, dry_run)
     stamp = observed_time.isoformat(timespec="milliseconds").replace("+00:00", "Z")
-    saved = archive.get(settings, archive.PENDING_KEY)
+    saved = archive.get(settings, archive.pending_key(settings))
     pending = json.loads(gzip.decompress(saved)) if saved else None
     identity = {"intent": "metadata_replay", "archive_key": archive_key, "observed_at": stamp}
     if pending and any(pending.get(k) != v for k, v in identity.items()):
@@ -221,7 +221,9 @@ def run(settings, archive_key: str, observed_at: str, *, dry_run: bool = True, h
             if remaining
             else None
         )
-        archive.put(settings, archive.PENDING_KEY, gzip.compress(json.dumps(data).encode()))
+        archive.put(
+            settings, archive.pending_key(settings), gzip.compress(json.dumps(data).encode())
+        )
 
     if plan:
         hub = hub or Hub(settings.life_hub_url, settings.life_hub_token)

@@ -123,6 +123,32 @@ runs in tests, locally, or on any future platform.
   Follow `docs/observed-metadata-rollout.md` with deployment/capture downtime
   approval, preserve historical provenance options and leave cron disabled.
 
+## Workspaces (multi-user ready, no user database)
+
+- `default` is the operator's own workspace, configured entirely by env
+  (`Settings()`), exactly as before. Any other workspace is one entry in the
+  `music-sync/workspaces.json.gz` R2 registry (`core/workspaces.py`) that
+  overrides the per-user Settings fields (Spotify refresh token, market,
+  life-data hub, Notion flags target, limits) via
+  `workspaces.settings_for(base, id)`; the Spotify developer app and R2 bucket
+  are shared app infrastructure. `Settings.workspace` names the active one.
+- Capture clients carry their workspace; the consumer capture runs entirely
+  in it (resolve, capture, hub, flags). Pending-reconcile intent is per
+  workspace (`archive.pending_key`; default keeps the original key).
+- Reconcile: `RECONCILE_ENABLED=1` stays the app-wide switch; the cron runs
+  every workspace (`{id: result}`), and a non-default one also needs its own
+  `reconcile_enabled` flag. Manual reconcile takes an optional `workspace`.
+- **Connect Spotify** (`core/spotify_connect.py`, the `spotify-connect`
+  endpoint): `just workspace connect-link <id>` issues a single-use, 7-day
+  invite; the person signs in with Spotify and the refresh token lands on
+  their workspace. The endpoint's own URL with a trailing slash is the
+  redirect URI registered on the Spotify app; Development Mode needs the
+  person's Spotify email on the app's user allowlist. No developer script or
+  credential is part of a user's approval.
+- Onboarding a person: `just workspace set <id>` (their hub + Notion on
+  stdin), send `just workspace connect-link <id>`, then
+  `just clients issue "<device>" <id>` for each Offline Shazam device.
+
 ## Layout
 
 ```
@@ -138,6 +164,8 @@ src/core/
   actions.py                 apply actions to Spotify and the hub; run log
   flags.py                   batch flags into one Notion Chore task
   capture.py                  /capture: resolve a Shazam result, add to inbox, record the edge
+  workspaces.py               per-person Settings overrides in the R2 registry
+  spotify_connect.py          Connect Spotify invites + OAuth code exchange
   capture_clients.py          capture-only credentials and idempotent delivery receipts
   config.py                  Settings (env vars only)
   model.py                    dataclasses shared across core
@@ -145,7 +173,8 @@ src/core/
 scripts/
   provision.py                R2 field minters + atomic, memory-only Modal token batch
   sync_secrets.py             push .env.tpl -> Modal secret store
-  spotify_auth.py             mint/re-mint the Spotify refresh token
+  spotify_auth.py             mint/re-mint the default workspace's Spotify refresh token (local loopback)
+  workspace.py                operator CLI for workspaces (`just workspace ...`)
   create_50s_playlist.py      one-off playlist creation
 tests/                        pytest
 ```

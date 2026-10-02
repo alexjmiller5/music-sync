@@ -69,7 +69,7 @@ def capture(
     title, artist = (payload.get("title") or "").strip(), (payload.get("artist") or "").strip()
     if not title or not artist:
         return {"ok": False, "message": "title and artist required", "isrc": None}
-    pending = archive.get(settings, archive.PENDING_KEY)
+    pending = archive.get(settings, archive.pending_key(settings))
     if pending and json.loads(gzip.decompress(pending)):
         return {
             "ok": False,

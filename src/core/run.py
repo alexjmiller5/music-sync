@@ -29,7 +29,7 @@ def reconcile_run(
 ) -> actions.RunLog:
     now = now or datetime.now(timezone.utc)
     today = now.date().isoformat()
-    saved = archive.get(settings, archive.PENDING_KEY)
+    saved = archive.get(settings, archive.pending_key(settings))
     pending = json.loads(gzip.decompress(saved)) if saved else None
     if pending and pending.get("intent") == "metadata_replay":
         return actions.RunLog(
@@ -115,7 +115,9 @@ def reconcile_run(
             if remaining
             else None
         )
-        archive.put(settings, archive.PENDING_KEY, gzip.compress(json.dumps(data).encode()))
+        archive.put(
+            settings, archive.pending_key(settings), gzip.compress(json.dumps(data).encode())
+        )
 
     out = actions.apply(
         plan,

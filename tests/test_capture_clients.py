@@ -210,3 +210,10 @@ def test_enroll_page_hands_the_fragment_to_the_app_scheme():
 
     assert "offlineshazam://enroll?" in ENROLL_PAGE
     assert "location.hash" in ENROLL_PAGE
+
+
+def test_clients_are_bound_to_a_workspace(settings, objects):
+    friend = capture_clients.issue(settings, "friend phone", workspace="friend")
+    mine = capture_clients.issue(settings, "my phone")
+    assert capture_clients.client_workspace(settings, friend["client_id"]) == "friend"
+    assert capture_clients.client_workspace(settings, mine["client_id"]) == "default"

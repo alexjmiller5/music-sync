@@ -40,7 +40,7 @@ def _save(settings: Settings, key: str, value) -> None:
     archive.put(settings, key, gzip.compress(json.dumps(value, sort_keys=True).encode()))
 
 
-def issue(settings: Settings, label: str) -> dict:
+def issue(settings: Settings, label: str, workspace: str = "default") -> dict:
     if not isinstance(label, str) or not label.strip():
         raise InvalidRequest("label must be a nonempty string")
     token = secrets.token_urlsafe(32)
@@ -50,6 +50,7 @@ def issue(settings: Settings, label: str) -> dict:
         {
             "client_id": client_id,
             "label": label.strip(),
+            "workspace": workspace,
             "token_hash": sha256(token.encode()).hexdigest(),
             "revoked": False,
         }
@@ -86,6 +87,16 @@ def authenticate(settings: Settings, token: str | None) -> str:
     for client in registry["clients"]:
         if hmac.compare_digest(client["token_hash"], digest) and not client["revoked"]:
             return client["client_id"]
+    raise Unauthorized
+
+
+def client_workspace(settings: Settings, client_id: str) -> str:
+    """The workspace a client's captures belong to (clients issued before
+    workspaces existed belong to the default one)."""
+    registry = _load(settings, CLIENTS_KEY) or {"clients": []}
+    for client in registry["clients"]:
+        if client["client_id"] == client_id:
+            return client.get("workspace", "default")
     raise Unauthorized
 
 

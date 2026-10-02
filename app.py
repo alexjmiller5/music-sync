@@ -11,7 +11,7 @@ from typing import Annotated
 import httpx
 import modal
 import structlog
-from fastapi import Header
+from fastapi import Header, Request
 
 APP_NAME = "music-sync"  # also the Modal secret name (see justfile sync-secrets)
 
@@ -26,11 +26,14 @@ image = (
 secrets = [modal.Secret.from_name(APP_NAME)]
 
 
-def _run(dry_run: bool) -> dict:
-    from core import run
+def _run(dry_run: bool, workspace: str = "default") -> dict:
+    from core import run, workspaces
     from core.config import Settings
 
-    log = run.reconcile(Settings(), dry_run=dry_run)
+    settings = workspaces.settings_for(Settings(), workspace)
+    if not dry_run and not workspaces.reconcile_enabled(settings):
+        return {"skipped": True}
+    log = run.reconcile(settings, dry_run=dry_run)
     return {
         "summary": log.summary(),
         "applied": dict(log.applied),
@@ -38,6 +41,13 @@ def _run(dry_run: bool) -> dict:
         "flags": log.flags,
         "errors": log.errors,
     }
+
+
+def _workspace_ids() -> list[str]:
+    from core import workspaces
+    from core.config import Settings
+
+    return workspaces.ids(Settings())
 
 
 @app.function(image=image, secrets=secrets, max_containers=1, timeout=1500)
@@ -51,19 +61,27 @@ def worker(operation: str, body: dict | None = None):
         return _consumer_capture(body)
     if operation == "capture_access":
         return _capture_access(body)
+    if operation == "workspace_admin":
+        return _workspace_admin(body)
     if operation != "reconcile":
         raise ValueError("unknown operation")
     if "metadata_replay" in body:
         return _metadata_replay(body)
+    # RECONCILE_ENABLED is the app-wide switch for cron and mutating runs;
+    # non-default workspaces additionally need their own reconcile_enabled flag.
     dry_run = body.get("dry_run") is True
     if not dry_run and os.environ.get("RECONCILE_ENABLED") != "1":
         return {"skipped": True}
+    if body.get("all_workspaces") is True:  # the hourly cron: every workspace in turn
+        return {wid: _run(dry_run=False, workspace=wid) for wid in _workspace_ids()}
+    if body.get("workspace"):
+        return _run(dry_run=dry_run, workspace=body["workspace"])
     return _run(dry_run=dry_run)
 
 
 @app.function(image=image, schedule=modal.Cron("0 * * * *"), timeout=1500)
 def reconcile_cron():
-    return worker.remote("reconcile")
+    return worker.remote("reconcile", {"all_workspaces": True})
 
 
 @app.function(image=image, timeout=1500)
@@ -132,8 +150,15 @@ def _capture_access(body: dict):
     try:
         if not isinstance(body, dict):
             raise capture_clients.InvalidRequest("body must be an object")
-        if body.get("action") == "issue" and set(body) == {"action", "label"}:
-            return capture_clients.issue(Settings(), body["label"])
+        if body.get("action") == "issue" and set(body) in (
+            {"action", "label"},
+            {"action", "label", "workspace"},
+        ):
+            from core import workspaces
+
+            workspace = body.get("workspace") or "default"
+            workspaces.settings_for(Settings(), workspace)  # must exist
+            return capture_clients.issue(Settings(), body["label"], workspace=workspace)
         if body.get("action") == "revoke" and set(body) == {"action", "client_id"}:
             revoked = capture_clients.revoke(Settings(), body["client_id"])
             if not revoked:
@@ -144,6 +169,8 @@ def _capture_access(body: dict):
         raise capture_clients.InvalidRequest("action must be issue or revoke with exact fields")
     except capture_clients.InvalidRequest as exc:
         return JSONResponse({"ok": False, "message": str(exc)}, status_code=422)
+    except KeyError as exc:  # workspaces.UnknownWorkspace
+        return JSONResponse({"ok": False, "message": f"unknown workspace {exc}"}, status_code=404)
     except Exception:
         return JSONResponse({"ok": False, "message": "capture access unavailable"}, status_code=503)
 
@@ -155,16 +182,21 @@ def _consumer_capture(body: dict):
     from core.config import Settings
 
     try:
-        settings = Settings()
         from core import capture as cap
+        from core import workspaces
 
-        capture_clients.require_active(settings, body["client_id"])
+        base = Settings()
+        capture_clients.require_active(base, body["client_id"])
+        # The client's workspace decides whose Spotify, hub and Notion this touches.
+        settings = workspaces.settings_for(
+            base, capture_clients.client_workspace(base, body["client_id"])
+        )
         result = capture_clients.deliver(
             settings,
             body["client_id"],
             body["capture"],
             lambda payload: cap.resolve_track(payload, None, settings),
-            lambda payload, selected: _capture(payload, selected),
+            lambda payload, selected: _capture(payload, selected, settings),
         )
         if result.get("ok") is not True:
             return JSONResponse(result, status_code=422)
@@ -193,6 +225,78 @@ def _consumer_capture(body: dict):
         # The client only sees a safe 503; the cause must be visible in the app logs.
         structlog.get_logger().exception("consumer_capture_failed")
         return JSONResponse({"ok": False, "message": "capture unavailable"}, status_code=503)
+
+
+def _workspace_admin(body: dict):
+    """Operator actions behind scripts/workspace.py (operator Modal auth only)."""
+    from datetime import datetime, timezone
+
+    from core import spotify_connect, workspaces
+    from core.config import Settings
+
+    base = Settings()
+    action = body.get("action")
+    if action == "list":
+        return {"workspaces": workspaces.ids(base)}
+    if action == "show":
+        return workspaces.summary(base, body["workspace"])
+    if action == "save":
+        workspaces.save(base, body["workspace"], **body.get("fields", {}))
+        return workspaces.summary(base, body["workspace"])
+    if action == "connect_link":
+        return {
+            "invite": spotify_connect.issue_invite(
+                base, body["workspace"], datetime.now(timezone.utc)
+            )
+        }
+    raise ValueError(f"unknown workspace action {action!r}")
+
+
+@app.function(image=image, secrets=secrets, timeout=60)
+@modal.fastapi_endpoint(method="GET", label="spotify-connect")
+def spotify_connect_endpoint(
+    request: Request,
+    invite: str | None = None,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+):
+    """Connect Spotify (core/spotify_connect.py): `?invite=` sends the person to
+    Spotify's consent screen; Spotify returns here with `code` + `state`. This
+    URL, with a trailing slash, is the redirect URI registered on the app."""
+    from datetime import datetime, timezone
+
+    from fastapi.responses import HTMLResponse, RedirectResponse
+
+    from core import spotify_connect
+    from core.config import Settings
+
+    def page(title: str, text: str, status: int = 200):
+        return HTMLResponse(spotify_connect.page(title, text), status_code=status)
+
+    settings = Settings()
+    now = datetime.now(timezone.utc)
+    redirect_uri = f"https://{request.url.hostname}/"
+    try:
+        if error:
+            return page(
+                "Not connected", "Spotify access was not granted. You can close this page.", 400
+            )
+        if code and state:
+            spotify_connect.complete(settings, state, code, redirect_uri, now, httpx.Client())
+            return page(
+                "Spotify connected",
+                "Music Sync can now manage your playlists. You can close this page.",
+            )
+        if invite:
+            return RedirectResponse(
+                spotify_connect.authorize_url(settings, invite, redirect_uri, now)
+            )
+        return page("Connect Spotify", "This link is incomplete. Ask for a new one.", 400)
+    except spotify_connect.InvalidInvite as exc:
+        return page("Link not valid", str(exc), 400)
+    except httpx.HTTPError:
+        return page("Spotify did not answer", "Try the link again in a minute.", 502)
 
 
 def _metadata_replay(body: dict):
@@ -240,7 +344,7 @@ def _flag_quietly(settings, flags: list[str], errors: list[str]) -> None:
         print(f"capture: could not file flag: {e}")
 
 
-def _capture(body: dict, resolved_track: dict | None = None):
+def _capture(body: dict, resolved_track: dict | None = None, settings=None):
     from datetime import datetime, timezone
 
     from fastapi.responses import JSONResponse
@@ -249,7 +353,7 @@ def _capture(body: dict, resolved_track: dict | None = None):
     from core.config import Settings
     from core.spotify_client import SpotifyAuthError
 
-    s = Settings()
+    s = settings or Settings()
     try:
         out = cap.capture(
             body or {},
@@ -260,7 +364,13 @@ def _capture(body: dict, resolved_track: dict | None = None):
             resolved_track=resolved_track,
         )
     except SpotifyAuthError as e:
-        _flag_quietly(s, [], [f"Spotify refresh token {e}: re-mint with scripts/spotify_auth.py"])
+        _flag_quietly(
+            s,
+            [],
+            [
+                f"Spotify refresh token {e}: reconnect with `just workspace connect-link {s.workspace}`"
+            ],
+        )
         return JSONResponse(
             {"ok": False, "message": "Spotify token expired; flagged"}, status_code=503
         )
