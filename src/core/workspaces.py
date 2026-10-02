@@ -52,11 +52,11 @@ def _registry(settings: Settings) -> dict:
 
 
 def save(settings: Settings, workspace: str, **fields) -> None:
-    """Create or update a non-default workspace; given fields replace, others are kept."""
-    if workspace == DEFAULT or not ID.fullmatch(workspace or ""):
-        raise InvalidWorkspace(
-            f"workspace id {workspace!r}: lowercase letters, digits, dashes; not 'default'"
-        )
+    """Create or update a workspace record; given fields replace, others are kept.
+    A `default` record overrides env field by field (e.g. a Spotify token
+    re-granted through Connect Spotify)."""
+    if not ID.fullmatch(workspace or ""):
+        raise InvalidWorkspace(f"workspace id {workspace!r}: lowercase letters, digits, dashes")
     allowed = {**USER_FIELDS, **FLAGS}
     if bad := sorted(set(fields) - set(allowed)):
         raise InvalidWorkspace(f"not workspace fields: {bad}; allowed {sorted(allowed)}")
