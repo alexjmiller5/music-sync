@@ -6,6 +6,7 @@ import json
 import re
 import secrets
 from hashlib import sha256
+from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
 from core import archive
@@ -55,6 +56,12 @@ def issue(settings: Settings, label: str) -> dict:
     )
     _save(settings, CLIENTS_KEY, registry)
     return {"ok": True, "client_id": client_id, "token": token}
+
+
+def enrollment_link(enroll_page_url: str, capture_url: str, token: str) -> str:
+    """The token rides in the URL fragment, which browsers never send to the
+    page's server; the page hands it to offlineshazam://enroll."""
+    return f"{enroll_page_url}#{urlencode({'url': capture_url, 'token': token})}"
 
 
 def revoke(settings: Settings, client_id: str) -> bool:

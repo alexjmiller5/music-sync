@@ -189,6 +189,13 @@ other clients:
 The response is `{"ok":true,"revoked":true}`. Store the consumer endpoint URL
 and returned token in the app's supported configuration and Keychain.
 
+**Enrollment link** - `just clients issue "<device>"` issues a client through
+the same function with operator Modal auth and prints a link to the static
+`capture-enroll` page. The URL and token ride in the link's fragment (never
+sent to a server); the page opens `offlineshazam://enroll?url=&token=`, which
+Offline Shazam saves to its Keychain and verifies. `just clients revoke
+<client_id>` revokes one device.
+
 ## Commands
 
 Standard verb set (see global AGENTS.md) - the justfile is the interface,
@@ -270,11 +277,11 @@ still apply). The live catalog is not asserted to have changed: follow the
    Modal dashboard under Settings -> Proxy Auth Tokens, stored as `MODAL_KEY`
    / `MODAL_SECRET` in `iOS Shortcuts ENV`. The shortcut posts to `/capture`
    with those headers.
-4. **Consumer capture enrollment** - call the deployed `capture-access`
-   endpoint with the operator's Modal proxy-auth headers and
-   `{"action":"issue","label":"<device>"}`. Configure the app with the
-   `capture-consumer` endpoint URL and the one-time returned token. The app
-   stores the token in Keychain; it never receives Modal or R2 credentials.
+4. **Consumer capture enrollment** - `just clients issue "<device>"` and open
+   the printed link on that device (or call `capture-access` with
+   `{"action":"issue","label":"<device>"}` and enter the `capture-consumer`
+   URL and token in the app). The app stores the token in Keychain; it never
+   receives Modal or R2 credentials.
 5. **`op-project-bootstrap`** - fills the `Music Sync ENV` 1Password item and
    mints the Modal CI token, both via `scripts/provision.py`:
    ```

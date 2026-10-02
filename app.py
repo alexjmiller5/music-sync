@@ -106,6 +106,17 @@ def capture_consumer(body: dict, authorization: Annotated[str | None, Header()] 
     return worker.remote("consumer_capture", {"client_id": client_id, "capture": body})
 
 
+@app.function(image=image)
+@modal.fastapi_endpoint(method="GET", label="capture-enroll")
+def capture_enroll():
+    """Static page an enrollment link opens; it forwards to offlineshazam://enroll."""
+    from fastapi.responses import HTMLResponse
+
+    from core.enroll_page import ENROLL_PAGE
+
+    return HTMLResponse(ENROLL_PAGE, headers={"Cache-Control": "no-store"})
+
+
 @app.function(image=image, timeout=1500)
 @modal.fastapi_endpoint(method="POST", label="capture-access", requires_proxy_auth=True)
 def capture_access(body: dict):
