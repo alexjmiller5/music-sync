@@ -3,7 +3,7 @@
     uv run scripts/capture_clients.py issue "<device label>"   # prints the enrollment link
     uv run scripts/capture_clients.py revoke <client_id>
 
-Calls the deployed capture_access function with the operator's Modal auth
+Runs the capture_access operation on the deployed worker with the operator's Modal auth
 (MODAL_TOKEN_ID / MODAL_TOKEN_SECRET or a modal profile). The link is the only
 copy of the token: send it to the device owner, who opens it on that device.
 """
@@ -19,10 +19,21 @@ APP_NAME = "music-sync"
 
 
 def main(argv: list[str]) -> int:
-    access = modal.Function.from_name(APP_NAME, "capture_access")
+    worker = modal.Function.from_name(APP_NAME, "worker")
+
+    def access(body: dict):
+        # The capture-access web endpoint forwards to this same serialized worker;
+        # a web endpoint itself cannot be called with .remote().
+        result = worker.remote("capture_access", body)
+        return (
+            result
+            if isinstance(result, dict)
+            else {"ok": False, "detail": getattr(result, "body", result)}
+        )
+
     match [a for a in argv if a]:
         case ["issue", label]:
-            issued = access.remote({"action": "issue", "label": label})
+            issued = access({"action": "issue", "label": label})
             if not isinstance(issued, dict) or not issued.get("ok"):
                 print(f"issue failed: {issued}", file=sys.stderr)
                 return 1
@@ -31,8 +42,9 @@ def main(argv: list[str]) -> int:
             print(f"client_id: {issued['client_id']}  label: {label}")
             print(enrollment_link(enroll, capture, issued["token"]))
         case ["revoke", client_id]:
-            result = access.remote({"action": "revoke", "client_id": client_id})
-            print(result if isinstance(result, dict) else "revoke failed")
+            result = access({"action": "revoke", "client_id": client_id})
+            print(result)
+            return 0 if result.get("ok") else 1
         case _:
             print(__doc__, file=sys.stderr)
             return 2
