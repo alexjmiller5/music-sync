@@ -243,6 +243,8 @@ def _workspace_admin(body: dict):
     if action == "save":
         workspaces.save(base, body["workspace"], **body.get("fields", {}))
         return workspaces.summary(base, body["workspace"])
+    if action == "remove":
+        return {"removed": workspaces.remove(base, body["workspace"])}
     if action == "connect_link":
         return {
             "invite": spotify_connect.issue_invite(

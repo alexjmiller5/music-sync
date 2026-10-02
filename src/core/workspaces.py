@@ -69,6 +69,17 @@ def save(settings: Settings, workspace: str, **fields) -> None:
     )
 
 
+def remove(settings: Settings, workspace: str) -> bool:
+    registry = _registry(settings)
+    if workspace == DEFAULT or workspace not in registry:
+        return False
+    del registry[workspace]
+    archive.put(
+        settings, REGISTRY_KEY, gzip.compress(json.dumps(registry, sort_keys=True).encode())
+    )
+    return True
+
+
 def settings_for(base: Settings, workspace: str) -> Settings:
     record = _registry(base).get(workspace)
     if record is None and workspace != DEFAULT:
@@ -88,7 +99,7 @@ def reconcile_enabled(settings: Settings) -> bool:
 
 
 def ids(settings: Settings) -> list[str]:
-    return [DEFAULT, *sorted(_registry(settings))]
+    return [DEFAULT, *sorted(set(_registry(settings)) - {DEFAULT})]
 
 
 def summary(settings: Settings, workspace: str) -> dict:
