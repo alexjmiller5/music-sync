@@ -86,3 +86,19 @@ def test_registry_is_one_gzipped_json_object(settings, objects):
     assert json.loads(gzip.decompress(objects[workspaces.REGISTRY_KEY])) == {
         "friend": {"notion_token": "n"}
     }
+
+
+def test_default_record_overrides_env_field_by_field(settings, objects):
+    workspaces.save(settings, "default", spotify_refresh_token="regranted")
+    s = workspaces.settings_for(settings, "default")
+    assert s.spotify_refresh_token == "regranted" and s.life_hub_url == settings.life_hub_url
+    assert workspaces.ids(settings) == ["default"]
+
+
+def test_remove_deletes_only_non_default_records(settings, objects):
+    workspaces.save(settings, "friend", notion_token="n")
+    assert workspaces.remove(settings, "friend") is True
+    assert workspaces.remove(settings, "friend") is False
+    assert workspaces.remove(settings, "default") is False
+    with pytest.raises(workspaces.UnknownWorkspace):
+        workspaces.settings_for(settings, "friend")

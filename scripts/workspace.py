@@ -4,6 +4,7 @@
     uv run scripts/workspace.py show <id>
     uv run scripts/workspace.py set <id>            # KEY=VALUE lines on stdin
     uv run scripts/workspace.py connect-link <id>   # prints a one-time Connect Spotify link
+    uv run scripts/workspace.py remove <id>         # deletes a non-default workspace record
 
 `default` is the operator's own workspace, configured by env. Any other one is
 a record in the app's state overriding the per-user fields: SPOTIFY_MARKET,
@@ -49,6 +50,8 @@ def main(argv: list[str]) -> int:
             invite = admin(action="connect_link", workspace=wid)["invite"]
             url = modal.Function.from_name(APP_NAME, "spotify_connect_endpoint").get_web_url()
             print(f"{url.rstrip('/')}/?invite={invite}")
+        case ["remove", wid]:
+            print(admin(action="remove", workspace=wid))
         case _:
             print(__doc__, file=sys.stderr)
             return 2
