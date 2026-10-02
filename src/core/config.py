@@ -23,3 +23,6 @@ class Settings(BaseSettings):
     r2_access_key_id: str
     inbox_cap: int = 100
     undo_days: int = 7
+    # Which workspace these settings act for (core/workspaces.py); set by
+    # workspaces.settings_for, never by env.
+    workspace: str = "default"

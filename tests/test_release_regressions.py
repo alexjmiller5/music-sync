@@ -487,6 +487,7 @@ def test_all_entrypoints_share_one_serial_modal_worker(monkeypatch):
     monkeypatch.setattr(app.worker, "remote", remote)
     monkeypatch.setenv("RECONCILE_ENABLED", "1")
     monkeypatch.setattr(app, "_run", lambda **kw: {"reconciled": True})
+    monkeypatch.setattr(app, "_workspace_ids", lambda: ["default"])
     monkeypatch.setattr(app, "_capture", lambda body: {"captured": body})
     inputs = [
         (app.reconcile_cron.get_raw_f(), ()),
@@ -498,7 +499,7 @@ def test_all_entrypoints_share_one_serial_modal_worker(monkeypatch):
         results = list(pool.map(lambda pair: pair[0](*pair[1]), inputs))
     assert calls.count("reconcile") == 2 and calls.count("capture") == 2
     assert results == [
-        {"reconciled": True},
+        {"default": {"reconciled": True}},  # the cron reconciles each workspace
         {"reconciled": True},
         {"captured": {"id": 1}},
         {"captured": {"id": 2}},

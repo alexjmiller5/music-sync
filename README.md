@@ -196,6 +196,16 @@ sent to a server); the page opens `offlineshazam://enroll?url=&token=`, which
 Offline Shazam saves to its Keychain and verifies. `just clients revoke
 <client_id>` revokes one device.
 
+## Workspaces
+
+Music Sync can act for more than one person without a user database. The
+operator's own setup is the `default` workspace (env). Another person is a
+workspace record holding their life-data hub, Notion target and limits, plus
+the Spotify refresh token they grant themselves through a **Connect Spotify**
+link (`just workspace connect-link <id>`). Their Offline Shazam devices get
+tokens bound to that workspace (`just clients issue "<device>" <id>`). See
+AGENTS.md for the mechanics.
+
 ## Commands
 
 Standard verb set (see global AGENTS.md) - the justfile is the interface,
