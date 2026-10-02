@@ -32,3 +32,8 @@ deploy: test sync-secrets
     modal deploy app.py
 
 # --- project-specific recipes below (one-offs live in scripts/, run directly) ---
+
+# Consumer-app capture tokens: `just clients issue "<device>"` prints an
+# enrollment link for Offline Shazam; `just clients revoke <client_id>`.
+clients action *rest:
+    MODAL_TOKEN_ID=op://4eeyrkqibibn7k4j6rz2fbzvxm/2sfxybjpv3c3ohzxhf5qeken4a/token_id MODAL_TOKEN_SECRET=op://4eeyrkqibibn7k4j6rz2fbzvxm/2sfxybjpv3c3ohzxhf5qeken4a/token_secret op run --no-masking -- uv run scripts/capture_clients.py {{action}} {{quote(rest)}}

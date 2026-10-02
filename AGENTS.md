@@ -27,6 +27,10 @@ runs in tests, locally, or on any future platform.
   its SHA-256 hash is retained; each client can be revoked independently. The
   worker rechecks active status after queueing so a completed revoke blocks
   later queued work.
+- `just clients issue "<device>"` (scripts/capture_clients.py, operator Modal
+  auth) issues a client and prints an enrollment link to the static
+  `capture-enroll` page, which hands the fragment-borne URL and token to
+  `offlineshazam://enroll`. Onboarding another device or person = that link.
 - Cron: Modal is the PREFERRED home for schedules - but the Starter plan
   allows **5 deployed crons across ALL apps**, so track the budget. Overflow
   goes to GHA cron or CF Cron Triggers.

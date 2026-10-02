@@ -189,3 +189,24 @@ def test_receipt_persistence_failure_never_acknowledges_success(settings, object
         )
     )
     assert state["selected_track"] == SELECTED and "isrc" not in state
+
+
+def test_enrollment_link_keeps_the_token_in_the_fragment():
+    from urllib.parse import parse_qs, urlsplit
+
+    link = capture_clients.enrollment_link(
+        "https://ws--capture-enroll.modal.run", "https://ws--capture-consumer.modal.run", "t/k+="
+    )
+    parts = urlsplit(link)
+    assert parts.query == ""
+    assert parse_qs(parts.fragment) == {
+        "url": ["https://ws--capture-consumer.modal.run"],
+        "token": ["t/k+="],
+    }
+
+
+def test_enroll_page_hands_the_fragment_to_the_app_scheme():
+    from core.enroll_page import ENROLL_PAGE
+
+    assert "offlineshazam://enroll?" in ENROLL_PAGE
+    assert "location.hash" in ENROLL_PAGE
