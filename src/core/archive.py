@@ -51,6 +51,13 @@ def put(settings: Settings, key: str, data: bytes, s3: BaseClient | None = None)
 PENDING_KEY = "music-sync/pending-reconcile.json.gz"
 
 
+def pending_key(settings: Settings) -> str:
+    """A workspace's pending-reconcile intent; the default one keeps the original key."""
+    if settings.workspace == "default":
+        return PENDING_KEY
+    return f"music-sync/workspaces/{settings.workspace}/pending-reconcile.json.gz"
+
+
 def get(settings: Settings, key: str, s3: BaseClient | None = None) -> bytes | None:
     if key.startswith("raw/"):
         return _file_request(settings, "GET", key)
