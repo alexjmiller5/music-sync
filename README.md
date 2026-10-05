@@ -193,7 +193,7 @@ and returned token in the app's supported configuration and Keychain.
 the same function with operator Modal auth and prints a link to the static
 `capture-enroll` page. The URL and token ride in the link's fragment (never
 sent to a server); the page opens `offlineshazam://enroll?url=&token=`, which
-Offline Shazam saves to its Keychain and verifies. `just clients revoke
+Cochlea saves to its Keychain and verifies. `just clients revoke
 <client_id>` revokes one device.
 
 ## Workspaces
@@ -202,7 +202,7 @@ Music Sync can act for more than one person without a user database. The
 operator's own setup is the `default` workspace (env). Another person is a
 workspace record holding their life-data hub, Notion target and limits, plus
 the Spotify refresh token they grant themselves through a **Connect Spotify**
-link (`just workspace connect-link <id>`). Their Offline Shazam devices get
+link (`just workspace connect-link <id>`). Their Cochlea devices get
 tokens bound to that workspace (`just clients issue "<device>" <id>`). See
 AGENTS.md for the mechanics.
 
