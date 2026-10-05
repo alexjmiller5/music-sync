@@ -11,7 +11,7 @@ ENROLL_PAGE = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<title>Connect Offline Shazam</title>
+<title>Connect Cochlea</title>
 <style>
   :root { color-scheme: light dark; --fg: #111; --bg: #fafafa; --muted: #666; --accent: #6d28d9; }
   @media (prefers-color-scheme: dark) { :root { --fg: #eee; --bg: #111; --muted: #999; --accent: #a78bfa; } }
@@ -28,9 +28,9 @@ ENROLL_PAGE = """<!doctype html>
 </head>
 <body>
 <main>
-  <h1>Connect Offline Shazam</h1>
-  <p id="hint">Open this link on the device you want to connect, with Offline Shazam installed.</p>
-  <a class="button" id="open" href="#" hidden>Open in Offline Shazam</a>
+  <h1>Connect Cochlea</h1>
+  <p id="hint">Open this link on the device you want to connect, with Cochlea installed.</p>
+  <a class="button" id="open" href="#" hidden>Open in Cochlea</a>
   <p id="install" hidden>Not installed? Ask the person who sent this link for an install link.</p>
 </main>
 <script>
@@ -42,7 +42,7 @@ ENROLL_PAGE = """<!doctype html>
     const open = document.getElementById("open");
     open.href = link; open.hidden = false;
     document.getElementById("install").hidden = false;
-    document.getElementById("hint").textContent = "This connects Offline Shazam on this device to Music Sync.";
+    document.getElementById("hint").textContent = "This connects Cochlea on this device to Music Sync.";
   } else {
     document.getElementById("hint").textContent = "This link is incomplete. Ask for a new one.";
   }

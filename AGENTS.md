@@ -147,7 +147,7 @@ runs in tests, locally, or on any future platform.
   credential is part of a user's approval.
 - Onboarding a person: `just workspace set <id>` (their hub + Notion on
   stdin), send `just workspace connect-link <id>`, then
-  `just clients issue "<device>" <id>` for each Offline Shazam device.
+  `just clients issue "<device>" <id>` for each Cochlea device.
 
 ## Layout
 
