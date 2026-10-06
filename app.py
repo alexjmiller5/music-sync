@@ -196,11 +196,30 @@ def _consumer_capture(body: dict):
             body["client_id"],
             body["capture"],
             lambda payload: cap.resolve_track(payload, None, settings),
-            lambda payload, selected: _capture(payload, selected, settings),
+            lambda payload, selected, record: _capture(payload, selected, settings, record),
         )
         if result.get("ok") is not True:
             return JSONResponse(result, status_code=422)
         return result
+    except capture_clients.DeliveryFailure as exc:
+        cause = exc.__cause__
+        headers = {}
+        message = "capture unavailable"
+        if isinstance(cause, httpx.HTTPStatusError) and cause.response.status_code == 429:
+            headers["Retry-After"] = cause.response.headers.get("Retry-After", "300")
+            message = "Spotify is rate limiting; retry later"
+        # Never render exception locals: settings and request credentials may be present.
+        structlog.get_logger().error("consumer_capture_failed", error_type=type(cause).__name__)
+        return JSONResponse(
+            {
+                "ok": False,
+                "message": message,
+                "capture_id": exc.capture_id,
+                "spotify_outcome": exc.outcome,
+            },
+            status_code=503,
+            headers=headers,
+        )
     except capture_clients.Unauthorized:
         return JSONResponse(
             {"ok": False, "message": "unauthorized"},
@@ -223,7 +242,7 @@ def _consumer_capture(body: dict):
         return JSONResponse({"ok": False, "message": "capture unavailable"}, status_code=503)
     except Exception:
         # The client only sees a safe 503; the cause must be visible in the app logs.
-        structlog.get_logger().exception("consumer_capture_failed")
+        structlog.get_logger().error("consumer_capture_failed")
         return JSONResponse({"ok": False, "message": "capture unavailable"}, status_code=503)
 
 
@@ -346,7 +365,7 @@ def _flag_quietly(settings, flags: list[str], errors: list[str]) -> None:
         print(f"capture: could not file flag: {e}")
 
 
-def _capture(body: dict, resolved_track: dict | None = None, settings=None):
+def _capture(body: dict, resolved_track: dict | None = None, settings=None, record_outcome=None):
     from datetime import datetime, timezone
 
     from fastapi.responses import JSONResponse
@@ -364,6 +383,7 @@ def _capture(body: dict, resolved_track: dict | None = None, settings=None):
             s,
             datetime.now(timezone.utc),
             resolved_track=resolved_track,
+            record_outcome=record_outcome,
         )
     except SpotifyAuthError as e:
         _flag_quietly(
@@ -373,6 +393,8 @@ def _capture(body: dict, resolved_track: dict | None = None, settings=None):
                 f"Spotify refresh token {e}: reconnect with `just workspace connect-link {s.workspace}`"
             ],
         )
+        if record_outcome is not None:
+            raise
         return JSONResponse(
             {"ok": False, "message": "Spotify token expired; flagged"}, status_code=503
         )
