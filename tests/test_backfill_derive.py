@@ -882,3 +882,50 @@ def test_refresh_refuses_derivation_with_additional_output_binding():
         backfill_derive.run(service.hub, "songs", "first_year", ids=["S0000"], refresh=True)
     assert service.calls == []
     assert service.read_ids == []
+
+
+@pytest.mark.parametrize("status,want_reads", [(500, 2), (429, 1)])
+def test_bounded_preview_retries_one_transient_read_but_not_rate_limits(status, want_reads):
+    class TransientService(BoundedService):
+        def __init__(self):
+            super().__init__(1)
+            self.song_reads = 0
+
+        def respond(self, request):
+            if (
+                request.url.path == "/v1/rows/pull"
+                and json.loads(request.content)["table"] == "songs"
+            ):
+                self.song_reads += 1
+                if self.song_reads == 1:
+                    return httpx.Response(
+                        status, json={"error": "temporary failure"}, headers={"Retry-After": "120"}
+                    )
+            return super().respond(request)
+
+    service = TransientService()
+    if status == 500:
+        out = backfill_derive.run(
+            service.hub,
+            "songs",
+            "first_year",
+            ids=["S0000"],
+            refresh=True,
+            dry_run=True,
+            sleep=lambda _: None,
+        )
+        assert out["planned_ids"] == ["S0000"]
+        assert service.song_reads >= want_reads
+    else:
+        with pytest.raises(backfill_derive.HubError):
+            backfill_derive.run(
+                service.hub,
+                "songs",
+                "first_year",
+                ids=["S0000"],
+                refresh=True,
+                dry_run=True,
+                sleep=lambda _: None,
+            )
+        assert service.song_reads == want_reads
+    assert service.calls == []
