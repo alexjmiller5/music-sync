@@ -115,9 +115,12 @@ runs in tests, locally, or on any future platform.
   proofs. Any missing stamp keeps that table on full refreshes for the run.
   The operator command supports bounded first_year repair with `--ids-file`
   (JSON array), `--refresh` and `--dry-run`. Refresh requires explicit IDs,
-  verifies sole output binding and min-of-source consistency, and rejects
+  verifies sole output binding and canonical year consistency, and rejects
   changed inputs/likes or unexpected output without blind retries. Normal
-  `complete()` reuse remains unchanged. Large refresh previews use 200-row
+  `complete()` reuse remains unchanged. Expected years follow Derivations:
+  int-coercible inputs within 1900-2100 inclusive, minimum accepted value.
+  No accepted year means omitted output, never an instruction to clear a value.
+  Large refresh previews use 200-row
   song pages filtered to explicit IDs; per-batch reads remain exact-ID scoped.
   Missing/deleted selections abort before writes. Receipts report
   selected IDs and per-row outcomes and stay outside source control. Bounded

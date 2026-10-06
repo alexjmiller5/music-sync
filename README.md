@@ -252,7 +252,12 @@ deleted IDs fail without expanding the write selection. Derivation requests rema
 
 Refresh verifies the sole `http:first_year` output and expected inputs in the
 catalog, then checks source inputs/likes for concurrent changes and the actual
-result against the minimum nonnull source year. A failed or inconsistent result
+result against the existing Derivations contract: coerce each source with `int`,
+ignore conversion failures and values outside 1900-2100 inclusive, then take
+the minimum accepted year. With none accepted, the endpoint omits `first_year`;
+the receipt sets `expected_omitted` and refresh remains unresolved rather than
+claiming a null write. Source values, including unknown zero values, remain
+unchanged. A failed or inconsistent result
 is reported without blind refresh retries. Structured cooldowns retain their
 status and retry time, and defer unattempted IDs. This command never writes
 source inputs, likes or memberships. Keep selection files and receipts outside
