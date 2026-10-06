@@ -1,10 +1,15 @@
 # Music Sync redesign - design spec
 
 **Date:** 2026-09-08
-**Status:** approved in chat, awaiting written review
+**Status:** implementation reference; rollout requires current owner review.
 **Metadata amendment:** [Preserve observed Spotify metadata](2026-09-12-observed-spotify-metadata-design.md)
-records the approved ownership correction; its detailed written design is
-awaiting review and is not yet implemented.
+defines the implemented base-field ownership contract. The current code and
+[operating runbook](../../observed-metadata-rollout.md) govern metadata work.
+The behavior proposals below do not authorize playlist conversion, personal
+curation changes, retention deletion, or activation. Confirm the current
+heart/unlike behavior, playlist rules and initial scope before the final
+fresh reconciliation dry run. Keep reconciliation disabled until the owner
+accepts that run and explicitly authorizes activation.
 **Supersedes:** the GDPR-export → Notion sandbox prototype in this repo (everything under `src/core/` except `spotify_client.py`, all `scripts/`, `sandbox_config.json`).
 
 ## 1. What this is
@@ -32,8 +37,11 @@ new playlists by filtering the pool on genre and era, which Spotify cannot do.
 3. **The recording is the entity.** Row identity is the ISRC, never a Spotify
    track id (22% of the user's library has already been relinked to a
    different Spotify id; 208 recordings appear under 2+ ids).
-4. **Facts come from sources, not from an LLM.** Genres and years are derived
-   from Spotify, Deezer, and MusicBrainz by hub derivations.
+4. **Facts come from sources, not from an LLM.** Spotify base metadata is
+   retained from direct observations. Deezer and MusicBrainz supply
+   source-specific enrichment through hub derivations; `first_year` is the
+   minimum of the known source years. Enrichment does not replace observed
+   Spotify base fields.
 5. **Vocabularies are catalog options.** `playlists.kind` is a select; no
    `<x>_types` table exists (life-map authoring standard, rule 4).
 
@@ -43,15 +51,17 @@ new playlists by filtering the pool on genre and era, which Spotify cannot do.
 * A recording that Spotify returns without an ISRC is skipped and counted in
   the run log (2 of 6,718 in the export; both were dead tracks). Local files
   (`is_local`) are skipped the same way.
-* Different versions (radio edit, remix, live, remaster) carry different ISRCs
-  and are different rows by design. A same-recording re-release under a second
-  ISRC is tolerated; a `provenance` edge `rel='same_recording'` may link the
-  two later, and the reconciler then treats them as one for dedupe. Not MVP.
+* Distinct ISRCs remain distinct rows. Version labels, titles and remaster
+  labels do not guarantee a distinct ISRC, and a shared ISRC alone does not
+  resolve conflicting duration or version evidence. Preserve source
+  observations and send ambiguous equivalence decisions to review. A future
+  explicit `same_recording` relation is outside the initial rollout; do not
+  infer or apply it during cleanup.
 * Greyed-out songs: Spotify still returns full metadata and ISRC for
   unavailable tracks (`is_playable=false`, restriction `market`). They import
-  normally. The reconciler replaces an unplayable Spotify id in any playlist
-  with a playable id of the same ISRC when one exists; otherwise the song is
-  flagged.
+  normally. Replacement requires positive availability evidence for the candidate
+  track in the applicable market. An alias list or absent availability field
+  does not establish that evidence; unresolved cases are flagged for review.
 
 ## 4. Data model (life-data catalog)
 
@@ -71,13 +81,13 @@ deleted). Owner: music-sync cron. Consumers: music-sync, life-ui.
 | liked             | int      | yes | 0/1, default 0                                                            | In Liked Songs at last reconcile. Liked ⇔ in the pool.                                                                                                                     |
 | liked\_at         | datetime |     |                                                                           | Spotify `added_at` of the like.                                                                                                                                            |
 | first\_seen       | datetime | yes |                                                                           | First reconcile that saw this recording anywhere.                                                                                                                          |
-| title             | text     |     | derived `http:spotify_isrc` from id                                       | Spotify's name for the preferred track.                                                                                                                                    |
-| artists           | json     |     | derived `http:spotify_isrc`                                               | Artist names, primary first.                                                                                                                                               |
-| album             | text     |     | derived `http:spotify_isrc`                                               |                                                                                                                                                                            |
-| album\_year       | int      |     | derived `http:spotify_isrc`                                               | Year of the album Spotify prefers for this ISRC.                                                                                                                           |
-| duration\_ms      | int      |     | derived `http:spotify_isrc`                                               |                                                                                                                                                                            |
-| spotify\_ids      | json     |     | derived `http:spotify_isrc`                                               | Every Spotify track id Spotify's ISRC search returns, preferred (playable, most markets) first.                                                                            |
-| spotify\_playable | int      |     | derived `http:spotify_isrc`                                               | 1 if any id is playable in the user's market.                                                                                                                              |
+| title             | text     |     | observed by Music Sync                                       | Name from the representative observed Spotify track.                                                                                                                                    |
+| artists           | json     |     | observed by Music Sync                                               | Artist names, primary first.                                                                                                                                               |
+| album             | text     |     | observed by Music Sync                                               |                                                                                                                                                                            |
+| album\_year       | int      |     | observed by Music Sync                                               | Observed release year, kept paired with its album.                                                                                                                           |
+| duration\_ms      | int      |     | observed by Music Sync                                               |                                                                                                                                                                            |
+| spotify\_ids      | json     |     | observed by Music Sync                                               | Union of observed track IDs and supplied relinking identities; aliases alone do not prove playability.                                                                            |
+| spotify\_playable | int      |     | observed by Music Sync                                               | Observed availability summary; replacement requires positive track-and-market evidence. Missing evidence remains unknown.                                                                                                                              |
 | deezer\_genres    | json     |     | derived `http:deezer_isrc`                                                | Deezer's album genre names verbatim (Pop, Rock, Rap/Hip Hop, ...).                                                                                                         |
 | deezer\_year      | int      |     | derived `http:deezer_isrc`                                                | Deezer release year of the matched track.                                                                                                                                  |
 | mb\_tags          | json     |     | derived `http:musicbrainz_isrc`                                           | MusicBrainz recording tags with count > 0, lowercased, verbatim.                                                                                                           |
@@ -454,10 +464,13 @@ copies are removed.
 10. **Activation gate.** Re-pull, then run the reconciler in `--dry-run`. It
     must report zero proposed Spotify mutations other than the accepted
     exceptions from step 7; routine mirror patches are listed separately.
-    Only then set `RECONCILE_ENABLED=1` and sync secrets. A disabled preview
+    Present the complete fresh run for explicit owner approval before setting
+    `RECONCILE_ENABLED=1` or syncing activation secrets. A disabled preview
     deployment is permitted before review. Confirm two clean hourly runs, then close the
-    Notion tasks absorbed by this project (sync playlists, track following,
-    download backup, dedup, Apple Music tag, 50s playlist).
+    tracking tasks only when each task's own acceptance criteria are met.
+    Followed artists, playable audio backups, broader metadata retention and
+    additional capture workflows require their own scope and evidence; two
+    clean hourly runs do not complete them automatically.
 
 ## 10. Testing
 
