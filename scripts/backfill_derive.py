@@ -148,14 +148,26 @@ def run(
 
             def pull(request):
                 name, row_id, columns = request
-                rows = hub.pull(name, columns, where={"id": row_id})
+                try:
+                    rows = hub.pull(name, columns, where={"id": row_id})
+                except HubError as exc:
+                    if not str(exc).startswith(
+                        ("hub HTTP 500:", "hub HTTP 502:", "hub HTTP 504:", "hub unreachable:")
+                    ):
+                        raise
+                    sleep(1)
+                    rows = hub.pull(name, columns, where={"id": row_id})
                 if any(row.get("id") != row_id for row in rows):
                     raise HubError("bounded read returned an unrequested row")
                 return rows
 
             # Only reads run concurrently; derivations remain bounded and sequential.
-            with ThreadPoolExecutor(max_workers=8) as pool:
-                results = list(pool.map(pull, requests))
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                try:
+                    results = list(pool.map(pull, requests))
+                except Exception:
+                    pool.shutdown(wait=True, cancel_futures=True)
+                    raise
             for (name, row_id, _), rows in zip(requests, results):
                 state = proofs if name == "provenance" else current
                 state.pop(row_id, None)
