@@ -1066,3 +1066,54 @@ def test_bounded_batch_receipt_keeps_cooldown_and_is_flushed(monkeypatch, capsys
     assert events[0]["remaining_ids"] == 1
     assert out["deferred"] == {"first_year": 1}
     assert flushes == [True]
+
+
+@pytest.mark.parametrize(
+    "inputs,expected",
+    [
+        ((1995, 0, None), 1995),
+        ((1899, 1900, 2101), 1900),
+        ((2100, None, None), 2100),
+        ((1900, 2100, None), 1900),
+        (("1995", "unknown", None), 1995),
+        ((1995.9, 0, 2101), 1995),
+    ],
+)
+def test_refresh_verifies_canonical_accepted_years_without_changing_sources(inputs, expected):
+    service = BoundedService(1)
+    service.rows["S0000"].update(dict(zip(backfill_derive.YEARS, inputs)))
+    persist = service.persist
+    persist("S0000", "first_year", {"first_year": 2005})
+    before = deepcopy(service.rows["S0000"])
+
+    def endpoint_result(id, col, values=None):
+        persist(id, col, {"first_year": expected})
+
+    service.persist = endpoint_result
+    preview = backfill_derive.run(
+        service.hub, "songs", "first_year", ids=["S0000"], refresh=True, dry_run=True
+    )
+    assert preview["rows"][0]["expected"] == expected
+    out = backfill_derive.run(service.hub, "songs", "first_year", ids=["S0000"], refresh=True)
+    assert out["completed_recordings"] == 1 and out["failed"] == []
+    assert out["rows"][0]["expected"] == out["rows"][0]["after"] == expected
+    assert {k: v for k, v in service.rows["S0000"].items() if k != "first_year"} == {
+        k: v for k, v in before.items() if k != "first_year"
+    }
+
+
+@pytest.mark.parametrize("previous", [None, 1995])
+def test_refresh_does_not_confuse_omitted_year_output_with_null_write(previous):
+    service = BoundedService(1)
+    service.rows["S0000"].update(album_year=1899, deezer_year=0, mb_first_year=2101)
+    service.persist("S0000", "first_year", {"first_year": previous})
+    service.replies[("S0000", "first_year")] = [{"derived": 0, "failed": []}]
+    preview = backfill_derive.run(
+        service.hub, "songs", "first_year", ids=["S0000"], refresh=True, dry_run=True
+    )
+    assert preview["rows"][0]["expected"] is None
+    assert preview["rows"][0]["expected_omitted"] is True
+    out = backfill_derive.run(service.hub, "songs", "first_year", ids=["S0000"], refresh=True)
+    assert out["completed_recordings"] == 0
+    assert "omits output" in out["failed"][0]["errors"][0]["error"]
+    assert service.rows["S0000"]["first_year"] == previous
