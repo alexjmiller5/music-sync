@@ -404,6 +404,31 @@ def run(
                 )
                 unresolved = list(failed)
 
+            if ids is not None:
+                # Retain confirmed partial results before starting another batch.
+                print(
+                    json.dumps(
+                        {
+                            "type": "backfill_batch",
+                            "table": table,
+                            "col": source,
+                            "selected_ids": batch,
+                            "completed_ids": [i for i in batch if source in done[i]],
+                            "failed": [
+                                {
+                                    "id": i,
+                                    "attempts": attempts_by_id[i],
+                                    "errors": [last_errors[i]],
+                                }
+                                for i in unresolved
+                            ],
+                            "retry_at": out["retry_at"].get(source),
+                            "remaining_ids": len(pending) - start - len(batch),
+                        }
+                    ),
+                    flush=True,
+                )
+
             if unresolved:
                 out["failed"].extend(
                     {
