@@ -117,8 +117,9 @@ runs in tests, locally, or on any future platform.
   (JSON array), `--refresh` and `--dry-run`. Refresh requires explicit IDs,
   verifies sole output binding and min-of-source consistency, and rejects
   changed inputs/likes or unexpected output without blind retries. Normal
-  `complete()` reuse remains unchanged. Bounded reads never fall back to a
-  table scan; missing/deleted selections abort before writes. Receipts report
+  `complete()` reuse remains unchanged. Large refresh previews use 200-row
+  song pages filtered to explicit IDs; per-batch reads remain exact-ID scoped.
+  Missing/deleted selections abort before writes. Receipts report
   selected IDs and per-row outcomes and stay outside source control.
   Structured rate limits defer the source immediately; `retry_at` in the
   summary is the earliest Unix timestamp for resuming it. Other sources

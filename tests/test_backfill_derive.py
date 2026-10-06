@@ -777,6 +777,7 @@ def test_cli_rejects_bad_ids_file_without_falling_back_to_unbounded_scan(
 
 def test_cli_preview_reports_selected_ids_and_never_derives(tmp_path, monkeypatch, capsys):
     service = BoundedService()
+    service.rows["S0001"]["hub_at"] = "2026-01-01T00:00:00.000Z"
     path = tmp_path / "ids.json"
     path.write_text('["S0001"]')
     monkeypatch.setenv("LIFE_HUB_URL", "https://hub.test")
@@ -799,7 +800,15 @@ def test_cli_preview_reports_selected_ids_and_never_derives(tmp_path, monkeypatc
     out = json.loads(capsys.readouterr().out.splitlines()[-1])
     assert out["selected_ids"] == ["S0001"]
     assert out["rows"] == [
-        {"id": "S0001", "before": 2010, "expected": 1976, "after": 2010, "status": "planned"}
+        {
+            "id": "S0001",
+            "before": 2010,
+            "expected": 1976,
+            "after": 2010,
+            "status": "planned",
+            "before_hub_at": "2026-01-01T00:00:00.000Z",
+            "after_hub_at": "2026-01-01T00:00:00.000Z",
+        }
     ]
     assert service.calls == []
 
@@ -928,4 +937,65 @@ def test_bounded_preview_retries_one_transient_read_but_not_rate_limits(status, 
                 sleep=lambda _: None,
             )
         assert service.song_reads == want_reads
+    assert service.calls == []
+
+
+def test_large_refresh_preview_pages_songs_but_selects_only_explicit_ids():
+    class PagedService(BoundedService):
+        def __init__(self):
+            super().__init__(205)
+            self.pages = []
+
+        def respond(self, request):
+            if request.url.path == "/v1/rows/pull":
+                body = json.loads(request.content)
+                if body.get("limit"):
+                    assert body["table"] == "songs" and body["limit"] == 200
+                    assert "where" not in body and "ids" not in body
+                    assert "id" in body["columns"] and "hub_at" in body["columns"]
+                    self.pages.append(body.get("after"))
+                    rows = list(self.rows.values())
+                    start = int(body.get("after") or 0)
+                    page = rows[start : start + 200]
+                    return httpx.Response(
+                        200,
+                        json={
+                            "rows": [{c: r.get(c) for c in body["columns"]} for r in page],
+                            "next_cursor": str(start + 200) if start + 200 < len(rows) else None,
+                        },
+                    )
+            return super().respond(request)
+
+    service = PagedService()
+    ids = list(service.rows)[2:203]
+    out = backfill_derive.run(
+        service.hub, "songs", "first_year", ids=ids, refresh=True, dry_run=True
+    )
+    assert out["selected_ids"] == ids
+    assert out["planned_ids"] == ids
+    assert service.pages == [None, "200", None, "200"]
+    assert service.read_ids == []
+    assert service.calls == []
+    applied = backfill_derive.run(service.hub, "songs", "first_year", ids=ids, refresh=True)
+    assert applied["completed_recordings"] == 201
+    assert service.calls == [(id, "first_year") for id in ids]
+    assert service.rows["S0000"]["first_year"] == 2010
+    assert service.rows["S0204"]["first_year"] == 2010
+    assert {id for table, id in service.read_ids if table == "songs"} == set(ids)
+    assert max(map(len, service.batch_calls)) == 20
+
+
+@pytest.mark.parametrize("invalid_page", [{"rows": []}, {"rows": [], "next_cursor": "repeat"}])
+def test_refresh_rejects_unbounded_or_looping_page_contract(invalid_page):
+    class BadPageService(BoundedService):
+        def respond(self, request):
+            if request.url.path == "/v1/rows/pull" and json.loads(request.content).get("limit"):
+                return httpx.Response(200, json=invalid_page)
+            return super().respond(request)
+
+    service = BadPageService(201)
+    with pytest.raises(backfill_derive.HubError):
+        backfill_derive.run(
+            service.hub, "songs", "first_year", ids=list(service.rows), refresh=True, dry_run=True
+        )
     assert service.calls == []

@@ -242,9 +242,10 @@ before, expected, after and status. Remove `--dry-run` to apply the exact
 selection. Start with a one-ID sample and verify its live result before a
 larger selection. `--refresh` bypasses matching-hash reuse only when an explicit
 IDs file and `--col first_year` are supplied. Without `--refresh`, normal
-provenance reuse is unchanged. Bounded reads request only selected song/proof
-IDs; empty, duplicate, malformed, missing or deleted IDs fail without a
-whole-table fallback. Derivation requests remain sequential and at most 20 IDs.
+provenance reuse is unchanged. Small selections and per-batch verification read exact song/proof IDs. Large
+refresh previews use supported 200-row song pages and retain only selected IDs;
+these pages are not a frozen snapshot. Empty, duplicate, malformed, missing or
+deleted IDs fail without expanding the write selection. Derivation requests remain sequential and at most 20 IDs.
 
 Refresh verifies the sole `http:first_year` output and expected inputs in the
 catalog, then checks source inputs/likes for concurrent changes and the actual
