@@ -999,3 +999,70 @@ def test_refresh_rejects_unbounded_or_looping_page_contract(invalid_page):
             service.hub, "songs", "first_year", ids=list(service.rows), refresh=True, dry_run=True
         )
     assert service.calls == []
+
+
+def test_bounded_batch_receipt_survives_later_interruption(capsys):
+    service = BoundedService(3)
+    error = {
+        "id": "S0001",
+        "col": "first_year",
+        "error": "query budget exhausted",
+        "code": "query_budget",
+        "status": 400,
+    }
+    service.replies[("S0001", "first_year")] = [{"failed": [error]}]
+
+    def interrupt_second_batch(_):
+        if len(service.batch_calls) != 2:
+            return
+        events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+        assert len(events) == 1
+        assert events[0] == {
+            "type": "backfill_batch",
+            "table": "songs",
+            "col": "first_year",
+            "selected_ids": ["S0000", "S0001"],
+            "completed_ids": ["S0000"],
+            "failed": [{"id": "S0001", "attempts": 1, "errors": [error]}],
+            "retry_at": None,
+            "remaining_ids": 1,
+        }
+        raise RuntimeError("synthetic interruption")
+
+    service.after_derive = interrupt_second_batch
+    with pytest.raises(RuntimeError, match="synthetic interruption"):
+        backfill_derive.run(
+            service.hub, "songs", "first_year", ids=list(service.rows), refresh=True, batch_size=2
+        )
+    assert service.calls == [(id, "first_year") for id in service.rows]
+
+
+def test_bounded_batch_receipt_keeps_cooldown_and_is_flushed(monkeypatch, capsys):
+    import builtins
+
+    service = BoundedService(2)
+    error = {"id": "S0000", "col": "first_year", "status": 429, "retry_after": 120}
+    service.replies[("S0000", "first_year")] = [{"failed": [error]}]
+    monkeypatch.setattr(backfill_derive.time, "time", lambda: 1000)
+    original_print = builtins.print
+    flushes = []
+
+    def record_print(*args, **kwargs):
+        if str(args[0]).startswith('{"type": "backfill_batch"'):
+            flushes.append(kwargs.get("flush"))
+        original_print(*args, **kwargs)
+
+    monkeypatch.setattr(builtins, "print", record_print)
+    out = backfill_derive.run(
+        service.hub, "songs", "first_year", ids=list(service.rows), refresh=True, batch_size=1
+    )
+    events = [
+        json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")
+    ]
+    assert len(events) == 1
+    assert events[0]["retry_at"] == 1120
+    assert events[0]["failed"][0]["errors"] == [error]
+    assert events[0]["completed_ids"] == []
+    assert events[0]["remaining_ids"] == 1
+    assert out["deferred"] == {"first_year": 1}
+    assert flushes == [True]

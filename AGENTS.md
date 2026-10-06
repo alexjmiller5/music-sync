@@ -136,7 +136,9 @@ runs in tests, locally, or on any future platform.
   `complete()` reuse remains unchanged. Large refresh previews use 200-row
   song pages filtered to explicit IDs; per-batch reads remain exact-ID scoped.
   Missing/deleted selections abort before writes. Receipts report
-  selected IDs and per-row outcomes and stay outside source control.
+  selected IDs and per-row outcomes and stay outside source control. Bounded
+  apply flushes partial batch receipts before proceeding, preserving confirmed
+  IDs, structured failures and cooldowns if a later batch is interrupted.
   Structured rate limits defer the source immediately; `retry_at` in the
   summary is the earliest Unix timestamp for resuming it. Other sources
   continue, and failed/deferred work never counts as complete.
