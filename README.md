@@ -237,6 +237,9 @@ recording IDs outside the repository and preview it:
 uv run scripts/backfill_derive.py --col first_year --ids-file /path/to/ids.json --refresh --dry-run
 ```
 
+Bounded apply runs flush a `backfill_batch` JSON line after each checked batch,
+including completed IDs, per-row failures and cooldowns. These are partial
+receipts, not a claim that unattempted IDs completed; retain the full output.
 The final JSON receipt lists `selected_ids`, `planned_ids`, and each row's
 before, expected, after and status. Remove `--dry-run` to apply the exact
 selection. Start with a one-ID sample and verify its live result before a
