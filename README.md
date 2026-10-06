@@ -230,6 +230,30 @@ is 50. `first_year` is automatically capped at 20 IDs per hub request because
 that derivation also records provenance and must stay inside the hub's SQL
 budget.
 
+To repair an explicit set of inconsistent years, prepare a JSON array of
+recording IDs outside the repository and preview it:
+
+```sh
+uv run scripts/backfill_derive.py --col first_year --ids-file /path/to/ids.json --refresh --dry-run
+```
+
+The final JSON receipt lists `selected_ids`, `planned_ids`, and each row's
+before, expected, after and status. Remove `--dry-run` to apply the exact
+selection. Start with a one-ID sample and verify its live result before a
+larger selection. `--refresh` bypasses matching-hash reuse only when an explicit
+IDs file and `--col first_year` are supplied. Without `--refresh`, normal
+provenance reuse is unchanged. Bounded reads request only selected song/proof
+IDs; empty, duplicate, malformed, missing or deleted IDs fail without a
+whole-table fallback. Derivation requests remain sequential and at most 20 IDs.
+
+Refresh verifies the sole `http:first_year` output and expected inputs in the
+catalog, then checks source inputs/likes for concurrent changes and the actual
+result against the minimum nonnull source year. A failed or inconsistent result
+is reported without blind refresh retries. Structured cooldowns retain their
+status and retry time, and defer unattempted IDs. This command never writes
+source inputs, likes or memberships. Keep selection files and receipts outside
+git, and use the existing project environment and caller credential.
+
 Pending recordings are sent in batches of up to 50 IDs per normal source
 request.
 When the hub returns an exact partial failure, retries narrow to the failed

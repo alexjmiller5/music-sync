@@ -626,3 +626,259 @@ def test_unstamped_state_stays_on_full_refresh_and_evicts_absent_proofs():
     assert out["completed_recordings"] == 0
     assert all(since == "" for _, since, _ in service.pulls)
     assert any(f["col"] == "first_year" for f in out["failed"])
+
+
+class BoundedService(Service):
+    def __init__(self, n=3):
+        super().__init__(n)
+        self.read_ids = []
+        self.after_derive = None
+        for row in self.rows.values():
+            row.update(album_year=1976, deezer_year=2010, mb_first_year=None, liked=1, liked_at="t")
+            self.persist(row["id"], "first_year", {"first_year": 2010})
+
+    def respond(self, request):
+        if request.method == "GET":
+            response = super().respond(request)
+            catalog = response.json()
+            catalog["properties"].append(
+                {
+                    "tbl": "songs",
+                    "col": "first_year",
+                    "derived_by": "http:first_year",
+                    "inputs": ["album_year", "deezer_year", "mb_first_year"],
+                }
+            )
+            return httpx.Response(200, json=catalog)
+        body = json.loads(request.content)
+        if request.url.path == "/v1/rows/pull":
+            assert set(body.get("where", {})) == {"id"}, "bounded mode must not scan tables"
+            self.read_ids.append((body["table"], body["where"]["id"]))
+            response = super().respond(request)
+            return httpx.Response(
+                200,
+                json={
+                    "rows": [r for r in response.json()["rows"] if r["id"] == body["where"]["id"]]
+                },
+            )
+        response = super().respond(request)
+        if self.after_derive:
+            self.after_derive(self)
+        return response
+
+
+def test_bounded_preview_and_refresh_select_exact_ids_without_other_writes():
+    service = BoundedService()
+    ids = ["S0002", "S0000"]
+    preview = backfill_derive.run(
+        service.hub, "songs", "first_year", ids=ids, refresh=True, dry_run=True
+    )
+    assert preview["selected_ids"] == ["S0000", "S0002"]
+    assert preview["planned_ids"] == ["S0000", "S0002"]
+    assert service.calls == []
+    assert set(service.read_ids) == {("songs", id) for id in ids} | {
+        ("provenance", f"songs:{id}:first_year") for id in ids
+    }
+    out = backfill_derive.run(service.hub, "songs", "first_year", ids=ids, refresh=True)
+    assert service.batch_calls == [["S0000", "S0002"]]
+    assert out["completed_recordings"] == 2
+    assert service.rows["S0000"]["first_year"] == 1976
+    assert service.rows["S0001"]["first_year"] == 2010
+    assert service.rows["S0002"]["liked"] == 1
+
+
+def test_bounded_mode_keeps_normal_matching_hash_reuse_until_refresh_requested():
+    service = BoundedService()
+    out = backfill_derive.run(service.hub, "songs", "first_year", ids=["S0000"])
+    assert out["skipped"] == 1
+    assert service.calls == []
+    out = backfill_derive.run(service.hub, "songs", "first_year", ids=["S0000"], refresh=True)
+    assert out["derived"] == 1
+    assert service.rows["S0000"]["first_year"] == 1976
+
+
+@pytest.mark.parametrize("column,value", [("album_year", 1970), ("liked", 0), ("first_year", 2010)])
+def test_refresh_rejects_mutated_sources_or_inconsistent_output(column, value):
+    service = BoundedService()
+    service.after_derive = lambda s: s.rows["S0000"].update({column: value})
+    out = backfill_derive.run(service.hub, "songs", "first_year", ids=["S0000"], refresh=True)
+    assert out["completed_recordings"] == 0
+    assert out["failed"][0]["id"] == "S0000"
+    assert service.calls == [("S0000", "first_year")]
+
+
+def test_refresh_does_not_accept_partial_or_empty_success_with_old_matching_proof():
+    service = BoundedService()
+    service.replies[("S0000", "first_year")] = [{"derived": 0, "failed": []}]
+    out = backfill_derive.run(
+        service.hub, "songs", "first_year", ids=["S0000", "S0001"], refresh=True
+    )
+    assert out["completed_recordings"] == 1
+    assert [e["id"] for e in out["failed"]] == ["S0000"]
+    assert service.rows["S0000"]["first_year"] == 2010
+
+
+def test_bounded_refresh_honors_year_batch_limit():
+    service = BoundedService(45)
+    out = backfill_derive.run(
+        service.hub, "songs", "first_year", ids=list(service.rows), refresh=True, batch_size=50
+    )
+    assert [len(b) for b in service.batch_calls] == [20, 20, 5]
+    assert out["completed_recordings"] == 45
+
+
+@pytest.mark.parametrize("ids", [[], ["S0000", "S0000"], ["missing"], [""]])
+def test_invalid_bounded_selection_cannot_fall_back_to_all_rows(ids):
+    service = BoundedService()
+    with pytest.raises((ValueError, backfill_derive.HubError)):
+        backfill_derive.run(service.hub, "songs", "first_year", ids=ids, refresh=True)
+    assert service.calls == []
+
+
+def test_refresh_preserves_cooldown_and_defers_unattempted_ids(monkeypatch):
+    service = BoundedService()
+    error = {
+        "id": "S0000",
+        "col": "first_year",
+        "error": "limited",
+        "status": 429,
+        "retry_after": 120,
+    }
+    service.replies[("S0000", "first_year")] = [{"failed": [error]}]
+    monkeypatch.setattr(backfill_derive.time, "time", lambda: 1000)
+    out = backfill_derive.run(
+        service.hub, "songs", "first_year", ids=list(service.rows), refresh=True, batch_size=1
+    )
+    assert out["retry_at"] == {"first_year": 1120}
+    assert out["failed"][0]["errors"][0]["status"] == 429
+    assert out["deferred"] == {"first_year": 2}
+    assert service.calls == [("S0000", "first_year")]
+
+
+@pytest.mark.parametrize("contents", ["[]", "null", '"S0000"', '["S0000","S0000"]', "not json"])
+def test_cli_rejects_bad_ids_file_without_falling_back_to_unbounded_scan(
+    tmp_path, monkeypatch, contents
+):
+    service = BoundedService()
+    path = tmp_path / "ids.json"
+    path.write_text(contents)
+    monkeypatch.setenv("LIFE_HUB_URL", "https://hub.test")
+    monkeypatch.setenv("LIFE_HUB_TOKEN", "dummy")
+    monkeypatch.setattr("core.hub.Hub", lambda *args: service.hub)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["backfill_derive.py", "--col", "first_year", "--ids-file", str(path), "--refresh"],
+    )
+    assert backfill_derive.main() == 1
+    assert service.calls == []
+    assert service.read_ids == []
+
+
+def test_cli_preview_reports_selected_ids_and_never_derives(tmp_path, monkeypatch, capsys):
+    service = BoundedService()
+    path = tmp_path / "ids.json"
+    path.write_text('["S0001"]')
+    monkeypatch.setenv("LIFE_HUB_URL", "https://hub.test")
+    monkeypatch.setenv("LIFE_HUB_TOKEN", "dummy")
+    monkeypatch.setattr("core.hub.Hub", lambda *args: service.hub)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "backfill_derive.py",
+            "--col",
+            "first_year",
+            "--ids-file",
+            str(path),
+            "--refresh",
+            "--dry-run",
+        ],
+    )
+    assert backfill_derive.main() == 0
+    out = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert out["selected_ids"] == ["S0001"]
+    assert out["rows"] == [
+        {"id": "S0001", "before": 2010, "expected": 1976, "after": 2010, "status": "planned"}
+    ]
+    assert service.calls == []
+
+
+@pytest.mark.parametrize("change", ["deleted", "album_year", "first_year"])
+def test_refresh_never_derives_row_changed_after_initial_selection(change):
+    class ChangingService(BoundedService):
+        def __init__(self):
+            super().__init__(1)
+            self.song_reads = 0
+            self.rows["S0000"].update(
+                {
+                    c: None
+                    for c in (
+                        "album_year",
+                        "deezer_year",
+                        "mb_first_year",
+                        "liked",
+                        "liked_at",
+                        "first_year",
+                    )
+                }
+            )
+
+        def respond(self, request):
+            if request.url.path == "/v1/rows/pull":
+                body = json.loads(request.content)
+                if body["table"] == "songs":
+                    self.song_reads += 1
+                    if self.song_reads == 3:
+                        if change == "deleted":
+                            self.rows["S0000"]["deleted_at"] = "t"
+                        else:
+                            self.rows["S0000"][change] = 2000
+            return super().respond(request)
+
+    service = ChangingService()
+    out = backfill_derive.run(service.hub, "songs", "first_year", ids=["S0000"], refresh=True)
+    assert service.calls == []
+    assert out["completed_recordings"] == 0
+    assert out["failed"][0]["id"] == "S0000"
+
+
+def test_bounded_normal_mode_rejects_deletion_before_planning():
+    class DeletedService(BoundedService):
+        def __init__(self):
+            super().__init__(1)
+            self.reads = 0
+
+        def respond(self, request):
+            if (
+                request.url.path == "/v1/rows/pull"
+                and json.loads(request.content)["table"] == "songs"
+            ):
+                self.reads += 1
+                if self.reads == 2:
+                    self.rows["S0000"]["deleted_at"] = "t"
+            return super().respond(request)
+
+    service = DeletedService()
+    with pytest.raises(backfill_derive.HubError, match="disappeared"):
+        backfill_derive.run(service.hub, "songs", "first_year", ids=["S0000"])
+    assert service.calls == []
+
+
+def test_refresh_refuses_derivation_with_additional_output_binding():
+    class ExtraOutputService(BoundedService):
+        def respond(self, request):
+            response = super().respond(request)
+            if request.url.path == "/v1/catalog":
+                body = response.json()
+                body["properties"].append(
+                    {"tbl": "songs", "col": "liked", "derived_by": "http:first_year"}
+                )
+                return httpx.Response(200, json=body)
+            return response
+
+    service = ExtraOutputService()
+    with pytest.raises(backfill_derive.HubError, match="sole output"):
+        backfill_derive.run(service.hub, "songs", "first_year", ids=["S0000"], refresh=True)
+    assert service.calls == []
+    assert service.read_ids == []
