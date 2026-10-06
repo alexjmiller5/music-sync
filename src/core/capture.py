@@ -65,6 +65,7 @@ def capture(
     settings: Settings,
     now: datetime,
     resolved_track: dict | None = None,
+    record_outcome=None,
 ) -> dict:
     title, artist = (payload.get("title") or "").strip(), (payload.get("artist") or "").strip()
     if not title or not artist:
@@ -98,6 +99,10 @@ def capture(
     if not inbox:
         return {"ok": False, "message": "no inbox playlist in life-data", "isrc": isrc}
     raw_items = spotify.get_playlist_items(inbox.id, settings.spotify_market)
+    observed_items = [mirror_mod.item_from_raw(r) for r in raw_items]
+    existing = next((it for it in observed_items if it.isrc == isrc), None)
+    if existing is not None and record_outcome:
+        record_outcome("added")
     source_ref = f"raw/spotify-capture/{now.strftime('%Y-%m-%dT%H%M%S')}-{uuid4().hex}.json.gz"
     archive.put(
         settings,
@@ -112,8 +117,6 @@ def capture(
             ).encode()
         ),
     )
-    observed_items = [mirror_mod.item_from_raw(r) for r in raw_items]
-    existing = next((it for it in observed_items if it.isrc == isrc), None)
     observations = metadata.observation_actions(
         m,
         Live({}, {}, {}, [resolved, *observed_items]),
@@ -123,7 +126,11 @@ def capture(
     )
     now_s = _iso(now)
     if existing is None:
+        if record_outcome:
+            record_outcome("unknown")  # durable before the request can reach Spotify
         spotify.add_items(inbox.id, [tr["uri"]])
+    if record_outcome:
+        record_outcome("added")  # acknowledgement or observed inbox membership
     created = isrc not in m.songs
     song_rows = []
     for a in observations:

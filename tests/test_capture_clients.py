@@ -71,7 +71,7 @@ def test_malformed_capture_body_is_rejected_before_capture(settings, objects, pa
             "client-id",
             payload,
             lambda request: pytest.fail("malformed body reached selection"),
-            lambda request, selected: pytest.fail("malformed body reached capture"),
+            lambda request, selected, record: pytest.fail("malformed body reached capture"),
         )
 
 
@@ -88,7 +88,7 @@ def test_optional_isrc_is_normalized_and_part_of_replay_identity(settings, objec
         "client-id",
         payload,
         lambda request: SELECTED,
-        lambda request, selected: {"ok": True, "isrc": "USAAA2600001"},
+        lambda request, selected, record: {"ok": True, "isrc": "USAAA2600001"},
     )
     with pytest.raises(capture_clients.Conflict):
         capture_clients.deliver(
@@ -96,14 +96,14 @@ def test_optional_isrc_is_normalized_and_part_of_replay_identity(settings, objec
             "client-id",
             PAYLOAD,
             lambda request: pytest.fail("changed replay repeated selection"),
-            lambda request, selected: pytest.fail("changed replay reached capture"),
+            lambda request, selected, record: pytest.fail("changed replay reached capture"),
         )
 
 
 def test_success_is_receipted_and_replayed_without_recapture(settings, objects):
     calls = []
 
-    def perform(payload, selected):
+    def perform(payload, selected, record):
         calls.append(payload)
         assert selected == SELECTED
         return {"ok": True, "message": "added", "isrc": "USAAA2600001"}
@@ -119,7 +119,12 @@ def test_success_is_receipted_and_replayed_without_recapture(settings, objects):
         perform,
     )
 
-    expected = {"ok": True, "capture_id": CAPTURE_ID, "isrc": "USAAA2600001"}
+    expected = {
+        "ok": True,
+        "capture_id": CAPTURE_ID,
+        "isrc": "USAAA2600001",
+        "spotify_outcome": "added",
+    }
     assert first == expected and replay == expected
     assert calls == [PAYLOAD]
     receipt = json.loads(
@@ -136,7 +141,7 @@ def test_reusing_capture_id_with_changed_payload_is_a_conflict(settings, objects
         "client-id",
         PAYLOAD,
         lambda payload: SELECTED,
-        lambda payload, selected: {"ok": True, "isrc": "USAAA2600001"},
+        lambda payload, selected, record: {"ok": True, "isrc": "USAAA2600001"},
     )
 
     with pytest.raises(capture_clients.Conflict):
@@ -145,7 +150,7 @@ def test_reusing_capture_id_with_changed_payload_is_a_conflict(settings, objects
             "client-id",
             {**PAYLOAD, "title": "Different song"},
             lambda payload: pytest.fail("conflicting replay repeated selection"),
-            lambda payload, selected: pytest.fail("conflicting replay reached capture"),
+            lambda payload, selected, record: pytest.fail("conflicting replay reached capture"),
         )
 
 
@@ -155,10 +160,16 @@ def test_failed_capture_is_not_acknowledged_and_keeps_selection(settings, object
         "client-id",
         PAYLOAD,
         lambda payload: SELECTED,
-        lambda payload, selected: {"ok": False, "message": "no match", "isrc": None},
+        lambda payload, selected, record: {"ok": False, "message": "no match", "isrc": None},
     )
 
-    assert result == {"ok": False, "message": "no match", "isrc": None}
+    assert result == {
+        "ok": False,
+        "message": "no match",
+        "isrc": None,
+        "capture_id": CAPTURE_ID,
+        "spotify_outcome": "not_added",
+    }
     state = json.loads(
         gzip.decompress(
             objects[f"{capture_clients.RECEIPTS_PREFIX}/client-id/{CAPTURE_ID}.json.gz"]
@@ -175,14 +186,16 @@ def test_receipt_persistence_failure_never_acknowledges_success(settings, object
         objects[key] = value
 
     monkeypatch.setattr(capture_clients.archive, "put", fail_receipt)
-    with pytest.raises(RuntimeError, match="R2 unavailable"):
+    with pytest.raises(capture_clients.DeliveryFailure) as failure:
         capture_clients.deliver(
             settings,
             "client-id",
             PAYLOAD,
             lambda payload: SELECTED,
-            lambda payload, selected: {"ok": True, "isrc": "USAAA2600001"},
+            lambda payload, selected, record: {"ok": True, "isrc": "USAAA2600001"},
         )
+    assert failure.value.outcome == "added"
+    assert str(failure.value.__cause__) == "R2 unavailable"
     state = json.loads(
         gzip.decompress(
             objects[f"{capture_clients.RECEIPTS_PREFIX}/client-id/{CAPTURE_ID}.json.gz"]
