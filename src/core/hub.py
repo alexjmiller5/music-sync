@@ -46,6 +46,12 @@ class Hub:
             raise HubError(f"hub HTTP {r.status_code}: {r.text[:300]}")
         return r.json()
 
+    def pull_page(self, table: str, columns: list[str], after=None) -> dict:
+        body = {"table": table, "columns": columns, "since": "", "limit": 200}
+        if after is not None:
+            body["after"] = after
+        return self._post("/v1/rows/pull", body)
+
     def push(self, table: str, rows: list[dict]) -> dict:
         if not rows:
             return {"upserted": 0, "rejected": []}
