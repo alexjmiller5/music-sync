@@ -56,6 +56,15 @@ runs in tests, locally, or on any future platform.
   URI is stored there before side effects and replaced by the success receipt
   only after completion. Incomplete selections remain unstored and retryable.
   Both use the supported `core.archive` R2 abstraction.
+  Consumer responses bind `spotify_outcome` to `capture_id`: `not_added` means
+  this capture never crossed its Spotify-attempt marker; `unknown` means an
+  attempt may have taken effect; `added` means an acknowledged add or observed
+  inbox membership. Persist `unknown` before Spotify and `added` immediately
+  after acknowledgement. Retain known outcomes through catalog failures;
+  legacy incomplete receipts are unknown. HTTP errors alone never prove an
+  add failed. Clients retry the identical capture ID/payload and honor
+  Retry-After; confirmed adds remain silent even when catalog maintenance
+  needs retry. Never log exception locals containing settings or credentials.
   R2 pending intent lives at
   `music-sync/pending-reconcile.json.gz`, outside raw-backup lifecycle rules.
   Archive credentials require object read and write. A failure stops remaining
