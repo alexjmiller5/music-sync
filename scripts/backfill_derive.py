@@ -134,8 +134,43 @@ def run(
     proofs, current = {}, {}
     cursors = {"provenance": "", table: ""}
 
-    def read_state(selected=None):
+    def read_with_retry(read):
+        try:
+            return read()
+        except HubError as exc:
+            if not str(exc).startswith(
+                ("hub HTTP 500:", "hub HTTP 502:", "hub HTTP 504:", "hub unreachable:")
+            ):
+                raise
+            sleep(1)
+            return read()
+
+    def read_state(selected=None, include_proofs=True):
         if ids is not None:
+            if selected is None and refresh and len(ids) > 200:
+                # The API has equality filters only. Large previews use its
+                # bounded pages, then retain exactly the explicit selection.
+                found, after, seen = {}, None, set()
+                wanted = set(ids)
+                while True:
+                    page = read_with_retry(
+                        lambda: hub.pull_page(table, [*COLS, "liked", "liked_at"], after)
+                    )
+                    if "next_cursor" not in page or len(page["rows"]) > 200:
+                        raise HubError("hub did not honor the bounded page contract")
+                    for row in page["rows"]:
+                        if row["id"] in wanted and not row.get("deleted_at"):
+                            found[row["id"]] = row
+                    after = page.get("next_cursor")
+                    if after is None:
+                        break
+                    cursor = json.dumps(after, sort_keys=True)
+                    if cursor in seen:
+                        raise HubError("song pagination repeated a cursor")
+                    seen.add(cursor)
+                current.clear()
+                current.update(found)
+                return proofs, current
             selected = ids if selected is None else selected
             requests = [
                 (name, row_id, columns)
@@ -144,19 +179,12 @@ def run(
                     ("provenance", f"{table}:{song_id}:first_year", PROOF_COLS),
                     (table, song_id, [*COLS, "liked", "liked_at"]),
                 )
+                if include_proofs or name != "provenance"
             ]
 
             def pull(request):
                 name, row_id, columns = request
-                try:
-                    rows = hub.pull(name, columns, where={"id": row_id})
-                except HubError as exc:
-                    if not str(exc).startswith(
-                        ("hub HTTP 500:", "hub HTTP 502:", "hub HTTP 504:", "hub unreachable:")
-                    ):
-                        raise
-                    sleep(1)
-                    rows = hub.pull(name, columns, where={"id": row_id})
+                rows = read_with_retry(lambda: hub.pull(name, columns, where={"id": row_id}))
                 if any(row.get("id") != row_id for row in rows):
                     raise HubError("bounded read returned an unrequested row")
                 return rows
@@ -270,7 +298,7 @@ def run(
                 failed = {}
                 try:
                     if ids is not None:
-                        proofs, current = read_state(unresolved)
+                        proofs, current = read_state(unresolved, include_proofs=False)
                         for row_id in unresolved:
                             before, latest = baseline[row_id], current.get(row_id, {})
                             if row_id not in current or (
@@ -421,6 +449,8 @@ def run(
             {
                 "id": row_id,
                 "before": baseline[row_id].get("first_year"),
+                "before_hub_at": baseline[row_id].get("hub_at"),
+                "after_hub_at": current.get(row_id, {}).get("hub_at"),
                 "expected": min(
                     (baseline[row_id][k] for k in YEARS if baseline[row_id].get(k) is not None),
                     default=None,
