@@ -159,7 +159,7 @@ retry. A successful capture is acknowledged only after that state is replaced
 by a durable receipt in Music Sync's R2:
 
 ```json
-{"ok":true,"capture_id":"3d2ed84e-9413-4a4a-a7e1-c596201bf84d","isrc":"USAAA2600001"}
+{"ok":true,"capture_id":"3d2ed84e-9413-4a4a-a7e1-c596201bf84d","isrc":"USAAA2600001","spotify_outcome":"added"}
 ```
 
 Repeating the same client, capture UUID and payload resumes the stored track or
@@ -169,6 +169,24 @@ payload returns `409`. Missing, invalid or revoked credentials return `401`;
 malformed requests return `422`; storage or capture availability failures return `503`.
 Only a response with HTTP 200, `ok: true`, the matching `capture_id` and a
 nonempty `isrc` is a delivery acknowledgement.
+
+Validated deliveries also report a `spotify_outcome` bound to the same
+`capture_id`, independently of completion of catalog maintenance:
+
+| Outcome | Evidence | Client behavior |
+| --- | --- | --- |
+| `added` | Spotify acknowledged the add, or the selected recording was observed in the inbox. | Keep successful adds silent, including after a later catalog failure. |
+| `not_added` | This capture has never reached a Spotify mutation attempt. | A matching capture ID permits the add-failure alert; it does not claim the song is absent from Spotify. |
+| `unknown` | An attempted add lacks acknowledgement, or an older incomplete receipt has no outcome evidence. | Retain retry state without claiming the song was not added. |
+
+An HTTP error, timeout, missing outcome, or mismatched capture ID alone never
+proves `not_added`. Retry the identical capture ID and payload, honoring
+`Retry-After`. `ok: false` with `spotify_outcome: added` means catalog work
+still needs retry, not that Spotify rejected the song. Keep already observed
+`added` evidence on the client even if a later transport failure is ambiguous.
+The service stores `unknown` before sending an add and `added` immediately
+after acknowledgement or confirmed inbox membership. A receipt-write failure
+stops later operations; it cannot undo an already acknowledged Spotify add.
 
 **`POST capture-access endpoint`** - the endpoint URL labeled `capture-access`
 in Modal deploy output. It requires the existing Modal proxy-auth headers.

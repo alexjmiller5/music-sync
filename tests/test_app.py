@@ -130,7 +130,7 @@ def test_operator_can_issue_and_revoke_one_consumer_without_affecting_another(
     monkeypatch.setattr(
         app,
         "_capture",
-        lambda body, selected=None, settings=None: {
+        lambda body, selected=None, settings=None, record=None: {
             "ok": True,
             "message": "added",
             "isrc": "USAAA2600001",
@@ -145,6 +145,7 @@ def test_operator_can_issue_and_revoke_one_consumer_without_affecting_another(
         "ok": True,
         "capture_id": CAPTURE_ID,
         "isrc": "USAAA2600001",
+        "spotify_outcome": "added",
     }
     revoked = post("/capture-access", {"action": "revoke", "client_id": first["client_id"]})
     assert revoked.status_code == 200 and revoked.json() == {"ok": True, "revoked": True}
@@ -175,7 +176,7 @@ def test_consumer_capture_rejects_malformed_body_and_changed_replay(capture_api,
     monkeypatch.setattr(
         app,
         "_capture",
-        lambda body, selected=None, settings=None: {
+        lambda body, selected=None, settings=None, record=None: {
             "ok": True,
             "message": "added",
             "isrc": "USAAA2600001",
@@ -197,7 +198,7 @@ def test_consumer_capture_replays_receipt_without_recapturing(capture_api, monke
     calls = []
     monkeypatch.setattr(capture_mod, "resolve_track", lambda *args: {"id": "selected"})
 
-    def perform(body, selected=None, settings=None):
+    def perform(body, selected=None, settings=None, record=None):
         calls.append(body)
         return {"ok": True, "message": "added", "isrc": "USAAA2600001"}
 
@@ -227,7 +228,12 @@ def test_consumer_capture_returns_safe_unavailable_when_receipt_write_fails(
     monkeypatch.setattr(capture_clients.archive, "put", fail_receipt)
     response = post("/capture-consumer", CONSUMER_BODY, token)
     assert response.status_code == 503
-    assert response.json() == {"ok": False, "message": "capture unavailable"}
+    assert response.json() == {
+        "ok": False,
+        "message": "capture unavailable",
+        "capture_id": CAPTURE_ID,
+        "spotify_outcome": "not_added",
+    }
 
 
 def test_consumer_capture_relays_spotify_rate_limit_as_retry_after(capture_api, monkeypatch):
@@ -249,7 +255,12 @@ def test_consumer_capture_relays_spotify_rate_limit_as_retry_after(capture_api, 
     response = post("/capture-consumer", CONSUMER_BODY, token)
     assert response.status_code == 503
     assert response.headers["Retry-After"] == "120"
-    assert response.json() == {"ok": False, "message": "Spotify is rate limiting; retry later"}
+    assert response.json() == {
+        "ok": False,
+        "message": "Spotify is rate limiting; retry later",
+        "capture_id": CAPTURE_ID,
+        "spotify_outcome": "not_added",
+    }
 
 
 def test_queued_consumer_rechecks_revocation_inside_worker(capture_api, settings, monkeypatch):
@@ -315,7 +326,12 @@ def test_receipt_failure_retry_keeps_first_selected_recording(capture_api, setti
     retry = post("/capture-consumer", CONSUMER_BODY, token)
 
     assert retry.status_code == 200
-    assert retry.json() == {"ok": True, "capture_id": CAPTURE_ID, "isrc": "USAAA2600001"}
+    assert retry.json() == {
+        "ok": True,
+        "capture_id": CAPTURE_ID,
+        "isrc": "USAAA2600001",
+        "spotify_outcome": "added",
+    }
     assert [call for call in spotify.calls if call[0] == "add"] == [
         ("add", "IN", ["spotify:track:a"])
     ]
@@ -342,7 +358,12 @@ def test_incomplete_selection_is_not_pinned_and_later_retry_can_resolve(capture_
     retry = post("/capture-consumer", CONSUMER_BODY, token)
 
     assert retry.status_code == 200
-    assert retry.json() == {"ok": True, "capture_id": CAPTURE_ID, "isrc": "USAAA2600001"}
+    assert retry.json() == {
+        "ok": True,
+        "capture_id": CAPTURE_ID,
+        "isrc": "USAAA2600001",
+        "spotify_outcome": "added",
+    }
     assert spotify.searches == [
         ("metadata", "Song", "Artist", "US"),
         ("metadata", "Song", "Artist", "US"),
@@ -491,3 +512,192 @@ def test_replay_endpoint_reports_catalog_read_failure_as_unavailable(
     response = replay_client({"metadata_replay": {"archive_key": KEY, "observed_at": STAMP}})
     assert response.status_code == 503 and response.json()["errors"]
     assert not replay_env[2].pushes and not replay_env[2].saves
+
+
+@pytest.mark.parametrize(
+    "failure,want",
+    [
+        ("before_add", "not_added"),
+        ("add_timeout", "unknown"),
+        ("after_add", "added"),
+        (None, "added"),
+    ],
+)
+def test_capture_http_outcome_tracks_spotify_effect_even_when_catalog_fails(
+    capture_api, monkeypatch, failure, want
+):
+    import httpx
+    from core import hub, spotify_client
+    from tests.test_capture import FakeHub, FakeSpotify, INBOX, track
+
+    post, _ = capture_api
+    token = issue_capture_token(post)["token"]
+    spotify = FakeSpotify([track("track", "Song", "Artist")])
+    catalog = FakeHub(INBOX)
+
+    if failure == "before_add":
+
+        def broken_catalog():
+            raise RuntimeError("catalog unavailable")
+
+        catalog.catalog = broken_catalog
+    elif failure == "add_timeout":
+
+        def add_then_timeout(pid, uris):
+            FakeSpotify.add_items(spotify, pid, uris)
+            raise httpx.ReadTimeout("ack lost")
+
+        spotify.add_items = add_then_timeout
+    elif failure == "after_add":
+
+        def broken_push(*args):
+            raise RuntimeError("catalog unavailable")
+
+        catalog.push = broken_push
+
+    monkeypatch.setattr(spotify_client, "SpotifyClient", lambda *args: spotify)
+    monkeypatch.setattr(hub, "Hub", lambda *args: catalog)
+    response = post("/capture-consumer", CONSUMER_BODY, token)
+    assert response.json()["capture_id"] == CAPTURE_ID
+    assert response.json()["spotify_outcome"] == want
+    assert response.status_code == (200 if failure is None else 503)
+    assert bool(spotify.calls) == (failure != "before_add")
+
+    if failure == "after_add":
+        # Retry fails earlier this time. It must retain proof of the earlier add.
+        def broken_catalog_again():
+            raise RuntimeError("catalog unavailable")
+
+        catalog.catalog = broken_catalog_again
+        retry = post("/capture-consumer", CONSUMER_BODY, token)
+        assert retry.json()["spotify_outcome"] == "added"
+        assert len(spotify.calls) == 1
+
+
+@pytest.mark.parametrize("legacy_outcome", [None, "unknown", "added"])
+def test_retry_cannot_report_not_added_after_a_prior_possible_add(
+    capture_api, monkeypatch, legacy_outcome
+):
+    import gzip
+    import json
+    from core import capture_clients, hub, spotify_client
+    from tests.test_capture import FakeHub, FakeSpotify, INBOX, track
+
+    post, objects = capture_api
+    client = issue_capture_token(post)
+    state = {
+        "capture_id": CAPTURE_ID,
+        "payload_hash": capture_clients._payload_hash(CONSUMER_BODY),
+        "selected_track": track("track", "Song", "Artist"),
+    }
+    if legacy_outcome is not None:
+        state["spotify_outcome"] = legacy_outcome
+    key = f"{capture_clients.RECEIPTS_PREFIX}/{client['client_id']}/{CAPTURE_ID}.json.gz"
+    objects[key] = gzip.compress(json.dumps(state).encode())
+    catalog = FakeHub(INBOX)
+
+    def fail_before_add():
+        raise RuntimeError("catalog unavailable")
+
+    catalog.catalog = fail_before_add
+    spotify = FakeSpotify([])
+    monkeypatch.setattr(spotify_client, "SpotifyClient", lambda *args: spotify)
+    monkeypatch.setattr(hub, "Hub", lambda *args: catalog)
+    response = post("/capture-consumer", CONSUMER_BODY, client["token"])
+    assert response.json()["spotify_outcome"] == (legacy_outcome or "unknown")
+    assert spotify.calls == []
+
+
+def test_failed_durable_attempt_marker_prevents_spotify_request(capture_api, monkeypatch):
+    import gzip
+    import json
+    from core import archive, capture_clients, hub, spotify_client
+    from tests.test_capture import FakeHub, FakeSpotify, INBOX, track
+
+    post, objects = capture_api
+    token = issue_capture_token(post)["token"]
+    spotify = FakeSpotify([track("track", "Song", "Artist")])
+    monkeypatch.setattr(spotify_client, "SpotifyClient", lambda *args: spotify)
+    monkeypatch.setattr(hub, "Hub", lambda *args: FakeHub(INBOX))
+
+    def put(settings, key, value):
+        if key.startswith(capture_clients.RECEIPTS_PREFIX):
+            if json.loads(gzip.decompress(value)).get("spotify_outcome") == "unknown":
+                raise RuntimeError("receipt unavailable")
+        objects[key] = value
+
+    monkeypatch.setattr(archive, "put", put)
+    response = post("/capture-consumer", CONSUMER_BODY, token)
+    assert response.status_code == 503
+    assert response.json()["spotify_outcome"] == "unknown"
+    assert spotify.calls == []
+
+
+def test_existing_membership_is_reported_added_before_metadata_processing(capture_api, monkeypatch):
+    from core import hub, metadata, spotify_client
+    from tests.test_capture import FakeHub, FakeSpotify, INBOX, track
+
+    post, _ = capture_api
+    token = issue_capture_token(post)["token"]
+    song = track("track", "Song", "Artist")
+    spotify = FakeSpotify([song], [{"added_at": "2026-01-01T00:00:00Z", "item": song}])
+    monkeypatch.setattr(spotify_client, "SpotifyClient", lambda *args: spotify)
+    monkeypatch.setattr(hub, "Hub", lambda *args: FakeHub(INBOX))
+
+    def fail_metadata(*args, **kwargs):
+        raise RuntimeError("metadata unavailable")
+
+    monkeypatch.setattr(metadata, "observation_actions", fail_metadata)
+    response = post("/capture-consumer", CONSUMER_BODY, token)
+    assert response.status_code == 503
+    assert response.json()["spotify_outcome"] == "added"
+    assert spotify.calls == []
+
+
+def test_acknowledged_add_stays_added_when_outcome_receipt_write_fails(capture_api, monkeypatch):
+    import gzip
+    import json
+    from core import archive, capture_clients, hub, spotify_client
+    from tests.test_capture import FakeHub, FakeSpotify, INBOX, track
+
+    post, objects = capture_api
+    token = issue_capture_token(post)["token"]
+    spotify = FakeSpotify([track("track", "Song", "Artist")])
+    monkeypatch.setattr(spotify_client, "SpotifyClient", lambda *args: spotify)
+    monkeypatch.setattr(hub, "Hub", lambda *args: FakeHub(INBOX))
+
+    def put(settings, key, value):
+        if key.startswith(capture_clients.RECEIPTS_PREFIX):
+            if json.loads(gzip.decompress(value)).get("spotify_outcome") == "added":
+                raise RuntimeError("receipt unavailable")
+        objects[key] = value
+
+    monkeypatch.setattr(archive, "put", put)
+    response = post("/capture-consumer", CONSUMER_BODY, token)
+    assert response.status_code == 503
+    assert response.json()["spotify_outcome"] == "added"
+    assert len(spotify.calls) == 1
+
+
+def test_post_add_rate_limit_retains_added_and_retry_after(capture_api, monkeypatch):
+    import httpx
+    from core import hub, spotify_client
+    from tests.test_capture import FakeHub, FakeSpotify, INBOX, track
+
+    post, _ = capture_api
+    token = issue_capture_token(post)["token"]
+    spotify = FakeSpotify([track("track", "Song", "Artist")])
+    catalog = FakeHub(INBOX)
+
+    def push(*args):
+        response = httpx.Response(
+            429, headers={"Retry-After": "60"}, request=httpx.Request("POST", "https://hub.test")
+        )
+        raise httpx.HTTPStatusError("limited", request=response.request, response=response)
+
+    catalog.push = push
+    monkeypatch.setattr(spotify_client, "SpotifyClient", lambda *args: spotify)
+    monkeypatch.setattr(hub, "Hub", lambda *args: catalog)
+    response = post("/capture-consumer", CONSUMER_BODY, token)
+    assert response.json()["spotify_outcome"] == "added"
+    assert response.headers["Retry-After"] == "60"

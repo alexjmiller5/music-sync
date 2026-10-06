@@ -145,6 +145,15 @@ def _payload_hash(payload: dict) -> str:
     return sha256(canonical.encode()).hexdigest()
 
 
+class DeliveryFailure(Exception):
+    """A validated capture failed; its Spotify effect is independent of HTTP success."""
+
+    def __init__(self, capture_id: str, outcome: str):
+        super().__init__("capture unavailable")
+        self.capture_id = capture_id
+        self.outcome = outcome
+
+
 def deliver(settings: Settings, client_id: str, payload: dict, select, perform) -> dict:
     payload = validate_payload(payload)
     capture_id = payload["capture_id"]
@@ -155,31 +164,55 @@ def deliver(settings: Settings, client_id: str, payload: dict, select, perform) 
         if not hmac.compare_digest(state["payload_hash"], digest):
             raise Conflict("capture_id was already used with a different payload")
         if "isrc" in state:
-            return {"ok": True, "capture_id": capture_id, "isrc": state["isrc"]}
-        selected = state["selected_track"]
-    else:
-        selected = select(payload)
-        if selected is None:
             return {
-                "ok": False,
-                "message": f"Could not find {payload['title']} by {payload['artist']} on Spotify",
-                "isrc": None,
+                "ok": True,
+                "capture_id": capture_id,
+                "isrc": state["isrc"],
+                "spotify_outcome": "added",
             }
-        _save(
-            settings,
-            key,
-            {"capture_id": capture_id, "payload_hash": digest, "selected_track": selected},
-        )
+        # Legacy incomplete receipts cannot prove whether Spotify was attempted.
+        outcome = state.get("spotify_outcome", "unknown")
+    else:
+        state = {"capture_id": capture_id, "payload_hash": digest}
+        outcome = "not_added"
 
-    result = perform(payload, selected)
-    if result.get("ok") is not True:
-        return result
-    isrc = result.get("isrc")
-    if not isinstance(isrc, str) or not isrc:
-        raise RuntimeError("capture succeeded without an ISRC")
-    _save(
-        settings,
-        key,
-        {"capture_id": capture_id, "payload_hash": digest, "isrc": isrc},
-    )
-    return {"ok": True, "capture_id": capture_id, "isrc": isrc}
+    def record_outcome(value):
+        nonlocal outcome
+        # Added evidence survives all later maintenance failures and retries.
+        if outcome == "added":
+            return
+        outcome = value
+        state["spotify_outcome"] = value
+        _save(settings, key, state)
+
+    try:
+        if "selected_track" not in state:
+            selected = select(payload)
+            if selected is None:
+                return {
+                    "ok": False,
+                    "capture_id": capture_id,
+                    "spotify_outcome": outcome,
+                    "message": f"Could not find {payload['title']} by {payload['artist']} on Spotify",
+                    "isrc": None,
+                }
+            state["selected_track"] = selected
+            state["spotify_outcome"] = outcome
+            _save(settings, key, state)
+
+        result = perform(payload, state["selected_track"], record_outcome)
+        if result.get("ok") is not True:
+            return {**result, "capture_id": capture_id, "spotify_outcome": outcome}
+        isrc = result.get("isrc")
+        if not isinstance(isrc, str) or not isrc:
+            raise RuntimeError("capture succeeded without an ISRC")
+        outcome = "added"
+        _save(settings, key, {"capture_id": capture_id, "payload_hash": digest, "isrc": isrc})
+        return {
+            "ok": True,
+            "capture_id": capture_id,
+            "isrc": isrc,
+            "spotify_outcome": outcome,
+        }
+    except Exception as exc:
+        raise DeliveryFailure(capture_id, outcome) from exc
