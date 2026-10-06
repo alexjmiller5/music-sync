@@ -85,6 +85,22 @@ def complete(row: dict, table: str, col: str, proofs: dict) -> bool:
     )
 
 
+def expected_year(row: dict) -> int | None:
+    """Match Derivations' int coercion and inclusive accepted-year range.
+
+    None means the endpoint omits first_year, not that it writes a null.
+    """
+    accepted = []
+    for column in YEARS:
+        try:
+            year = int(row.get(column))
+        except (TypeError, ValueError):
+            continue
+        if 1900 <= year <= 2100:
+            accepted.append(year)
+    return min(accepted, default=None)
+
+
 def run(
     hub,
     table: str,
@@ -347,15 +363,18 @@ def run(
                             if row_id in failed:
                                 continue
                             before, after = baseline[row_id], current.get(row_id, {})
-                            expected = min(
-                                (before[k] for k in YEARS if before.get(k) is not None),
-                                default=None,
-                            )
+                            expected = expected_year(before)
                             if any(before.get(c) != after.get(c) for c in protected):
                                 failed[row_id] = {
                                     "id": row_id,
                                     "col": source,
                                     "error": "source inputs or likes changed during derive",
+                                }
+                            elif expected is None:
+                                failed[row_id] = {
+                                    "id": row_id,
+                                    "col": source,
+                                    "error": "first_year derivation omits output: no accepted source year",
                                 }
                             elif after.get("first_year") != expected:
                                 failed[row_id] = {
@@ -476,10 +495,8 @@ def run(
                 "before": baseline[row_id].get("first_year"),
                 "before_hub_at": baseline[row_id].get("hub_at"),
                 "after_hub_at": current.get(row_id, {}).get("hub_at"),
-                "expected": min(
-                    (baseline[row_id][k] for k in YEARS if baseline[row_id].get(k) is not None),
-                    default=None,
-                ),
+                "expected": expected_year(baseline[row_id]),
+                **({"expected_omitted": True} if expected_year(baseline[row_id]) is None else {}),
                 "after": current.get(row_id, {}).get("first_year"),
                 "status": "failed"
                 if row_id in failed_ids
