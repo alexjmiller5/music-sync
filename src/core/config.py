@@ -14,9 +14,9 @@ class Settings(BaseSettings):
     spotify_market: str = "US"
     life_hub_url: str
     life_hub_token: str
-    notion_token: str
-    notion_tasks_data_source_id: str
-    notion_project_page_id: str
+    notion_token: str = ""
+    notion_tasks_data_source_id: str = ""
+    notion_project_page_id: str = ""
     r2_account_id: str
     r2_bucket: str
     r2_api_token: str
@@ -26,3 +26,4 @@ class Settings(BaseSettings):
     # Which workspace these settings act for (core/workspaces.py); set by
     # workspaces.settings_for, never by env.
     workspace: str = "default"
+    flags_task_config: dict | None = None

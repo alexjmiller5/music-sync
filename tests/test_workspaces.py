@@ -102,3 +102,14 @@ def test_remove_deletes_only_non_default_records(settings, objects):
     assert workspaces.remove(settings, "default") is False
     with pytest.raises(workspaces.UnknownWorkspace):
         workspaces.settings_for(settings, "friend")
+
+
+def test_flag_task_binding_roundtrips_through_workspace_without_notion_credentials(
+    settings, objects
+):
+    binding = {"table": "items", "title": "Flags", "columns": {"notes": "body"}}
+    workspaces.save(settings, "friend", flags_task_config=json.dumps(binding), notion_token="")
+    loaded = workspaces.settings_for(settings, "friend")
+    assert loaded.flags_task_config == binding and loaded.notion_token == ""
+    workspaces.save(settings, "friend", flags_task_config=None)
+    assert workspaces.settings_for(settings, "friend").flags_task_config is None

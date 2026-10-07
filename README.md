@@ -413,3 +413,31 @@ in `.env.tpl` instead. Mint the refresh token with
 `uv run scripts/spotify_auth.py` using `SPOTIFY_CLIENT_ID` and
 `SPOTIFY_CLIENT_SECRET` from the environment. Consume its `refresh_token` JSON
 field directly into the credential store or process environment.
+
+## Life Data flag tasks
+
+`FLAGS_TASK_CONFIG` optionally selects a Life Data destination for flag tasks.
+The same JSON object can be set as `flags_task_config` through the workspace
+operator interface; JSON `null` restores the existing Notion destination. The
+binding contains the catalog table, semantic column mapping, title, creation
+defaults and open-status labels. Life Data mode does not require Notion credentials.
+
+The existing serialized worker owns flag receipts under
+`music-sync/flag-tasks/` in Music Sync's recovery bucket. It uses the workspace's
+scoped Life Data client, not backing storage credentials. Flag/error text and the
+day identify a notification batch, so repeated identical reports that day append
+once. A unique open task with the configured title and project is adopted;
+multiple candidates fail visibly. Closed tasks are preserved and a later new
+batch creates a new task.
+
+Before appending, the writer retains the target, full batch, marker and exact row
+revision. Conditional patches preserve concurrent user edits. A lost response is
+resolved by the retained marker; a newer row without that proof is reported as
+ambiguous, never blindly appended again. New task IDs and their first payload are
+stable across retries, including completed/deleted targets. Pending batches are
+recovered even when the next reconcile produces no flags. Text is not truncated
+to Notion's property limit. Observation/dry-run callers keep their existing gate
+and do not invoke the writer.
+
+The adapter is inactive until the runtime binding and narrow table scopes are
+configured. Deploying it does not switch Tasks authority or enable reconciliation.
