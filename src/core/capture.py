@@ -113,6 +113,20 @@ def capture(
                     "playlist_id": inbox.id,
                     "items": raw_items,
                     "resolved_track": tr,
+                    "capture": {
+                        key: payload[key]
+                        for key in (
+                            "capture_id",
+                            "title",
+                            "artist",
+                            "apple_music_id",
+                            "shazam_url",
+                            "isrc",
+                        )
+                        if key in payload
+                    },
+                    "received_at": _iso(now),
+                    "market": settings.spotify_market,
                 }
             ).encode()
         ),

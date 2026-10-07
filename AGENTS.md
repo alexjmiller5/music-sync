@@ -117,6 +117,19 @@ runs in tests, locally, or on any future platform.
   those stamps; unstamped pending rows are checkpointed with a stamp before
   submission. Supplied timestamps, including null for hub rejection, and caller
   payloads stay unchanged. Dry runs do not prepare or save timestamps.
+- `scripts/preview.py --output <private-path>` is the read-only owning rollout
+  interface. It retains full inputs, revisions and exact migration candidates in
+  a new local mode-0600 receipt; it cannot apply the migration. Hub reads exhaust
+  keyset pages and reject incomplete/repeated cursors. Collection is not atomic.
+- Changed raw playlist contents produce occurrence-specific `insert_edge`
+  provenance through create-only rows/insert, in bounded 100-row batches. Require
+  every ID in the receipt; retain pending intent on partial/invalid receipts.
+  Evidence detail stores the original JSON Pointer, not copied event JSON or
+  inferred dates. Raw archive references remain the source of original history.
+  Capture raw archives retain accepted request fields and server receipt time;
+  never label receipt time as recognition time.
+- Conflicting Spotify display profiles remain for review and do not replace
+  existing metadata. Multiple current aliases cannot choose an auto-like target.
 - Dry-run responses include structured `planned` actions with recording and
   playlist identity, reason and proposed changes; `applied` is confirmed work
   only. No Spotify/hub/archive/Notion writes occur during dry runs.

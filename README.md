@@ -351,6 +351,31 @@ action's playlist ID/name, ISRC/title when known, URI, reason and row/text
 change. `applied` counts only confirmed batches, and is empty for dry runs;
 the text summary separates Spotify mutations from mirror patches.
 
+## Rollout preview
+
+Run the owning operator command with its usual configuration:
+
+```sh
+uv run scripts/preview.py --output /private/state/music-preview.json
+```
+
+It always uses dry-run mode and creates a new mode-0600 local receipt. The
+receipt includes full Spotify inputs, catalog rows and revisions, proposed
+actions, quiet review exceptions, and exact curated-but-unliked migration
+candidates. It never applies that candidate list, overwrites an old receipt,
+or writes Spotify, the hub, archive objects, or tasks. Keep receipts outside
+source control. Collection is paginated and not atomic; revisions and current
+Spotify inputs must be checked again before any later apply.
+
+Changed playlist observations retain create-only provenance references with
+one original JSON Pointer per occurrence. Source dates and duplicate occurrences
+stay in the raw archive; current membership rows and classification timestamps
+do not replace them. Unchanged raw playlist contents do not emit new occurrence
+references. This app never updates these insert-only evidence rows; the shared
+service does not promise global append-only storage. Capture archives also keep
+the accepted recognition request, capture UUID when supplied, market and server
+receipt time. Receipt time is not an invented recognition time.
+
 ## Preservation and recovery
 
 Cron, manual reconcile and capture synchronously dispatch to the same Modal

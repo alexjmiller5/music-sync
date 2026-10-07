@@ -127,12 +127,13 @@ def test_missing_facts_preserve_old_values_and_field_attribution():
     assert m == before
 
 
-def test_representative_is_stable_and_album_pair_does_not_mix_responses():
+def test_conflicting_profiles_are_held_and_album_pair_does_not_mix_responses():
     m = load_mirror(FakeHub(persisted(observe(state=live(raw("z"))))))
     state = live(raw("a", name="Other profile"), raw("z", name="Same profile", is_playable=False))
     acts = observe(m, state)
-    assert rows(acts)[0]["title"] == "Same profile"
-    assert evidence(acts, "title")[0]["detail"]["track_id"] == "z"
+    assert "title" not in rows(acts)[0]
+    assert not evidence(acts, "title")
+    assert any(a.kind == "flag" and a.reason == "metadata" for a in acts)
     assert "spotify_playable" not in rows(acts)[0]  # a is still positively playable
     assert observe(m, live(*reversed(state.raw["items"]["P"]))) == acts
     partial = observe(m, live(raw("b", album={"name": "Incomplete release"})))
@@ -143,14 +144,14 @@ def test_representative_is_stable_and_album_pair_does_not_mix_responses():
     assert rows(complete)[0]["album_year"] == 2022
 
 
-def test_new_representative_prefers_playable_then_track_id():
+def test_new_conflicting_profiles_do_not_choose_a_title():
     acts = observe(
         state=live(
             raw("a", name="Unavailable", is_playable=False), raw("z"), raw("b", name="Winner")
         )
     )
-    assert rows(acts)[0]["title"] == "Winner"
-    assert evidence(acts, "title")[0]["detail"]["track_id"] == "b"
+    assert "title" not in rows(acts)[0]
+    assert not evidence(acts, "title")
 
 
 @pytest.mark.parametrize("playable, expected", [(None, None), (False, 0), (True, 1)])
@@ -255,7 +256,7 @@ def test_observation_evidence_roundtrips_through_supported_provenance_schema():
     assert observe(m, fill_only=True) == []
 
 
-def test_representative_uses_latest_time_in_detail_after_reload():
+def test_conflicting_profiles_preserve_existing_evidence_after_reload():
     from core.metadata import observation_actions
 
     tables = persisted(observe(state=live(raw("old"))))
@@ -284,8 +285,8 @@ def test_representative_uses_latest_time_in_detail_after_reload():
         source_ref="raw/spotify-pull/next.json.gz",
         market="US",
     )
-    assert rows(acts)[0]["title"] == "Newer"
-    assert evidence(acts, "title")[0]["detail"]["track_id"] == "recent"
+    assert "title" not in rows(acts)[0]
+    assert not evidence(acts, "title")
 
 
 @pytest.mark.parametrize("fill_only", [False, True])

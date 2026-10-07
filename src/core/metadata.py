@@ -103,11 +103,42 @@ def observation_actions(
             "album_year": chosen.album_year,
             "duration_ms": chosen.duration_ms,
         }
+        # Conflicting source profiles are evidence for review, not permission to
+        # choose a release by lexical alias order. Preserve the catalog values.
+        conflicts = set()
+        attributes = {
+            "title": "name",
+            "artists": "artists",
+            "album": "album",
+            "album_year": "album_year",
+            "duration_ms": "duration_ms",
+        }
+        for field, attribute in attributes.items():
+            values = {
+                json.dumps(getattr(item, attribute), sort_keys=True)
+                for item in items
+                if present(getattr(item, attribute))
+            }
+            if len(values) > 1:
+                conflicts.add(field)
+        if conflicts & {"album", "album_year"}:
+            conflicts.update({"album", "album_year"})
+        if conflicts:
+            acts.append(
+                Action(
+                    "flag",
+                    isrc=isrc,
+                    text=f"{isrc}: conflicting source metadata requires review ({', '.join(sorted(conflicts))})",
+                    reason="metadata",
+                )
+            )
+            for field in conflicts:
+                observed.pop(field, None)
         # Keep an initial partial release, but never mix it with a later observation.
         has_album = present(existing.get("album")) or present(existing.get("album_year"))
         if has_album and (fill_only or not (present(chosen.album) and present(chosen.album_year))):
-            observed.pop("album")
-            observed.pop("album_year")
+            observed.pop("album", None)
+            observed.pop("album_year", None)
         patch = {
             key: value
             for key, value in observed.items()

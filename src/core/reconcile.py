@@ -176,6 +176,14 @@ def plan(
             Action("upsert_song", isrc=isrc, row={"id": isrc, "liked": 0, "liked_at": None})
         )
 
+    ambiguous_aliases = {
+        isrc
+        for isrc, items in observed.items()
+        if len({item.track_id for item in items if item.track_id}) > 1
+    }
+    for isrc in sorted(ambiguous_aliases & set(curation_likes)):
+        flags.append(f"{isrc}: multiple observed aliases; auto-like requires review")
+
     # added to curated while unliked (rule 3): like it. Tie with un-heart: un-heart won above.
     to_like: dict[str, tuple[str, str]] = {}  # isrc -> (uri, curated playlist id)
     for (pid, isrc), it in actual.items():
@@ -183,6 +191,7 @@ def plan(
             kind_of.get(pid) == "curated"
             and isrc not in liked_now
             and isrc not in unhearted
+            and isrc not in ambiguous_aliases
             and not any(i == isrc for _, i in duplicates)
         ):
             if isrc in curation_likes:

@@ -62,6 +62,7 @@ class Mirror:
     deleted_memberships: list[Membership]
     captures: set[tuple[str, str]]  # (isrc, from_kind)
     observations: list[dict] = field(default_factory=list)
+    revisions: dict[str, dict[str, dict]] = field(default_factory=dict)
 
 
 @dataclass
