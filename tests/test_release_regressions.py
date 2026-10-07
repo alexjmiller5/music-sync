@@ -232,15 +232,17 @@ def test_import_observes_without_inventing_likes_or_fifo(settings, archive_store
         assert sp.calls == []
 
 
-@pytest.mark.parametrize("gesture", ["unheart", "autolike", "undo", "relink", "same_uri"])
+@pytest.mark.parametrize("gesture", ["unheart", "autolike", "rule_add", "relink", "same_uri"])
 def test_failed_mutation_preserves_baseline_and_recovers_next_run(settings, archive_store, gesture):
     hub, sp = Store(), Spotify()
     if gesture == "unheart":
+        hub.tables["playlists"]["P"].update(kind="smart", rule={"v": 1})
         sp.liked, sp.fail = [], "remove"
     elif gesture == "autolike":
         hub = Store(liked=0, member=False)
         sp.liked, sp.fail = [], "like"
-    elif gesture == "undo":
+    elif gesture == "rule_add":
+        hub.tables["playlists"]["P"].update(kind="smart", rule={"v": 1})
         hub.tables["songs"][A]["liked"] = 0
         hub.tables["playlist_songs"][f"P:{A}"]["deleted_at"] = T
         sp.items, sp.fail = [], "add"
@@ -279,9 +281,9 @@ def test_failed_mutation_preserves_baseline_and_recovers_next_run(settings, arch
 def test_dedupe_obeys_final_membership(settings, archive_store, liked, count):
     sp, hub = Spotify([raw()] * count, liked=liked), Store()
     assert not execute(settings, sp, hub).errors
-    assert len(sp.items) == (1 if liked else 0)
+    assert len(sp.items) == 1
     assert not execute(settings, sp, hub).errors
-    assert len(sp.items) == (1 if liked else 0)
+    assert len(sp.items) == 1
 
 
 def test_new_owned_playlist_likes_initial_add_once(settings, archive_store):
@@ -293,15 +295,15 @@ def test_new_owned_playlist_likes_initial_add_once(settings, archive_store):
     assert [c[0] for c in sp.calls].count("like") == 1
 
 
-def test_dry_run_exposes_reviewable_removal(settings, archive_store):
+def test_dry_run_exposes_reviewable_unlike_exception(settings, archive_store):
     sp, hub = Spotify(liked=False), Store()
     out = execute(settings, sp, hub, dry_run=True)
     assert sp.calls == [] and archive_store == {}
     details = getattr(out, "planned", [])
-    removal = next((a for a in details if a["kind"] == "remove_item"), None)
-    assert removal and removal["playlist_id"] == "P" and removal["isrc"] == A
-    assert removal["playlist_name"] == "Playlist" and removal["title"] == "Song"
-    assert removal["reason"] == "un-hearted"
+    removal = next((a for a in details if a["kind"] == "review_exception"), None)
+    assert removal and removal["isrc"] == A
+    assert removal["row"]["playlist_ids"] == ["P"] and removal["title"] == "Song"
+    assert removal["reason"] == "explicit unlike while still curated"
     assert out.applied == {}
     assert A in out.summary() and "Playlist" in out.summary()
 
@@ -527,12 +529,12 @@ def test_activation_provision_outputs_zero_without_services(capsys, monkeypatch)
     assert capsys.readouterr().out == "0\n"
 
 
-def test_conflicting_new_membership_unheart_retains_full_undo_row(settings, archive_store):
+def test_conflicting_new_membership_unheart_retains_full_curated_row(settings, archive_store):
     hub, sp = Store(member=False), Spotify(liked=False)
     assert not execute(settings, sp, hub).errors
     row = hub.tables["playlist_songs"][f"P:{A}"]
     assert row.get("isrc") == A and row.get("playlist_id") == "P"
-    assert row["added_at"] == T and row["spotify_track_id"] == "a" and row["deleted_at"]
+    assert row["added_at"] == T and row["spotify_track_id"] == "a" and not row["deleted_at"]
     sp.liked = [raw()]
     assert not execute(settings, sp, hub).errors
     assert len(sp.items) == 1

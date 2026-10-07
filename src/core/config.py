@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     life_hub_token: str
     notion_token: str
     notion_tasks_data_source_id: str
+    notion_review_page_id: str | None = None
+    notion_review_property_id: str | None = None
     notion_project_page_id: str
     r2_account_id: str
     r2_bucket: str

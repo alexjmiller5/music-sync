@@ -63,3 +63,37 @@ def test_appends_to_open_task(settings):
     method, path, body = seen[-1]
     assert (method, path) == ("PATCH", "/v1/pages/open")
     assert body["properties"]["Notes"]["rich_text"][0]["text"]["content"].startswith("old\n")
+
+
+def test_existing_review_task_retains_all_evidence_and_deduplicates(settings):
+    settings = settings.model_copy(
+        update={"notion_review_page_id": "review", "notion_review_property_id": "notes-id"}
+    )
+    old = "historical evidence\n" * 200 + "- already recorded"
+    writes = []
+
+    def handler(req):
+        if req.method == "GET":
+            assert req.url.path == "/v1/pages/review"
+            return httpx.Response(
+                200,
+                json={
+                    "id": "review",
+                    "properties": {
+                        "Renamed Notes": {"id": "notes-id", "rich_text": [{"plain_text": old}]}
+                    },
+                },
+            )
+        assert req.method == "PATCH" and req.url.path == "/v1/pages/review"
+        writes.append(json.loads(req.content))
+        return httpx.Response(200, json={"id": "review"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    flags.file(settings, client, ["already recorded", "new finding"], [], "day")
+    rich = writes[0]["properties"]["notes-id"]["rich_text"]
+    text = "".join(r["text"]["content"] for r in rich)
+    assert text.startswith(old) and text.count("already recorded") == 1
+    assert "new finding" in text and all(len(r["text"]["content"]) <= 1900 for r in rich)
+    old = text
+    flags.file(settings, client, ["already recorded", "new finding"], [], "later")
+    assert len(writes) == 1

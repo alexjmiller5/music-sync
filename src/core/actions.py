@@ -47,7 +47,11 @@ class RunLog:
 
 
 def _batches(actions: list[Action], writes: bool) -> list[dict]:
-    ops = []
+    ops = [
+        {"kind": "review_exception", "row": a.row}
+        for a in actions
+        if a.kind == "review_exception" and writes
+    ]
     for kind in (
         "like",
         "add_item",
@@ -93,6 +97,7 @@ def apply(
     checkpoint=None,
     pending: list[dict] | None = None,
     market: str | None = None,
+    save_review=None,
 ) -> RunLog:
     out = RunLog(dry_run=dry_run, planned=[asdict(a) for a in actions])
     out.flags = [a.text for a in actions if a.kind == "flag"]
@@ -115,7 +120,12 @@ def apply(
         for index, op in enumerate(ops):
             kind, pid = op["kind"], op.get("playlist_id")
             operation = f"{kind} {pid or op.get('table', '')}".strip()
-            if kind == "hub":
+            if kind == "review_exception":
+                if save_review is None:
+                    raise RuntimeError("durable review storage is required")
+                save_review(op["row"])
+                out.applied[kind] += 1
+            elif kind == "hub":
                 hub.push(op["table"], op["rows"])
                 for name, count in op["counts"].items():
                     out.applied[name] += count

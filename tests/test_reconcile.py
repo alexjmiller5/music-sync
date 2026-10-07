@@ -107,7 +107,7 @@ def test_existing_membership_id_is_usable_without_catalog_aliases():
     assert [a.uri for a in kinds(acts, "add_item")] == ["spotify:track:member-id"]
 
 
-def test_undo_uses_retained_membership_id_without_alias_search():
+def test_relike_does_not_restore_a_deleted_curated_membership():
     m = Mirror(
         {"A": song("A", liked=0, ids=[])},
         {"CU": pl("CU", "curated", "curated")},
@@ -117,10 +117,10 @@ def test_undo_uses_retained_membership_id_without_alias_search():
     )
     li = LiveItem("A", None, None, T, None, False, None, [])
     acts = reconcile.plan(m, Live({"CU": live_pl("CU", "curated", [])}, {"A": li}, {}), NOW)
-    assert [a.uri for a in kinds(acts, "add_item")] == ["spotify:track:undo-id"]
+    assert not kinds(acts, "add_item")
 
 
-@pytest.mark.parametrize("route", ["verified", "live", "fallback", "membership"])
+@pytest.mark.parametrize("route", ["verified", "live", "membership"])
 def test_routing_membership_inspections_are_bounded(route):
     class CountedMemberships(dict):
         inspections = 0
@@ -272,7 +272,7 @@ def test_added_to_curated_while_unliked_gets_liked_and_edge():
     )
 
 
-def test_unheart_removes_from_curated_and_smart_and_wins_tie():
+def test_unheart_only_removes_smart_membership_and_wins_autolike_tie():
     m = base()
     live = Live(
         {
@@ -285,12 +285,12 @@ def test_unheart_removes_from_curated_and_smart_and_wins_tie():
     )
     acts = reconcile.plan(m, live, NOW)
     removed = {(a.playlist_id, a.uri) for a in kinds(acts, "remove_item")}
-    assert removed == {("CU", "spotify:track:tA"), ("SM", "spotify:track:tA")}
+    assert removed == {("SM", "spotify:track:tA")}
     assert not kinds(acts, "like")
-    assert {a.row["id"] for a in kinds(acts, "delete_membership")} == {"CU:A", "SM:A"}
+    assert {a.row["id"] for a in kinds(acts, "delete_membership")} == {"SM:A"}
 
 
-def test_unheart_removes_skipped_playlist_memberships_via_mirror():
+def test_unheart_preserves_skipped_curated_memberships_via_mirror():
     # steady state: hearting/un-hearting never bumps a curated playlist's snapshot, so
     # pull_live skips it (items=None) - un-heart must still fall back to the mirror row
     m = base()
@@ -305,8 +305,8 @@ def test_unheart_removes_skipped_playlist_memberships_via_mirror():
     )
     acts = reconcile.plan(m, live, NOW)
     removed = {(a.playlist_id, a.uri) for a in kinds(acts, "remove_item")}
-    assert removed == {("CU", "spotify:track:tA"), ("SM", "spotify:track:tA")}
-    assert {a.row["id"] for a in kinds(acts, "delete_membership")} == {"CU:A", "SM:A"}
+    assert removed == {("SM", "spotify:track:tA")}
+    assert {a.row["id"] for a in kinds(acts, "delete_membership")} == {"SM:A"}
 
 
 def test_smart_materializes_when_curated_and_inbox_skipped():
@@ -347,7 +347,7 @@ def test_rule_error_flags_instead_of_raising_other_smart_playlists_still_materia
     assert [a.uri for a in kinds(acts, "add_item") if a.playlist_id == "SM"] == ["spotify:track:tD"]
 
 
-def test_undo_restores_curated_within_window():
+def test_relike_never_undoes_a_curated_removal():
     m = base()
     m.songs["A"].liked = 0
     m.memberships.pop(("CU", "A"))
@@ -364,7 +364,9 @@ def test_undo_restores_curated_within_window():
         {},
     )
     acts = reconcile.plan(m, live, NOW)
-    assert ("CU", "spotify:track:tA") in {(a.playlist_id, a.uri) for a in kinds(acts, "add_item")}
+    assert ("CU", "spotify:track:tA") not in {
+        (a.playlist_id, a.uri) for a in kinds(acts, "add_item")
+    }
     # plan() must not mutate its input: the mirror's own "A" is still unliked, so the
     # second call below is a genuine test of the cutoff window, not of a stale mutation
     assert m.songs["A"].liked == 0

@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import httpx
 import structlog
 
-from core import actions, archive, flags, mirror, metadata
+from core import actions, archive, flags, mirror, metadata, review_state
 from core import reconcile as reconcile_mod
 from core.config import Settings
 from core.hub import Hub
@@ -26,6 +26,7 @@ def reconcile_run(
     hub=None,
     http: httpx.Client | None = None,
     writes: bool = True,
+    like_existing_curated: bool = False,
 ) -> actions.RunLog:
     now = now or datetime.now(timezone.utc)
     today = now.date().isoformat()
@@ -74,7 +75,7 @@ def reconcile_run(
         plan = [Action(**a) for a in pending["planned"]]
     else:
         m = mirror.load_mirror(hub)
-        live = mirror.pull_live(spotify, settings.spotify_market, me, m, full=not writes)
+        live = mirror.pull_live(spotify, settings.spotify_market, me, m, full=True)
         source_ref = archive.key_for(now)
         if not dry_run:
             archive.put(settings, source_ref, gzip.compress(json.dumps(live.raw).encode()))
@@ -88,6 +89,8 @@ def reconcile_run(
             observation_only=not writes,
             source_ref=source_ref,
             market=settings.spotify_market,
+            review_exceptions=set(review_state.load(settings)),
+            like_existing_curated=like_existing_curated,
         )
         for a in plan:
             lp = live.playlists.get(a.playlist_id)
@@ -128,6 +131,7 @@ def reconcile_run(
         checkpoint=checkpoint,
         pending=pending["operations"] if pending else None,
         market=settings.spotify_market,
+        save_review=lambda row: review_state.record(settings, row),
     )
     log.info(
         "reconcile_done",

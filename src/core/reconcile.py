@@ -1,12 +1,13 @@
 """Pure reconcile: (mirror, live) -> ordered actions. No I/O. Spec section 5.3."""
 
 import dataclasses
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from core import metadata, rules
 from core.model import Action, Live, Membership, Mirror, Song
 
 ORDER = [
+    "review_exception",
     "like",
     "add_item",
     "remove_item",
@@ -45,11 +46,14 @@ def plan(
     *,
     source_ref: str | None = None,
     market: str | None = None,
+    review_exceptions: set[str] | None = None,
+    like_existing_curated: bool = False,
 ) -> list[Action]:
     if observation_only:
         return observe(mirror, live, now, source_ref=source_ref, market=market)
     today = today or now.date().isoformat()
     now_s = _iso(now)
+    review_exceptions = review_exceptions or set()
     acts: list[Action] = []
     names = {p.name: p.id for p in mirror.playlists.values()}
     names.update({p.name: p.id for p in live.playlists.values()})
@@ -164,19 +168,62 @@ def plan(
         acts, metadata.observation_actions(mirror, live, now, source_ref=source_ref, market=market)
     )
 
-    # un-heart (rule 4): remove from every non-inbox playlist it is in - both a playlist
-    # pulled this run (via `actual`) and one skipped this run (via the mirror membership,
-    # since `actual` has no entry at all for a playlist whose items weren't fetched)
+    # An unlike changes liked state, never intentional curated membership.
     unhearted = liked_before - liked_now
     for isrc in sorted(unhearted):
-        acts.append(
-            Action("upsert_song", isrc=isrc, row={"id": isrc, "liked": 0, "liked_at": None})
+        acts.append(Action("upsert_song", isrc=isrc, row={"id": isrc, "liked": 0}))
+        previously_curated = any(
+            i == isrc and kind_of.get(pid) == "curated" for pid, i in mirror.memberships
         )
-        for (pid, i), it in list(actual.items()):
-            if i == isrc and pid not in inbox_ids:
+        still_curated = any(
+            i == isrc and kind_of.get(pid) == "curated" for pid, i in actual
+        ) or any(
+            i == isrc
+            and kind_of.get(pid) == "curated"
+            and pid in live.playlists
+            and live.playlists[pid].items is None
+            for pid, i in mirror.memberships
+        )
+        if previously_curated and still_curated and isrc not in review_exceptions:
+            acts.append(
+                Action(
+                    "review_exception",
+                    isrc=isrc,
+                    row={
+                        "id": isrc,
+                        "source_ref": source_ref,
+                        "observed_at": now_s,
+                        "playlist_ids": sorted(
+                            {
+                                pid
+                                for pid, i in mirror.memberships
+                                if i == isrc and kind_of.get(pid) == "curated"
+                            }
+                        ),
+                    },
+                    reason="explicit unlike while still curated",
+                )
+            )
+            acts.append(
+                Action(
+                    "flag",
+                    isrc=isrc,
+                    reason="curated_unlike",
+                    text=f"{isrc}: unliked while still curated; membership retained, review required",
+                )
+            )
+        # Smart playlists reflect likes. Skipped smart observations must not keep
+        # a stale like-based membership, but curated/inbox items remain untouched.
+        for (pid, i), mem in mirror.memberships.items():
+            lp = live.playlists.get(pid)
+            if i == isrc and kind_of.get(pid) == "smart" and lp and lp.items is None:
                 acts.append(
                     Action(
-                        "remove_item", playlist_id=pid, isrc=isrc, uri=it.uri, reason="un-hearted"
+                        "remove_item",
+                        playlist_id=pid,
+                        isrc=isrc,
+                        uri=f"spotify:track:{mem.spotify_track_id}",
+                        reason="un-hearted",
                     )
                 )
                 acts.append(
@@ -184,39 +231,20 @@ def plan(
                         "delete_membership",
                         playlist_id=pid,
                         isrc=isrc,
-                        row={"id": f"{pid}:{isrc}", "deleted_at": now_s},
+                        row={"id": mem.id, "deleted_at": now_s},
                     )
                 )
-                actual.pop((pid, i))
-        for (pid, i), mem in mirror.memberships.items():
-            if i != isrc or pid in inbox_ids:
-                continue
-            lp = live.playlists.get(pid)
-            if lp is None or lp.items is not None:
-                continue  # fetched this run: already handled above via `actual`
-            acts.append(
-                Action(
-                    "remove_item",
-                    playlist_id=pid,
-                    isrc=isrc,
-                    uri=f"spotify:track:{mem.spotify_track_id}",
-                    reason="un-hearted",
-                )
-            )
-            acts.append(
-                Action(
-                    "delete_membership",
-                    playlist_id=pid,
-                    isrc=isrc,
-                    row={"id": f"{pid}:{isrc}", "deleted_at": now_s},
-                )
-            )
 
     # added to curated while unliked (rule 3): like it. Tie with un-heart: un-heart won above.
     to_like: dict[str, tuple[str, str]] = {}  # isrc -> (uri, curated playlist id)
     for (pid, isrc), it in actual.items():
-        if kind_of.get(pid) == "curated" and isrc not in liked_now and isrc not in unhearted:
-            if (pid, isrc) not in mirror.memberships:
+        if (
+            kind_of.get(pid) == "curated"
+            and isrc not in liked_now
+            and isrc not in unhearted
+            and isrc not in review_exceptions
+        ):
+            if like_existing_curated or (pid, isrc) not in mirror.memberships:
                 to_like[isrc] = (it.uri, pid)
     for isrc, (uri, pid) in sorted(to_like.items()):
         acts.append(Action("like", isrc=isrc, uri=uri, reason="in curated playlist"))
@@ -243,6 +271,15 @@ def plan(
                     },
                 )
             )
+    for isrc in sorted(review_exceptions):
+        acts.append(
+            Action(
+                "flag",
+                isrc=isrc,
+                reason="curated_unlike",
+                text=f"{isrc}: unliked while still curated; membership retained, review required",
+            )
+        )
     liked_effective = (liked_now | set(to_like)) - unhearted
 
     view = dataclasses.replace(
@@ -283,45 +320,6 @@ def plan(
             return f"spotify:track:{member_ids[isrc]}"
         s = view.songs.get(isrc)
         return preferred_uri(s) if s else None
-
-    # undo (rule 5)
-    cutoff = _iso(now - timedelta(days=undo_days))
-    for m in mirror.deleted_memberships:
-        s = mirror.songs.get(m.isrc)
-        if (
-            m.isrc in liked_now
-            and s
-            and not s.liked
-            and kind_of.get(m.playlist_id) == "curated"
-            and (m.deleted_at or "") >= cutoff
-            and (m.playlist_id, m.isrc) not in actual
-            and routing_uri(m.isrc, m.spotify_track_id)
-        ):
-            uri = routing_uri(m.isrc, m.spotify_track_id)
-            acts.append(
-                Action(
-                    "add_item",
-                    playlist_id=m.playlist_id,
-                    isrc=m.isrc,
-                    uri=uri,
-                    reason="undo un-heart",
-                )
-            )
-            acts.append(
-                Action(
-                    "upsert_membership",
-                    playlist_id=m.playlist_id,
-                    isrc=m.isrc,
-                    row={
-                        "id": m.id,
-                        "playlist_id": m.playlist_id,
-                        "isrc": m.isrc,
-                        "spotify_track_id": uri.split(":")[-1],
-                        "added_at": now_s,
-                        "deleted_at": None,
-                    },
-                )
-            )
 
     # inbox FIFO (rule 6)
     for pid in inbox_ids:
