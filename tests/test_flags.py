@@ -1,6 +1,7 @@
 import json
 
 import httpx
+import pytest
 
 from core import flags
 
@@ -63,3 +64,53 @@ def test_appends_to_open_task(settings):
     method, path, body = seen[-1]
     assert (method, path) == ("PATCH", "/v1/pages/open")
     assert body["properties"]["Notes"]["rich_text"][0]["text"]["content"].startswith("old\n")
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_long_evidence_is_preserved_in_full(settings, existing):
+    written = []
+    old = "original evidence\n" * 500
+    new = "new evidence\n" * 500
+
+    def handler(req):
+        if req.url.path.endswith("/query"):
+            return httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {
+                            "id": "open",
+                            "properties": {"Notes": {"rich_text": [{"plain_text": old}]}},
+                        }
+                    ]
+                    if existing
+                    else []
+                },
+            )
+        written.append(json.loads(req.content))
+        return httpx.Response(200, json={"id": "open"})
+
+    flags.file(settings, httpx.Client(transport=httpx.MockTransport(handler)), [new], [], "today")
+    chunks = written[0]["properties"]["Notes"]["rich_text"]
+    combined = "".join(c["text"]["content"] for c in chunks)
+    assert combined == (old + "\n" if existing else "") + "today\n- " + new
+    assert all(len(c["text"]["content"]) <= 1900 for c in chunks)
+
+
+def test_oversized_flag_receipt_fails_before_overwriting_existing_evidence(settings):
+    calls = []
+
+    def handler(req):
+        calls.append(req.method)
+        assert req.url.path.endswith("/query")
+        return httpx.Response(200, json={"results": []})
+
+    with pytest.raises(ValueError, match="capacity"):
+        flags.file(
+            settings,
+            httpx.Client(transport=httpx.MockTransport(handler)),
+            ["x" * 200000],
+            [],
+            "today",
+        )
+    assert calls == ["POST"]
