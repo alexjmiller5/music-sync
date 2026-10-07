@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import httpx
 import structlog
 
-from core import actions, archive, flags, mirror, metadata
+from core import actions, archive, curation, flags, mirror, metadata
 from core import reconcile as reconcile_mod
 from core.config import Settings
 from core.hub import Hub
@@ -44,6 +44,13 @@ def reconcile_run(
                 "complete recovery, then request a fresh dry run"
             ],
         )
+    if pending and pending.get("writes") and pending.get("policy_version") != 1:
+        return actions.RunLog(
+            dry_run=dry_run,
+            errors=[
+                "Pending reconciliation uses an older curation policy; review retained intent before recovery"
+            ],
+        )
     if pending and pending["writes"] and not writes:
         return actions.RunLog(
             errors=["Pending reconcile recovery must finish before observation import"]
@@ -72,12 +79,25 @@ def reconcile_run(
                 settings, archive.key_for(now), gzip.compress(json.dumps(live.raw).encode())
             )
         plan = [Action(**a) for a in pending["planned"]]
+        next_curation = pending.get("curation_state")
     else:
         m = mirror.load_mirror(hub)
-        live = mirror.pull_live(spotify, settings.spotify_market, me, m, full=not writes)
+        live = mirror.pull_live(spotify, settings.spotify_market, me, m, full=True)
         source_ref = archive.key_for(now)
         if not dry_run:
             archive.put(settings, source_ref, gzip.compress(json.dumps(live.raw).encode()))
+        retained = archive.get(settings, curation.state_key(settings.workspace))
+        previous = json.loads(gzip.decompress(retained)) if retained else None
+        members = {
+            (pid, item.isrc)
+            for pid, playlist in live.playlists.items()
+            if pid in m.playlists and m.playlists[pid].kind == "curated"
+            for item in playlist.items or []
+            if item.isrc
+        }
+        if any(playlist.items is None for playlist in live.playlists.values()):
+            return actions.RunLog(dry_run=dry_run, errors=["Incomplete curation observation"])
+        to_like, next_curation = curation.advance(previous, set(live.liked), members, source_ref)
         plan = reconcile_mod.plan(
             m,
             live,
@@ -88,6 +108,12 @@ def reconcile_run(
             observation_only=not writes,
             source_ref=source_ref,
             market=settings.spotify_market,
+            curation_likes=to_like,
+        )
+        confirmed_on_success = {a.isrc for a in plan if a.kind == "like"} if writes else set()
+        next_curation["baseline"]["own_likes"] = sorted(confirmed_on_success)
+        next_curation["pending_likes"] = sorted(
+            set(next_curation["pending_likes"]) - confirmed_on_success
         )
         for a in plan:
             lp = live.playlists.get(a.playlist_id)
@@ -106,8 +132,16 @@ def reconcile_run(
             a.title = item.name if item else song.title if song else None
 
     def checkpoint(remaining):
+        if not remaining and next_curation is not None:
+            archive.put(
+                settings,
+                curation.state_key(settings.workspace),
+                gzip.compress(json.dumps(next_curation).encode()),
+            )
         data = (
             {
+                "policy_version": 1,
+                "curation_state": next_curation,
                 "planned": [asdict(a) for a in plan],
                 "operations": remaining,
                 "writes": pending["writes"] if pending else writes,
@@ -129,6 +163,10 @@ def reconcile_run(
         pending=pending["operations"] if pending else None,
         market=settings.spotify_market,
     )
+    out.review_items = [
+        {"id": f"curation-unlike:{isrc}", "isrc": isrc, **item}
+        for isrc, item in (next_curation or {}).get("exceptions", {}).items()
+    ]
     log.info(
         "reconcile_done",
         **{k: v for k, v in out.applied.items() if v},
