@@ -431,7 +431,12 @@ def test_capture_raw_archive_precedes_add_and_trim(settings, archive_store, mock
 
     def put(settings, key, data):
         assert sp.calls == []
-        assert json.loads(gzip.decompress(data))["items"] == before
+        saved = json.loads(gzip.decompress(data))
+        if "event" in saved:
+            assert saved["event"]["recognized_at"] is None
+            assert saved["event"]["observation_ref"] in archive_store
+        else:
+            assert saved["items"] == before
         return original(settings, key, data)
 
     mocker.patch("core.archive.put", side_effect=put)

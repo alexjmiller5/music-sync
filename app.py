@@ -197,7 +197,9 @@ def _consumer_capture(body: dict):
             body["client_id"],
             body["capture"],
             lambda payload: cap.resolve_track(payload, None, settings),
-            lambda payload, selected, record: _capture(payload, selected, settings, record),
+            lambda payload, selected, record: _capture(
+                payload, selected, settings, record, client_id=body["client_id"]
+            ),
         )
         if result.get("ok") is not True:
             return JSONResponse(result, status_code=422)
@@ -366,7 +368,13 @@ def _flag_quietly(settings, flags: list[str], errors: list[str]) -> None:
         print(f"capture: could not file flag: {e}")
 
 
-def _capture(body: dict, resolved_track: dict | None = None, settings=None, record_outcome=None):
+def _capture(
+    body: dict,
+    resolved_track: dict | None = None,
+    settings=None,
+    record_outcome=None,
+    client_id: str | None = None,
+):
     from datetime import datetime, timezone
 
     from fastapi.responses import JSONResponse
@@ -385,6 +393,7 @@ def _capture(body: dict, resolved_track: dict | None = None, settings=None, reco
             datetime.now(timezone.utc),
             resolved_track=resolved_track,
             record_outcome=record_outcome,
+            client_id=client_id,
         )
     except SpotifyAuthError as e:
         _flag_quietly(

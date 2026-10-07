@@ -82,6 +82,32 @@ def test_preview_errors_are_safe_and_receipt_remains_valid_json(
     assert "private response body" not in captured.out + captured.err
 
 
+def test_preview_reports_hub_http_status_without_response_body(
+    tmp_path, monkeypatch, settings, capsys
+):
+    import json
+    import httpx
+    from scripts import preview
+    from core.hub import Hub
+
+    monkeypatch.setattr(preview, "Settings", lambda: settings)
+    hub = Hub(
+        "https://hub.test",
+        "dummy",
+        httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(502, text="private response body")
+            )
+        ),
+    )
+    monkeypatch.setattr(preview.run, "reconcile", lambda *a, **kw: hub.pull("songs", ["id"]))
+    path = tmp_path / "failed.json"
+    assert preview.main(["--output", str(path)]) == 1
+    assert json.loads(path.read_text())["failure"] == {"category": "http", "status": 502}
+    captured = capsys.readouterr()
+    assert "private response body" not in captured.out + captured.err + path.read_text()
+
+
 def test_preview_carries_prior_decision_evidence(settings, archive_store):
     hub, sp = Store(), Spotify()
     assert not execute(settings, sp, hub).errors
