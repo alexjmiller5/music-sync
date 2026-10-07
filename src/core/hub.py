@@ -14,6 +14,10 @@ class HubError(RuntimeError):
     pass
 
 
+class RevisionConflict(HubError):
+    pass
+
+
 class Hub:
     def __init__(self, base_url: str, token: str, http: httpx.Client | None = None):
         self.base = base_url.rstrip("/")
@@ -26,6 +30,8 @@ class Hub:
         except httpx.HTTPError as e:
             raise HubError(f"hub unreachable: {type(e).__name__}") from e
         if r.status_code >= 400:
+            if r.status_code == 409:
+                raise RevisionConflict("hub row revision changed")
             raise HubError(f"hub HTTP {r.status_code}: {r.text[:300]}")
         return r.json()
 
@@ -36,6 +42,53 @@ class Hub:
         if where:
             body["where"] = where
         return self._post("/v1/rows/pull", body)["rows"]
+
+    def scan(self, table, columns, *, where=None):
+        body = {"table": table, "columns": columns, "since": "", "limit": 200}
+        if where is not None:
+            body["where"] = where
+        rows, seen = [], set()
+        while True:
+            page = self._post("/v1/rows/pull", body)
+            if not isinstance(page.get("rows"), list) or "next_cursor" not in page:
+                raise HubError("incomplete scan receipt")
+            rows.extend(page["rows"])
+            cursor = page["next_cursor"]
+            if cursor is None:
+                return rows
+            if not isinstance(cursor, str) or not cursor or cursor in seen:
+                raise HubError("invalid scan cursor")
+            seen.add(cursor)
+            body["after"] = cursor
+
+    def insert(self, table, row):
+        receipt = self._post(
+            "/v1/rows/insert", {"table": table, "columns": sorted(row), "rows": [row]}
+        )
+        if (
+            not all(
+                isinstance(receipt.get(key), list) for key in ("inserted", "existing", "rejected")
+            )
+            or receipt["rejected"]
+            or receipt["inserted"] + receipt["existing"] != [row["id"]]
+        ):
+            raise HubError("invalid or rejected insert receipt")
+        return receipt
+
+    def patch(self, table, row_id, values, revision):
+        receipt = self._post(
+            "/v1/rows/patch",
+            {"table": table, "id": row_id, "values": values, "expected_revision": revision},
+        )
+        clocks = receipt.get("revision")
+        if (
+            receipt.get("id") != row_id
+            or not isinstance(clocks, dict)
+            or not isinstance(clocks.get("updated_at"), str)
+            or "hub_at" not in clocks
+        ):
+            raise HubError("invalid patch receipt")
+        return receipt
 
     def catalog(self) -> dict:
         try:
