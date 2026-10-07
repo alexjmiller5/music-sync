@@ -154,6 +154,17 @@ def item_from_raw(raw: dict) -> LiveItem:
     )
 
 
+def validate_recording_aliases(items: list[LiveItem]) -> None:
+    recordings = {}
+    for item in items:
+        if item.uri and item.isrc:
+            previous = recordings.setdefault(item.uri, item.isrc)
+            if previous != item.isrc:
+                raise ValueError(
+                    "Spotify URI has conflicting recording identities; review required"
+                )
+
+
 def pull_live(spotify, market: str, me_id: str, mirror: Mirror, full: bool = False) -> Live:
     raw = {"playlists": [], "items": {}, "liked": []}
     playlists = {}
@@ -195,4 +206,7 @@ def pull_live(spotify, market: str, me_id: str, mirror: Mirror, full: bool = Fal
         observations.append(it)
         if it.isrc and it.isrc not in liked:
             liked[it.isrc] = it
+    validate_recording_aliases(
+        [*observations, *(item for p in playlists.values() for item in p.items or [])]
+    )
     return Live(playlists, liked, raw, observations)

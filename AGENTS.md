@@ -105,6 +105,10 @@ runs in tests, locally, or on any future platform.
   persist and block later re-likes. Return quiet `review_items` without activating
   a task destination. Unknown playlists need classification; duplicate/alias
   choices need review. Never automatically select a duplicate keeper.
+  Duplicate inbox recordings also hold FIFO trimming and membership replacement;
+  capture still retains recognition history and confirms existing presence.
+  Playlist-rule references use `in_playlist_ids_any` / `not_in_playlist_ids`;
+  legacy name references remain readable but ambiguous names fail for review.
 - Checkpoint like attempts before sending. A recovered uncertain attempt needs
   positive live evidence; absent likes require review, never automatic re-like.
   Mutating recovery intent without the current policy version is held.
