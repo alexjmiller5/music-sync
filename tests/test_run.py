@@ -21,6 +21,36 @@ class DeadSpotify:
         raise SpotifyAuthError("invalid_grant: revoked")
 
 
+def test_incomplete_liked_http_page_stops_before_any_mutation(settings, mocker):
+    import httpx
+
+    from core.spotify_client import SpotifyClient
+
+    def handler(req):
+        assert req.method == "GET" or req.url.path == "/api/token"
+        if req.url.path == "/api/token":
+            return httpx.Response(200, json={"access_token": "dummy"})
+        if req.url.path == "/v1/me":
+            return httpx.Response(200, json={"id": "me"})
+        if req.url.path == "/v1/me/playlists":
+            return httpx.Response(200, json={"items": [], "next": None, "total": 0})
+        assert req.url.path == "/v1/me/tracks"
+        # A terminal page that omits the saved recording is not an unlike.
+        return httpx.Response(200, json={"items": [], "next": None, "total": 1})
+
+    mocker.patch("core.run.metadata.require_observed_contract")
+    mocker.patch("core.run.mirror.load_mirror", return_value=Mirror({}, {}, {}, [], set()))
+    put = mocker.patch("core.run.archive.put")
+    apply = mocker.patch("core.run.actions.apply")
+    file = mocker.patch("core.run.flags.file")
+    client = SpotifyClient(settings, httpx.Client(transport=httpx.MockTransport(handler)))
+    with pytest.raises(ValueError, match="Spotify pagination"):
+        run.reconcile(settings, dry_run=False, spotify=client, hub=object())
+    put.assert_not_called()
+    apply.assert_not_called()
+    file.assert_not_called()
+
+
 def test_invalid_grant_becomes_flag_and_stops(settings, mocker):
     filed = mocker.patch("core.run.flags.file", return_value="page")
     log = run.reconcile(

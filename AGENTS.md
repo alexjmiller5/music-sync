@@ -121,6 +121,9 @@ runs in tests, locally, or on any future platform.
   interface. It retains full inputs, revisions and exact migration candidates in
   a new local mode-0600 receipt; it cannot apply the migration. Hub reads exhaust
   keyset pages and reject incomplete/repeated cursors. Collection is not atomic.
+  Spotify collection requires complete pages and stable totals, rejects repeated
+  or foreign continuation URLs, and checks returned offsets. Any failure stops
+  before baseline advancement or mutations; a missing page is never an unlike.
 - Changed raw playlist contents produce occurrence-specific `insert_edge`
   provenance through create-only rows/insert, in bounded 100-row batches. Require
   every ID in the receipt; retain pending intent on partial/invalid receipts.

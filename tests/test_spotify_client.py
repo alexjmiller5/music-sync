@@ -35,11 +35,14 @@ def test_playlist_items_uses_items_path_market_and_fields(settings, mocker):
             return token_resp()
         seen.append(req.url)
         if req.url.params.get("offset") == "50":
-            return httpx.Response(200, json={"items": [{"added_at": "b"}], "next": None})
+            return httpx.Response(
+                200, json={"items": [{"added_at": "b"}], "next": None, "total": 2}
+            )
         return httpx.Response(
             200,
             json={
                 "items": [{"added_at": "a"}],
+                "total": 2,
                 "next": "https://api.spotify.com/v1/playlists/P/items?offset=50&limit=50",
             },
         )
@@ -51,6 +54,89 @@ def test_playlist_items_uses_items_path_market_and_fields(settings, mocker):
     assert "external_ids" in seen[0].params["fields"]
     assert "duration_ms" in seen[0].params["fields"]
     assert "linked_from(id)" in seen[0].params["fields"]
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        {},
+        {"items": None, "next": None},
+        {"items": [], "next": ""},
+        {"items": [], "next": 1},
+        {"items": [{}]},
+        {"items": [None], "next": None},
+        {"items": [], "next": None, "total": 1},
+        {"items": [], "next": None, "total": True},
+        {"items": [], "next": None, "total": None},
+        {"items": [{}], "next": None, "offset": 1},
+        {"items": [{}], "total": 2, "next": "https://untrusted.invalid/v1/me/tracks"},
+        {"items": [{}], "total": 2, "next": "http://api.spotify.com/v1/me/tracks"},
+        {"items": [{}], "total": 2, "next": "https://api.spotify.com/v1/me/playlists"},
+    ],
+)
+def test_incomplete_or_invalid_pages_never_become_unlikes(settings, mocker, page):
+    calls = []
+
+    def handler(req):
+        if req.url.host == "accounts.spotify.com":
+            return token_resp()
+        calls.append(req.url)
+        assert len(calls) == 1, "must reject the invalid page before following its URL"
+        return httpx.Response(200, json={"total": 1, **page})
+
+    with pytest.raises(ValueError, match="Spotify pagination"):
+        make(handler, settings, mocker).get_liked("US")
+
+
+def test_repeated_page_url_stops_before_refetch(settings, mocker):
+    calls = []
+
+    def handler(req):
+        if req.url.host == "accounts.spotify.com":
+            return token_resp()
+        calls.append(req.url)
+        assert len(calls) <= 2, "repeated cursor must not loop"
+        return httpx.Response(
+            200,
+            json={
+                "items": [{}],
+                "next": "https://api.spotify.com/v1/me/tracks?offset=1",
+                "total": 4,
+            },
+        )
+
+    with pytest.raises(ValueError, match="Spotify pagination"):
+        make(handler, settings, mocker).get_liked("US")
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("last_total", [1, 3])
+def test_changing_total_does_not_produce_complete_snapshot(settings, mocker, last_total):
+    pages = iter(
+        [
+            {"items": [{}], "next": "https://api.spotify.com/v1/me/tracks?offset=1", "total": 2},
+            {"items": [{}], "next": None, "total": last_total},
+        ]
+    )
+
+    def handler(req):
+        if req.url.host == "accounts.spotify.com":
+            return token_resp()
+        return httpx.Response(200, json=next(pages))
+
+    with pytest.raises(ValueError, match="Spotify pagination"):
+        make(handler, settings, mocker).get_liked("US")
+
+
+@pytest.mark.parametrize("item", [{}, {"track": None}, {"track": {}}, {"track": {"id": ""}}])
+def test_unidentified_liked_item_cannot_prove_a_complete_liked_collection(settings, mocker, item):
+    def handler(req):
+        if req.url.host == "accounts.spotify.com":
+            return token_resp()
+        return httpx.Response(200, json={"items": [item], "next": None, "total": 1})
+
+    with pytest.raises(ValueError, match="Spotify pagination"):
+        make(handler, settings, mocker).get_liked("US")
 
 
 @pytest.mark.parametrize("count", [0, 40, 41, 81])
