@@ -46,14 +46,10 @@ def file(
     if results:
         page = results[0]
         old = "".join(
-            t.get("plain_text", "")
+            t.get("plain_text", t.get("text", {}).get("content", ""))
             for t in page["properties"].get("Notes", {}).get("rich_text", [])
         )
-        body = {
-            "properties": {
-                "Notes": {"rich_text": [{"text": {"content": (old + "\n" + text)[-1900:]}}]}
-            }
-        }
+        body = {"properties": {"Notes": {"rich_text": _rich_text(old + "\n" + text)}}}
         r = http.patch(f"{NOTION}/v1/pages/{page['id']}", headers=_h(settings), json=body)
         r.raise_for_status()
         return page["id"]
@@ -69,9 +65,16 @@ def file(
             "Due Date": {"date": {"start": today}},
             "Tags": {"multi_select": [{"name": "Chore"}]},
             "Project": {"relation": [{"id": settings.notion_project_page_id}]},
-            "Notes": {"rich_text": [{"text": {"content": text[:1900]}}]},
+            "Notes": {"rich_text": _rich_text(text)},
         },
     }
     r = http.post(f"{NOTION}/v1/pages", headers=_h(settings), json=body)
     r.raise_for_status()
     return r.json()["id"]
+
+
+def _rich_text(text: str) -> list[dict]:
+    parts = [{"text": {"content": text[i : i + 1900]}} for i in range(0, len(text), 1900)]
+    if len(parts) > 100:
+        raise ValueError("review text exceeds property capacity; refusing to discard evidence")
+    return parts
