@@ -360,6 +360,18 @@ the text summary separates Spotify mutations from mirror patches.
 
 ## Rollout preview
 
+Followed-artist source collection is independently read-only:
+
+```sh
+uv run scripts/followed_artists.py --output /private/state/followed-artists.json
+```
+
+It uses the existing Spotify grant, exhausts cursor pages and writes a new local
+mode-0600 receipt. It never imports rows or follows/unfollows artists. Missing
+scope produces an incomplete receipt; it never substitutes credentials or starts
+enrollment. The receipt preserves full artist objects and collection times;
+Spotify does not provide the dates when these follows began.
+
 Run the owning operator command with its usual configuration:
 
 ```sh

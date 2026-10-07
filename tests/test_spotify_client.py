@@ -139,6 +139,42 @@ def test_unidentified_liked_item_cannot_prove_a_complete_liked_collection(settin
         make(handler, settings, mocker).get_liked("US")
 
 
+def test_followed_artists_reads_all_cursor_pages_without_mutations(settings, mocker):
+    seen = []
+
+    def handler(req):
+        if req.url.host == "accounts.spotify.com":
+            return token_resp()
+        assert req.method == "GET" and req.url.path == "/v1/me/following"
+        seen.append(dict(req.url.params))
+        if req.url.params.get("after") == "artist-one":
+            return httpx.Response(
+                200,
+                json={
+                    "artists": {
+                        "items": [{"id": "artist-two", "name": "Artist Two"}],
+                        "next": None,
+                        "total": 2,
+                    }
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "artists": {
+                    "items": [{"id": "artist-one", "name": "Artist One"}],
+                    "total": 2,
+                    "next": "https://api.spotify.com/v1/me/following?type=artist&limit=50&after=artist-one",
+                }
+            },
+        )
+
+    rows = make(handler, settings, mocker).get_followed_artists()
+    assert [r["id"] for r in rows] == ["artist-one", "artist-two"]
+    assert seen[0] == {"type": "artist", "limit": "50"}
+    assert seen[1]["after"] == "artist-one"
+
+
 @pytest.mark.parametrize("count", [0, 40, 41, 81])
 def test_like_chunks_library_saves_at_40_and_preserves_order(settings, mocker, count):
     calls = []
