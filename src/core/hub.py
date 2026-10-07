@@ -11,7 +11,11 @@ USER_AGENT = "music-sync/0.1 (+https://github.com/alexjmiller5/music-sync)"
 
 
 class HubError(RuntimeError):
-    pass
+    def __init__(self, message, *, category="hub", status=None):
+        super().__init__(message)
+        self.diagnostic = {"category": category}
+        if status is not None:
+            self.diagnostic["status"] = status
 
 
 class RevisionConflict(HubError):
@@ -28,11 +32,13 @@ class Hub:
         try:
             r = self._http.post(f"{self.base}{route}", json=body, headers=self._headers)
         except httpx.HTTPError as e:
-            raise HubError(f"hub unreachable: {type(e).__name__}") from e
+            raise HubError(f"hub unreachable: {type(e).__name__}", category="transport") from e
         if r.status_code >= 400:
             if r.status_code == 409:
                 raise RevisionConflict("hub row revision changed")
-            raise HubError(f"hub HTTP {r.status_code}: {r.text[:300]}")
+            raise HubError(
+                f"hub HTTP {r.status_code}: {r.text[:300]}", category="http", status=r.status_code
+            )
         return r.json()
 
     def pull(
@@ -48,13 +54,13 @@ class Hub:
         while True:
             page = self._post("/v1/rows/pull", body)
             if not isinstance(page.get("rows"), list) or "next_cursor" not in page:
-                raise HubError("incomplete scan receipt")
+                raise HubError("incomplete scan receipt", category="pagination_receipt")
             rows.extend(page["rows"])
             cursor = page["next_cursor"]
             if cursor is None:
                 return rows
             if not isinstance(cursor, str) or not cursor or cursor in seen:
-                raise HubError("invalid scan cursor")
+                raise HubError("invalid scan cursor", category="pagination_cursor")
             seen.add(cursor)
             body["after"] = cursor
 

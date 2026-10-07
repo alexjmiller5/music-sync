@@ -131,6 +131,12 @@ runs in tests, locally, or on any future platform.
   inferred dates. Raw archive references remain the source of original history.
   Capture raw archives retain accepted request fields and server receipt time;
   never label receipt time as recognition time.
+  Recognition events use a workspace/client/capture-ID identity, a retained
+  original under `raw/spotify-capture/events/`, and create-only provenance with
+  the exact `/event` locator. Retries retain the first original and row timestamp;
+  changed payloads cannot reuse that identity. Optional `recognized_at` must be
+  timezone-aware; omission means unknown. Legacy requests without a capture ID
+  cannot distinguish retries from distinct recognitions.
 - Conflicting Spotify display profiles remain for review and do not replace
   existing metadata. Multiple current aliases cannot choose an auto-like target.
 - Dry-run responses include structured `planned` actions with recording and
