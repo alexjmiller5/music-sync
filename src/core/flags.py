@@ -20,6 +20,10 @@ def _h(settings: Settings) -> dict:
 def file(
     settings: Settings, http: httpx.Client, flags: list[str], errors: list[str], today: str
 ) -> str | None:
+    if settings.flags_task_config is not None:
+        from core.life_flags import file_life
+
+        return file_life(settings, http, flags, errors, today)
     lines = [f"- {f}" for f in flags] + [f"- error: {e}" for e in errors]
     if not lines:
         return None
