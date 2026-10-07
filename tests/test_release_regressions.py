@@ -560,7 +560,12 @@ def test_real_spotify_client_chunk_failure_replays_only_missing_uris(settings):
             return httpx.Response(200, json={"access_token": "dummy"})
         if req.method == "GET":
             return httpx.Response(
-                200, json={"items": [{"item": {"uri": uri}} for uri in present], "next": None}
+                200,
+                json={
+                    "items": [{"item": {"uri": uri}} for uri in present],
+                    "next": None,
+                    "total": len(present),
+                },
             )
         chunk = json.loads(req.content)["uris"]
         posts.append(chunk)
