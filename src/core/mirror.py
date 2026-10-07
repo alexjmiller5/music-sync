@@ -2,6 +2,7 @@
 
 import json
 import re
+from collections import defaultdict
 
 from core.model import ISRC_RE, Live, LiveItem, LivePlaylist, Membership, Mirror, Playlist, Song
 
@@ -182,8 +183,15 @@ def pull_live(spotify, market: str, me_id: str, mirror: Mirror, full: bool = Fal
     raw["liked"] = liked_raw
     liked = {}
     observations = []
+    known_aliases = defaultdict(set)
+    for song in mirror.songs.values():
+        for track_id in song.spotify_ids:
+            known_aliases[track_id].add(song.id)
     for i in liked_raw:
         it = item_from_raw(i)
+        known = known_aliases.get(it.track_id, set()) | known_aliases.get(it.linked_from_id, set())
+        if known and known != {it.isrc}:
+            raise ValueError("Liked recording identity changed or missing; review required")
         observations.append(it)
         if it.isrc and it.isrc not in liked:
             liked[it.isrc] = it
