@@ -15,6 +15,13 @@ runs in tests, locally, or on any future platform.
 - Spotify uses its own Music Sync developer app and OAuth refresh grant. Never
   reuse a terminal client or another service's client credentials. Development
   Mode quota is shared across the owning developer account, even with separate apps.
+- `flags_task_config` optionally selects Life Data flag tasks. Runtime title,
+  project/default values, columns and open statuses stay in the workspace.
+  `life_flags.py` retains per-workspace notification batches in the existing
+  project-owned R2 recovery bucket under `music-sync/flag-tasks/`. Conditional
+  notes appends merge only after definitive conflicts; unknown write outcomes
+  require retained marker evidence. Never discard an ambiguous batch or replace
+  completed/deleted target identities. The serialized worker owns all recovery.
 - Notion uses the dedicated Music Sync connection stored in this project's ENV
   item. Its read, insert and update capabilities cover the Tasks database and
   this project's page for flag tasks and their project relation. No user

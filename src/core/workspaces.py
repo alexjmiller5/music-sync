@@ -21,6 +21,15 @@ from core.config import Settings
 
 REGISTRY_KEY = "music-sync/workspaces.json.gz"
 DEFAULT = "default"
+
+
+def _task_binding(value):
+    parsed = json.loads(value) if isinstance(value, str) else value
+    if parsed is not None and not isinstance(parsed, dict):
+        raise ValueError("flags_task_config must be a JSON object or null")
+    return parsed
+
+
 USER_FIELDS = {
     "spotify_refresh_token": str,
     "spotify_market": str,
@@ -31,6 +40,7 @@ USER_FIELDS = {
     "notion_project_page_id": str,
     "inbox_cap": int,
     "undo_days": int,
+    "flags_task_config": _task_binding,
 }
 SECRET_FIELDS = {"spotify_refresh_token", "life_hub_token", "notion_token"}
 # Not a Settings field: the default workspace keeps the RECONCILE_ENABLED env gate.
