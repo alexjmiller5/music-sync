@@ -38,6 +38,7 @@ def _run(dry_run: bool, workspace: str = "default") -> dict:
         "summary": log.summary(),
         "applied": dict(log.applied),
         "planned": log.planned,
+        "review_items": log.review_items,
         "flags": log.flags,
         "errors": log.errors,
     }

@@ -181,3 +181,41 @@ def test_dry_run_does_not_prepare_or_checkpoint_pending(mocker):
         assert sp.calls == [] and hub.pushed == []
     assert pending[0]["rows"] == [{"id": "A"}]
     assert clock.now.call_count == 0
+
+
+def test_uncertain_like_retry_does_not_override_later_unlike():
+    import copy
+
+    class AmbiguousSpotify(FakeSpotify):
+        def like(self, uris):
+            super().like(uris)
+            raise RuntimeError("response lost after possible success")
+
+        def get_liked(self, market):
+            return []  # It may have succeeded and then been explicitly unliked.
+
+    sp, hub = AmbiguousSpotify(), FakeHub()
+    saved = []
+
+    def checkpoint(ops):
+        saved[:] = copy.deepcopy(ops)
+
+    plan = [
+        Action("like", isrc="A", uri="spotify:track:a"),
+        Action("upsert_song", row={"id": "A", "liked": 1}),
+    ]
+    assert actions.apply(plan, sp, hub, False, checkpoint=checkpoint, market="US").errors
+    assert actions.apply(
+        plan, sp, hub, False, checkpoint=checkpoint, pending=saved, market="US"
+    ).errors
+    assert len(sp.calls) == 1 and hub.pushed == []
+    assert saved[0]["attempted"] is True
+
+
+def test_uncertain_like_retry_can_finish_from_positive_observation():
+    sp, hub = FakeSpotify(), FakeHub()
+    sp.get_liked = lambda market: [{"track": {"uri": "spotify:track:a"}}]
+    plan = [Action("like", isrc="A", uri="spotify:track:a")]
+    pending = [{**actions._batches(plan, True)[0], "attempted": True}]
+    out = actions.apply(plan, sp, hub, False, pending=pending, market="US")
+    assert not out.errors and sp.calls == []

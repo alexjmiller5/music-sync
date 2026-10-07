@@ -1,7 +1,7 @@
 """Pure reconcile: (mirror, live) -> ordered actions. No I/O. Spec section 5.3."""
 
 import dataclasses
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from core import metadata, rules
 from core.model import Action, Live, Membership, Mirror, Song
@@ -45,6 +45,7 @@ def plan(
     *,
     source_ref: str | None = None,
     market: str | None = None,
+    curation_likes: set[str] | frozenset[str] = frozenset(),
 ) -> list[Action]:
     if observation_only:
         return observe(mirror, live, now, source_ref=source_ref, market=market)
@@ -53,8 +54,7 @@ def plan(
     acts: list[Action] = []
     names = {p.name: p.id for p in mirror.playlists.values()}
     names.update({p.name: p.id for p in live.playlists.values()})
-    kind_of = {pid: "curated" for pid in live.playlists}
-    kind_of.update({pid: p.kind for pid, p in mirror.playlists.items()})
+    kind_of = {pid: p.kind for pid, p in mirror.playlists.items()}
     inbox_ids = {pid for pid, k in kind_of.items() if k == "inbox"}
     liked_now = set(live.liked)
     liked_before = {s.id for s in mirror.songs.values() if s.liked}
@@ -85,7 +85,11 @@ def plan(
     # Seed complete identity before tombstones, including a conflicting new add/un-heart.
     # Later intended patches merge over this observation in the applicator.
     for (pid, isrc), it in actual.items():
-        if (pid, isrc) not in mirror.memberships:
+        if (
+            pid in mirror.playlists
+            and (pid, isrc) not in mirror.memberships
+            and (pid, isrc) not in duplicates
+        ):
             acts.append(
                 Action(
                     "upsert_membership",
@@ -164,59 +168,24 @@ def plan(
         acts, metadata.observation_actions(mirror, live, now, source_ref=source_ref, market=market)
     )
 
-    # un-heart (rule 4): remove from every non-inbox playlist it is in - both a playlist
-    # pulled this run (via `actual`) and one skipped this run (via the mirror membership,
-    # since `actual` has no entry at all for a playlist whose items weren't fetched)
+    # Likes and curated membership are independent. Smart rules alone decide
+    # smart membership; a like transition never edits a curated playlist.
     unhearted = liked_before - liked_now
     for isrc in sorted(unhearted):
         acts.append(
             Action("upsert_song", isrc=isrc, row={"id": isrc, "liked": 0, "liked_at": None})
         )
-        for (pid, i), it in list(actual.items()):
-            if i == isrc and pid not in inbox_ids:
-                acts.append(
-                    Action(
-                        "remove_item", playlist_id=pid, isrc=isrc, uri=it.uri, reason="un-hearted"
-                    )
-                )
-                acts.append(
-                    Action(
-                        "delete_membership",
-                        playlist_id=pid,
-                        isrc=isrc,
-                        row={"id": f"{pid}:{isrc}", "deleted_at": now_s},
-                    )
-                )
-                actual.pop((pid, i))
-        for (pid, i), mem in mirror.memberships.items():
-            if i != isrc or pid in inbox_ids:
-                continue
-            lp = live.playlists.get(pid)
-            if lp is None or lp.items is not None:
-                continue  # fetched this run: already handled above via `actual`
-            acts.append(
-                Action(
-                    "remove_item",
-                    playlist_id=pid,
-                    isrc=isrc,
-                    uri=f"spotify:track:{mem.spotify_track_id}",
-                    reason="un-hearted",
-                )
-            )
-            acts.append(
-                Action(
-                    "delete_membership",
-                    playlist_id=pid,
-                    isrc=isrc,
-                    row={"id": f"{pid}:{isrc}", "deleted_at": now_s},
-                )
-            )
 
     # added to curated while unliked (rule 3): like it. Tie with un-heart: un-heart won above.
     to_like: dict[str, tuple[str, str]] = {}  # isrc -> (uri, curated playlist id)
     for (pid, isrc), it in actual.items():
-        if kind_of.get(pid) == "curated" and isrc not in liked_now and isrc not in unhearted:
-            if (pid, isrc) not in mirror.memberships:
+        if (
+            kind_of.get(pid) == "curated"
+            and isrc not in liked_now
+            and isrc not in unhearted
+            and not any(i == isrc for _, i in duplicates)
+        ):
+            if isrc in curation_likes:
                 to_like[isrc] = (it.uri, pid)
     for isrc, (uri, pid) in sorted(to_like.items()):
         acts.append(Action("like", isrc=isrc, uri=uri, reason="in curated playlist"))
@@ -284,44 +253,8 @@ def plan(
         s = view.songs.get(isrc)
         return preferred_uri(s) if s else None
 
-    # undo (rule 5)
-    cutoff = _iso(now - timedelta(days=undo_days))
-    for m in mirror.deleted_memberships:
-        s = mirror.songs.get(m.isrc)
-        if (
-            m.isrc in liked_now
-            and s
-            and not s.liked
-            and kind_of.get(m.playlist_id) == "curated"
-            and (m.deleted_at or "") >= cutoff
-            and (m.playlist_id, m.isrc) not in actual
-            and routing_uri(m.isrc, m.spotify_track_id)
-        ):
-            uri = routing_uri(m.isrc, m.spotify_track_id)
-            acts.append(
-                Action(
-                    "add_item",
-                    playlist_id=m.playlist_id,
-                    isrc=m.isrc,
-                    uri=uri,
-                    reason="undo un-heart",
-                )
-            )
-            acts.append(
-                Action(
-                    "upsert_membership",
-                    playlist_id=m.playlist_id,
-                    isrc=m.isrc,
-                    row={
-                        "id": m.id,
-                        "playlist_id": m.playlist_id,
-                        "isrc": m.isrc,
-                        "spotify_track_id": uri.split(":")[-1],
-                        "added_at": now_s,
-                        "deleted_at": None,
-                    },
-                )
-            )
+    # Re-liking does not resurrect a removed curated membership. Retained
+    # tombstones are evidence, not an instruction to undo a user's removal.
 
     # inbox FIFO (rule 6)
     for pid in inbox_ids:
@@ -368,6 +301,8 @@ def plan(
             continue
         if p.pinned == 0 and p.expires_at and p.expires_at < now_s:
             continue
+        if any(q == pid for q, _ in duplicates):
+            continue  # No partial membership changes while keeper decisions are unresolved.
         have = {isrc for (q, isrc) in actual if q == pid}
         for isrc in sorted(want - have):
             uri = routing_uri(isrc)
@@ -415,59 +350,11 @@ def plan(
         if _strip_synced(text) != _strip_synced(lp.description):
             acts.append(Action("set_description", playlist_id=pid, text=text))
 
-    # unplayable relink (rule 8): inbox is exempt, same as dedupe (rule 9)
-    for (pid, isrc), it in list(actual.items()):
-        if it.playable is not False or pid in inbox_ids:
-            continue
-        alt = next(
-            (
-                tid
-                for tid, ok in sorted(available.get(isrc, {}).items())
-                if ok and tid != it.track_id
-            ),
-            None,
-        )
-        if alt:
-            actual[(pid, isrc)] = dataclasses.replace(
-                it, track_id=alt, uri=f"spotify:track:{alt}", playable=True
-            )
-            acts.append(
-                Action(
-                    "remove_item",
-                    playlist_id=pid,
-                    isrc=isrc,
-                    uri=it.uri,
-                    reason="unplayable, relinking",
-                )
-            )
-            acts.append(
-                Action(
-                    "add_item",
-                    playlist_id=pid,
-                    isrc=isrc,
-                    uri=f"spotify:track:{alt}",
-                    reason="relinked",
-                )
-            )
-            acts.append(
-                Action(
-                    "upsert_membership",
-                    playlist_id=pid,
-                    isrc=isrc,
-                    row={
-                        "id": f"{pid}:{isrc}",
-                        "playlist_id": pid,
-                        "isrc": isrc,
-                        "spotify_track_id": alt,
-                        "added_at": it.added_at,
-                        "deleted_at": None,
-                    },
-                )
-            )
-        else:
-            flags.append(
-                f"{mirror.playlists[pid].name if pid in mirror.playlists else pid}: {it.name} [{isrc}] unplayable, no alternative"
-            )
+    # Replacing a recording alias requires review, even with positive availability.
+    # A playable alternative is evidence for that review, never keeper approval.
+    for (pid, isrc), it in actual.items():
+        if it.playable is False and pid not in inbox_ids:
+            flags.append(f"{pid}: {isrc} unplayable; replacement requires review")
 
     # ephemeral expiry (rule 10)
     expired_ids: set[str] = set()
@@ -486,28 +373,16 @@ def plan(
             )
 
     for (pid, isrc), drops in duplicates.items():
-        if pid in expired_ids:
-            continue
-        kept = actual.get((pid, isrc))
-        removed_uris = {it.uri for it in drops}
-        for uri in sorted(removed_uris):
-            acts.append(
-                Action("remove_item", playlist_id=pid, isrc=isrc, uri=uri, reason="duplicate isrc")
-            )
-        if kept and kept.uri in removed_uris:
-            acts.append(
-                Action(
-                    "readd_item",
-                    playlist_id=pid,
-                    isrc=isrc,
-                    uri=kept.uri,
-                    reason="duplicate isrc, same uri",
-                )
-            )
+        flags.append(
+            f"{pid}: {isrc} has {len(drops) + 1} occurrences; keeper and metadata require review"
+        )
 
     # mirror upkeep (rule 11) - skip playlists soft-deleted above: no plain upsert_playlist
     # row (it would overwrite deleted_at) and no membership upserts for a deleted playlist
     for lp in live.playlists.values():
+        if lp.id not in mirror.playlists:
+            flags.append(f"{lp.id}: playlist classification requires review")
+            continue
         if lp.id in expired_ids:
             continue
         row = {
@@ -528,7 +403,7 @@ def plan(
             if pid != lp.id:
                 continue
             m = mirror.memberships.get((pid, isrc))
-            if m is None or m.spotify_track_id != it.track_id:
+            if (pid, isrc) not in duplicates and (m is None or m.spotify_track_id != it.track_id):
                 acts.append(
                     Action(
                         "upsert_membership",
@@ -592,6 +467,9 @@ def observe(
     seen = dict(live.liked)
     sources = {isrc: ("like", "liked") for isrc in live.liked}
     for lp in live.playlists.values():
+        if lp.id not in mirror.playlists:
+            acts.append(Action("flag", text=f"{lp.id}: playlist classification requires review"))
+            continue
         row = {
             "id": lp.id,
             "name": lp.name,
@@ -605,14 +483,21 @@ def observe(
             row["track_count"] = len(lp.items)
         acts.append(Action("upsert_playlist", playlist_id=lp.id, row=row))
         members = {}
+        ambiguous = set()
         for it in sorted(lp.items or [], key=lambda x: x.added_at):
             if not it.isrc:
                 acts.append(Action("flag", text=f"{lp.name}: {it.name} (no ISRC or local file)"))
                 continue
             seen.setdefault(it.isrc, it)
             sources.setdefault(it.isrc, ("playlist", lp.id))
+            if it.isrc in members:
+                ambiguous.add(it.isrc)
             members.setdefault(it.isrc, it)
+        for isrc in sorted(ambiguous):
+            acts.append(Action("flag", text=f"{lp.id}: {isrc} occurrence metadata requires review"))
         for isrc, it in members.items():
+            if isrc in ambiguous:
+                continue
             acts.append(
                 Action(
                     "upsert_membership",
