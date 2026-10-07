@@ -161,6 +161,13 @@ Spotify by that ISRC and accepts only a candidate carrying the same ISRC.
 Without one, matching requires normalized exact title and artist identity,
 including version words such as live or remix.
 
+An optional `recognized_at` string records the source's timezone-aware ISO
+timestamp, with its original precision. If omitted, recognition time remains
+unknown; server receipt time is stored separately. Each workspace/client/capture
+UUID retains one recognition event and its original request independently of
+playlist membership. Retry the same UUID and payload; a real new recognition
+uses a new UUID. Repeated recognition does not duplicate an existing inbox item.
+
 Only a selected Spotify track with a valid ISRC, track ID and URI is stored
 with the payload identity before Spotify or hub side effects. An incomplete
 candidate is not stored, so the same capture UUID can resolve it on a later
@@ -375,6 +382,11 @@ references. This app never updates these insert-only evidence rows; the shared
 service does not promise global append-only storage. Capture archives also keep
 the accepted recognition request, capture UUID when supplied, market and server
 receipt time. Receipt time is not an invented recognition time.
+Recognition originals live under `raw/spotify-capture/events/`; their create-only
+evidence points to `/event` in that original. Retry preserves the original bytes
+and evidence timestamp, including after an ambiguous catalog insert. Legacy
+operator requests without a capture UUID cannot distinguish retries from new
+recognitions and should not be used for idempotent event delivery.
 
 ## Preservation and recovery
 
