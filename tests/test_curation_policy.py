@@ -154,3 +154,139 @@ def test_smart_exclusion_holds_conflicting_aliases_for_review(settings, archive_
     assert len(sp.items) == 2
     assert hub.tables["playlist_songs"][f"P:{A}"]["deleted_at"] is None
     assert out.flags
+
+
+def test_auto_like_does_not_choose_between_cross_playlist_aliases(settings, archive_store):
+    class TwoPlaylists(Spotify):
+        def get_playlists(self):
+            return [
+                *super().get_playlists(),
+                {
+                    "id": "Q",
+                    "name": "Second",
+                    "owner": {"id": "owner"},
+                    "snapshot_id": str(self.snapshot),
+                },
+            ]
+
+        def get_playlist_items(self, pid, market):
+            return (
+                super().get_playlist_items(pid, market)
+                if pid == "P"
+                else [raw(tid="other")]
+                if self.items
+                else []
+            )
+
+    hub, sp = Store(liked=0, member=False), TwoPlaylists(items=[], liked=False)
+    hub.tables["playlists"]["Q"] = {**hub.tables["playlists"]["P"], "id": "Q"}
+    assert not execute(settings, sp, hub).errors
+    sp.items = [raw()]
+    sp.snapshot += 1
+    out = execute(settings, sp, hub)
+    assert not out.errors and sp.calls == []
+    assert any("alias" in flag for flag in out.flags)
+
+
+def test_conflicting_observation_metadata_preserves_existing_release(settings, archive_store):
+    hub, sp = Store(), Spotify()
+    hub.tables["songs"][A].update(title="Reviewed title", album="Reviewed release", album_year=2001)
+    other = raw(tid="other")
+    other["item"].update(
+        name="Different title", album={"name": "Other release", "release_date": "2020"}
+    )
+    sp.items[0]["item"]["album"] = {"name": "Original release", "release_date": "1990"}
+    sp.items.append(other)
+    out = execute(settings, sp, hub, writes=False)
+    assert not out.errors
+    row = hub.tables["songs"][A]
+    assert (row["title"], row["album"], row["album_year"]) == (
+        "Reviewed title",
+        "Reviewed release",
+        2001,
+    )
+    assert any("metadata" in flag for flag in out.flags)
+
+
+def test_snapshot_history_keeps_each_original_occurrence(settings, archive_store):
+    hub, sp = Store(), Spotify(items=[raw(), raw(added="2026-09-06T00:00:00.000Z")])
+    out = execute(settings, sp, hub, dry_run=True)
+    evidence = [a["row"] for a in out.planned if a["kind"] == "insert_edge"]
+    assert len(evidence) == 2
+    assert {r["detail"]["locator"] for r in evidence} == {"/items/P/0", "/items/P/1"}
+    assert len({r["id"] for r in evidence}) == 2
+    assert all(
+        r["field"] is None and r["from_ref"].startswith("raw/spotify-pull/") for r in evidence
+    )
+    assert all(set(r["detail"]) == {"kind", "locator"} for r in evidence)
+
+
+def test_history_is_insert_only_and_unchanged_pull_does_not_repeat_evidence(
+    settings, archive_store
+):
+    import gzip
+    import json
+
+    hub, sp = Store(), Spotify()
+    assert not execute(settings, sp, hub).errors
+    original = {
+        k: copy.deepcopy(v)
+        for k, v in hub.tables["provenance"].items()
+        if k.startswith("spotify-occurrence:")
+    }
+    assert len(original) == 1
+    assert not execute(settings, sp, hub).errors
+    assert {k for k in hub.tables["provenance"] if k.startswith("spotify-occurrence:")} == set(
+        original
+    )
+    sp.items[0]["added_at"] = "2026-09-08T00:00:00.000Z"
+    sp.snapshot += 1
+    assert not execute(settings, sp, hub).errors
+    assert all(hub.tables["provenance"][k] == v for k, v in original.items())
+    assert len([k for k in hub.tables["provenance"] if k.startswith("spotify-occurrence:")]) == 2
+    first = next(iter(original.values()))
+    assert (
+        json.loads(gzip.decompress(archive_store[first["from_ref"]]))["items"]["P"][0]["added_at"]
+        == T
+    )
+
+
+def test_partial_history_insert_retry_preserves_ids_and_delays_baseline(settings, archive_store):
+    import gzip
+    import json
+    from core import curation
+    from core.hub import HubError
+
+    class PartialStore(Store):
+        def __init__(self):
+            super().__init__()
+            self.first = True
+            self.batch_sizes = []
+
+        def insert_rows(self, table, rows):
+            self.batch_sizes.append(len(rows))
+            if self.first:
+                self.first = False
+                super().insert_rows(table, rows[:1])
+                raise HubError("response lost after partial insert")
+            return super().insert_rows(table, rows)
+
+    hub, sp = PartialStore(), Spotify(items=[raw()] * 201)
+    assert execute(settings, sp, hub).errors
+    assert curation.state_key(settings.workspace) not in archive_store
+    original = {
+        key: copy.deepcopy(row)
+        for key, row in hub.tables["provenance"].items()
+        if key.startswith("spotify-occurrence:")
+    }
+    assert len(original) == 1
+    assert not execute(settings, sp, hub).errors
+    assert all(hub.tables["provenance"][key] == row for key, row in original.items())
+    assert (
+        len([key for key in hub.tables["provenance"] if key.startswith("spotify-occurrence:")])
+        == 201
+    )
+    assert max(hub.batch_sizes) <= 100
+    assert json.loads(gzip.decompress(archive_store[curation.state_key(settings.workspace)]))[
+        "occurrence_fingerprints"
+    ]

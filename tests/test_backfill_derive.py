@@ -102,7 +102,11 @@ class Service:
             assert body["table"] in ("songs", "provenance")
             rows = self.rows.values() if body["table"] == "songs" else self.proofs.values()
             return httpx.Response(
-                200, json={"rows": [{c: r.get(c) for c in body["columns"]} for r in rows]}
+                200,
+                json={
+                    "next_cursor": None,
+                    "rows": [{c: r.get(c) for c in body["columns"]} for r in rows],
+                },
             )
         assert body["table"] == "songs"
         self.batch_calls.append(body["ids"])
@@ -500,7 +504,11 @@ class IncrementalService(Service):
         rows = [r for r in rows if not body["since"] or (r.get("hub_at") or "") >= body["since"]]
         self.pulls.append((body["table"], body["since"], len(rows)))
         return httpx.Response(
-            200, json={"rows": [{c: r.get(c) for c in body["columns"]} for r in rows]}
+            200,
+            json={
+                "next_cursor": None,
+                "rows": [{c: r.get(c) for c in body["columns"]} for r in rows],
+            },
         )
 
 

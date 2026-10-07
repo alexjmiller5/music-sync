@@ -54,6 +54,15 @@ def _j(v, default):
 
 
 def load_mirror(hub) -> Mirror:
+    revisions = {}
+
+    def pull(table, columns, **kwargs):
+        rows = hub.pull(table, list(dict.fromkeys([*columns, "updated_at", "hub_at"])), **kwargs)
+        revisions.setdefault(table, {}).update(
+            {row["id"]: {key: row.get(key) for key in ("updated_at", "hub_at")} for row in rows}
+        )
+        return rows
+
     songs = {
         r["id"]: Song(
             r["id"],
@@ -71,7 +80,7 @@ def load_mirror(hub) -> Mirror:
             r["album_year"],
             r["duration_ms"],
         )
-        for r in hub.pull("songs", SONG_COLS)
+        for r in pull("songs", SONG_COLS)
         if not r.get("deleted_at")
     }
     playlists = {
@@ -85,20 +94,20 @@ def load_mirror(hub) -> Mirror:
             int(r["pinned"] or 0),
             r["expires_at"],
         )
-        for r in hub.pull("playlists", PLAYLIST_COLS)
+        for r in pull("playlists", PLAYLIST_COLS)
         if not r.get("deleted_at")
     }
     memberships, deleted = {}, []
-    for r in hub.pull("playlist_songs", MEMBER_COLS):
+    for r in pull("playlist_songs", MEMBER_COLS):
         m = Membership(
             r["playlist_id"], r["isrc"], r["spotify_track_id"], r["added_at"], r.get("deleted_at")
         )
         (deleted.append(m) if m.deleted_at else memberships.__setitem__((m.playlist_id, m.isrc), m))
     # Provenance holds every media source; pull only the two song slices this
     # mirror reads, or the hub cannot serve the table within its limits.
-    provenance = hub.pull(
+    provenance = pull(
         "provenance", PROV_COLS, where={"to_kind": "songs", "rel": "imported_from"}
-    ) + hub.pull(
+    ) + pull(
         "provenance",
         PROV_COLS,
         where={"to_kind": "songs", "rel": "evidence_of", "asserted_by": "music-sync"},
@@ -120,7 +129,7 @@ def load_mirror(hub) -> Mirror:
             and not r.get("deleted_at")
         ):
             observations.append({**r, "detail": detail})
-    return Mirror(songs, playlists, memberships, deleted, captures, observations)
+    return Mirror(songs, playlists, memberships, deleted, captures, observations, revisions)
 
 
 def item_from_raw(raw: dict) -> LiveItem:

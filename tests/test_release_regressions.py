@@ -77,6 +77,16 @@ class Store:
         rows = [r for r in rows if all(r.get(k) == v for k, v in (where or {}).items())]
         return [{c: copy.deepcopy(r.get(c)) for c in columns} for r in rows]
 
+    def insert_rows(self, table, rows):
+        inserted, existing = [], []
+        for row in rows:
+            if row["id"] in self.tables[table]:
+                existing.append(row["id"])
+            else:
+                self.tables[table][row["id"]] = copy.deepcopy(row)
+                inserted.append(row["id"])
+        return {"inserted": inserted, "existing": existing, "rejected": []}
+
     def push(self, table, rows):
         if self.fail == table:
             self.fail = None
@@ -644,8 +654,12 @@ def test_observation_import_meets_hub_datetime_contract_and_recovers(
             return httpx.Response(200, json=store.catalog())
         body = json.loads(req.content)
         table = body["table"]
+        if req.url.path.endswith("/insert"):
+            return httpx.Response(200, json=store.insert_rows(table, body["rows"]))
         if req.url.path.endswith("/pull"):
-            return httpx.Response(200, json={"rows": store.pull(table, body["columns"])})
+            return httpx.Response(
+                200, json={"next_cursor": None, "rows": store.pull(table, body["columns"])}
+            )
         # Match the worker's required stamp and catalog datetime validation.
         for row in body["rows"]:
             for col in ("updated_at", "first_seen", "liked_at", "added_at"):
@@ -811,8 +825,12 @@ def test_retry_timestamp_survives_restart_and_preserves_newer_edit(
         nonlocal interrupted
         body = json.loads(req.content)
         table = body["table"]
+        if req.url.path.endswith("/insert"):
+            return httpx.Response(200, json=store.insert_rows(table, body["rows"]))
         if req.url.path.endswith("/pull"):
-            return httpx.Response(200, json={"rows": store.pull(table, body["columns"])})
+            return httpx.Response(
+                200, json={"next_cursor": None, "rows": store.pull(table, body["columns"])}
+            )
         received.append(body)
         for row in body["rows"]:
             old = store.tables[table].get(row["id"], {})
@@ -840,7 +858,9 @@ def test_retry_timestamp_survives_restart_and_preserves_newer_edit(
         if op["kind"] == "hub"
         for row in op["rows"]
     )
-    assert [a["row"] for a in initial_intent["planned"]] == [a.row for a in original_plan]
+    assert [a["row"] for a in initial_intent["planned"] if a["kind"] != "insert_edge"] == [
+        a.row for a in original_plan
+    ]
     assert [a.row for a in plan] == [a.row for a in original_plan]
     # Simulate an independent edit while this process is down.
     store.tables["songs"][A].update(liked=1, updated_at=newer)
@@ -891,8 +911,12 @@ def test_direct_imports_keep_hub_timestamp_fallback(settings, archive_store, flo
             return httpx.Response(200, json=store.catalog())
         body = json.loads(req.content)
         table = body["table"]
+        if req.url.path.endswith("/insert"):
+            return httpx.Response(200, json=store.insert_rows(table, body["rows"]))
         if req.url.path.endswith("/pull"):
-            return httpx.Response(200, json={"rows": store.pull(table, body["columns"])})
+            return httpx.Response(
+                200, json={"next_cursor": None, "rows": store.pull(table, body["columns"])}
+            )
         received.append(body)
         for row in body["rows"]:
             assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", row["updated_at"])

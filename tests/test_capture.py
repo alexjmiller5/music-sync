@@ -272,7 +272,14 @@ def test_capture_first_write_keeps_resolved_and_expiring_metadata(settings, mock
     out = capture.capture({"title": "Title", "artist": "Artist"}, sp, hub, settings, NOW)
     assert out["ok"]
     source, body = next(iter(saved.items()))
-    assert body == {"playlist_id": "IN", "items": before, "resolved_track": tr}
+    assert body == {
+        "playlist_id": "IN",
+        "items": before,
+        "resolved_track": tr,
+        "capture": {"title": "Title", "artist": "Artist"},
+        "received_at": "2026-09-08T12:00:00.000Z",
+        "market": "US",
+    }
     songs = [r for table, rows in hub.pushed if table == "songs" for r in rows]
     resolved = next(r for r in songs if r["id"] == "USAAA2600001")
     assert resolved["title"] == "Title" and resolved["duration_ms"] == 123456
@@ -314,3 +321,38 @@ def test_pending_replay_blocks_capture_before_search_or_hub_read(settings, monke
     monkeypatch.setattr(capture.archive, "get", lambda *args: pending)
     out = capture.capture({"title": "Title", "artist": "Artist"}, object(), object(), settings, NOW)
     assert not out["ok"] and "recovery" in out["message"]
+
+
+def test_capture_archive_retains_recognition_request_without_inventing_recognition_time(
+    settings, mocker
+):
+    import gzip
+    import json
+    from tests.test_release_regressions import Store, Spotify, NOW
+    from core import capture, archive
+
+    objects = {}
+    mocker.patch.object(archive, "get", return_value=None)
+    mocker.patch.object(
+        archive,
+        "put",
+        side_effect=lambda settings, key, body: objects.__setitem__(
+            key, json.loads(gzip.decompress(body))
+        ),
+    )
+    payload = {
+        "capture_id": "00000000-0000-4000-8000-000000000001",
+        "title": "Song",
+        "artist": "Artist",
+        "apple_music_id": "123",
+        "shazam_url": "https://example.test/recognition",
+    }
+    out = capture.capture(
+        payload, Spotify(items=[]), Store(kind="inbox", member=False), settings, NOW
+    )
+    assert out["ok"]
+    original = next(iter(objects.values()))
+    assert original["capture"] == payload
+    assert original["received_at"] == "2026-09-08T12:00:00.000Z"
+    assert "recognized_at" not in original
+    assert original["market"] == "US"
