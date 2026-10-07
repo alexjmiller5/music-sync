@@ -32,6 +32,7 @@ class RunLog:
     dry_run: bool = False
     errors: list[str] = field(default_factory=list)
     planned: list[dict] = field(default_factory=list)
+    review_items: list[dict] = field(default_factory=list)
 
     def summary(self) -> str:
         lines = [f"applied {k}: {v}" for k, v in sorted(self.applied.items()) if v]
@@ -42,6 +43,7 @@ class RunLog:
             details = [a for a in self.planned if predicate(a)]
             lines.append(f"{category}: {len(details)}")
             lines.extend(json.dumps(a, ensure_ascii=False, sort_keys=True) for a in details)
+        lines.extend("review: " + json.dumps(item, sort_keys=True) for item in self.review_items)
         lines += [f"flag: {f}" for f in self.flags] + [f"error: {e}" for e in self.errors]
         return ("DRY RUN\n" if self.dry_run else "") + "\n".join(lines)
 
@@ -105,7 +107,7 @@ def apply(
     ops = [
         {**op, "rows": [{"updated_at": stamp, **row} for row in op["rows"]]}
         if op["kind"] == "hub"
-        else op
+        else dict(op)
         for op in ops
     ]
     operation = "checkpoint"
@@ -122,7 +124,24 @@ def apply(
             else:
                 uris = op["uris"]
                 if kind == "like":
-                    spotify.like(uris)
+                    if op.get("attempted"):
+                        if market is None:
+                            raise RuntimeError(
+                                "Uncertain like requires a complete current observation"
+                            )
+                        present = {
+                            (row.get("item") or row.get("track") or {}).get("uri")
+                            for row in spotify.get_liked(market)
+                        }
+                        if not set(uris) <= present:
+                            raise RuntimeError(
+                                "Uncertain like outcome requires review; never silently re-like"
+                            )
+                    else:
+                        op["attempted"] = True
+                        if checkpoint:
+                            checkpoint(ops[index:])
+                        spotify.like(uris)
                 elif kind in ("add_item", "readd_item"):
                     if market is not None:
                         # A timeout or failure between client chunks may have added some URIs.

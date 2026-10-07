@@ -50,7 +50,8 @@ runs in tests, locally, or on any future platform.
   not serialize different functions. FastAPI is a production dependency.
 - `writes=False` selects observation-only planning before enforcement. Import
   actual liked values and full memberships; never persist hypothetical FIFO,
-  auto-like, relink, undo, rule or expiry changes during review.
+  auto-like, rule or expiry changes during review. Pending curation intents
+  survive observation imports in the owning app recovery store.
 - Every Spotify mutation flow archives its pre-write pull, including capture
   and resumed reconciliation. Raw pulls belong to Life Data and are uploaded
   through `/v1/files/` under `raw/spotify-pull/` and `raw/spotify-capture/`
@@ -95,8 +96,18 @@ runs in tests, locally, or on any future platform.
   SHA-256 of `R2_API_TOKEN`. Only `NoSuchKey` means a missing object; other
   errors stop the flow. Keep the pending key unchanged.
 - Hub patches group by exact present keys. Never turn omitted columns into
-  nulls. Preserve membership identity and `added_at` through soft deletion
-  for seven-day undo. Un-heart/rule removal/expiry override dedupe re-adds.
+  nulls. Preserve membership identity and original timestamps as evidence.
+- Curated membership is independent of likes; no unlike removal or re-like
+  restoration. Full observations feed per-workspace curation state under
+  `music-sync/curation/`; commit its baseline only after all apply batches finish.
+  First observation never executes the initial like migration. New curation
+  auto-like intent persists through imports; unlike-while-curated exceptions
+  persist and block later re-likes. Return quiet `review_items` without activating
+  a task destination. Unknown playlists need classification; duplicate/alias
+  choices need review. Never automatically select a duplicate keeper.
+- Checkpoint like attempts before sending. A recovered uncertain attempt needs
+  positive live evidence; absent likes require review, never automatic re-like.
+  Mutating recovery intent without the current policy version is held.
 - `Hub.push` adds one UTC millisecond `updated_at` per invocation where absent,
   preserving supplied timestamps and caller rows. Spotify `added_at` and
   `liked_at` are normalized to UTC milliseconds on the wire, including replay.

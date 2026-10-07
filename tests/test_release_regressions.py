@@ -232,76 +232,52 @@ def test_import_observes_without_inventing_likes_or_fifo(settings, archive_store
         assert sp.calls == []
 
 
-@pytest.mark.parametrize("gesture", ["unheart", "autolike", "undo", "relink", "same_uri"])
+@pytest.mark.parametrize("gesture", ["remove", "add"])
 def test_failed_mutation_preserves_baseline_and_recovers_next_run(settings, archive_store, gesture):
-    hub, sp = Store(), Spotify()
-    if gesture == "unheart":
-        sp.liked, sp.fail = [], "remove"
-    elif gesture == "autolike":
-        hub = Store(liked=0, member=False)
-        sp.liked, sp.fail = [], "like"
-    elif gesture == "undo":
-        hub.tables["songs"][A]["liked"] = 0
-        hub.tables["playlist_songs"][f"P:{A}"]["deleted_at"] = T
-        sp.items, sp.fail = [], "add"
-    elif gesture == "relink":
-        hub.tables["songs"][A]["spotify_ids"] = ["new", "a"]
-        sp.liked = [raw(tid="new", playable=True)]
-        sp.items, sp.fail = [raw(playable=False)], "add"
+    hub, sp = Store(kind="smart"), Spotify()
+    hub.tables["playlists"]["P"]["rule"] = {"v": 1}
+    if gesture == "remove":
+        sp.liked = []
     else:
-        sp.items, sp.fail = [raw(), raw()], "add"
+        sp.items = []
+    sp.fail = gesture
     baseline = copy.deepcopy(hub.tables)
     out = execute(settings, sp, hub)
-    assert out.errors
-    assert hub.tables == baseline
-    if gesture == "relink":
-        assert len(sp.items) == 1 and sp.items[0]["item"]["id"] == "a"
-    out = execute(settings, sp, hub)
-    assert not out.errors
-    if gesture == "unheart":
-        assert sp.items == []
-        row = hub.tables["playlist_songs"][f"P:{A}"]
-        assert row["deleted_at"] and row["added_at"] == T and row["isrc"] == A
-        # The user's 7-day undo must survive a failed removal and its retry.
-        sp.liked = [raw()]
-        assert not execute(settings, sp, hub).errors
-        assert len(sp.items) == 1
-        assert hub.tables["playlist_songs"][f"P:{A}"]["deleted_at"] is None
-    else:
-        assert len(sp.items) == 1
-        assert hub.tables["songs"][A]["liked"] == 1
-        assert not hub.tables["playlist_songs"][f"P:{A}"].get("deleted_at")
+    assert out.errors and hub.tables == baseline
     assert not execute(settings, sp, hub).errors
-    assert len(sp.items) == 1
+    assert len(sp.items) == (0 if gesture == "remove" else 1)
+    assert not execute(settings, sp, hub).errors
+    assert len(sp.items) == (0 if gesture == "remove" else 1)
 
 
 @pytest.mark.parametrize("liked,count", [(False, 2), (True, 3)])
-def test_dedupe_obeys_final_membership(settings, archive_store, liked, count):
+def test_curated_duplicates_are_preserved_for_review(settings, archive_store, liked, count):
     sp, hub = Spotify([raw()] * count, liked=liked), Store()
     assert not execute(settings, sp, hub).errors
-    assert len(sp.items) == (1 if liked else 0)
+    assert len(sp.items) == count
     assert not execute(settings, sp, hub).errors
-    assert len(sp.items) == (1 if liked else 0)
+    assert len(sp.items) == count
 
 
-def test_new_owned_playlist_likes_initial_add_once(settings, archive_store):
+def test_new_owned_playlist_requires_initial_classification(settings, archive_store):
     hub, sp = Store(liked=0, member=False), Spotify(liked=False)
     hub.tables["playlists"].clear()
     assert not execute(settings, sp, hub).errors
-    assert sp.liked
+    assert not sp.liked
     assert not execute(settings, sp, hub).errors
-    assert [c[0] for c in sp.calls].count("like") == 1
+    assert not sp.calls
 
 
 def test_dry_run_exposes_reviewable_removal(settings, archive_store):
-    sp, hub = Spotify(liked=False), Store()
+    sp, hub = Spotify(liked=False), Store(kind="smart")
+    hub.tables["playlists"]["P"]["rule"] = {"v": 1}
     out = execute(settings, sp, hub, dry_run=True)
     assert sp.calls == [] and archive_store == {}
     details = getattr(out, "planned", [])
     removal = next((a for a in details if a["kind"] == "remove_item"), None)
     assert removal and removal["playlist_id"] == "P" and removal["isrc"] == A
     assert removal["playlist_name"] == "Playlist" and removal["title"] == "Song"
-    assert removal["reason"] == "un-hearted"
+    assert removal["reason"] == "removed by rule"
     assert out.applied == {}
     assert A in out.summary() and "Playlist" in out.summary()
 
@@ -375,7 +351,8 @@ def test_partial_client_add_and_hub_failure_recover_without_duplicate(settings, 
 def test_checkpoint_failure_after_remove_leaves_durable_repair(settings, archive_store, mocker):
     from core import archive
 
-    hub, sp = Store(), Spotify([raw(), raw()])
+    hub, sp = Store(kind="smart"), Spotify([raw()], liked=False)
+    hub.tables["playlists"]["P"]["rule"] = {"v": 1}
     original = archive.put
     failed = False
 
@@ -390,7 +367,7 @@ def test_checkpoint_failure_after_remove_leaves_durable_repair(settings, archive
     assert execute(settings, sp, hub).errors
     assert sp.items == []
     assert not execute(settings, sp, hub).errors
-    assert len(sp.items) == 1
+    assert sp.items == []
 
 
 def test_pending_archive_failure_prevents_first_mutation(settings, archive_store, mocker):
@@ -410,7 +387,8 @@ def test_pending_archive_failure_prevents_first_mutation(settings, archive_store
 
 
 def test_incomplete_repair_blocks_capture_and_observation(settings, archive_store):
-    hub, sp = Store(), Spotify([raw(), raw()])
+    hub, sp = Store(kind="smart"), Spotify(items=[])
+    hub.tables["playlists"]["P"]["rule"] = {"v": 1}
     sp.fail = "add"
     assert execute(settings, sp, hub).errors
     hub.tables["playlists"]["P"]["kind"] = "inbox"
@@ -429,7 +407,7 @@ def test_duplicate_smart_exclusion_and_expiry_never_readd(settings, archive_stor
     if expired:
         p.update(pinned=0, expires_at=T)
     assert not execute(settings, sp, hub).errors
-    assert sp.items == []
+    assert len(sp.items) == (0 if expired else 3)
     assert not any(kind == "add" for kind, _ in sp.calls)
 
 
@@ -527,12 +505,12 @@ def test_activation_provision_outputs_zero_without_services(capsys, monkeypatch)
     assert capsys.readouterr().out == "0\n"
 
 
-def test_conflicting_new_membership_unheart_retains_full_undo_row(settings, archive_store):
+def test_conflicting_new_membership_unheart_preserves_original_membership(settings, archive_store):
     hub, sp = Store(member=False), Spotify(liked=False)
     assert not execute(settings, sp, hub).errors
     row = hub.tables["playlist_songs"][f"P:{A}"]
     assert row.get("isrc") == A and row.get("playlist_id") == "P"
-    assert row["added_at"] == T and row["spotify_track_id"] == "a" and row["deleted_at"]
+    assert row["added_at"] == T and row["spotify_track_id"] == "a" and row["deleted_at"] is None
     sp.liked = [raw()]
     assert not execute(settings, sp, hub).errors
     assert len(sp.items) == 1
@@ -541,7 +519,8 @@ def test_conflicting_new_membership_unheart_retains_full_undo_row(settings, arch
 def test_recovery_archives_fresh_raw_before_replay(settings, archive_store, mocker):
     from core import archive
 
-    hub, sp = Store(), Spotify([raw(), raw()])
+    hub, sp = Store(kind="smart"), Spotify(items=[])
+    hub.tables["playlists"]["P"]["rule"] = {"v": 1}
     sp.fail = "add"
     assert execute(settings, sp, hub).errors
     sp.calls.clear()
@@ -802,6 +781,7 @@ def test_retry_timestamp_survives_restart_and_preserves_newer_edit(
             json.dumps(
                 {
                     "planned": [actions.asdict(a) for a in plan],
+                    "policy_version": 1,
                     "operations": actions._batches(plan, writes),
                     "writes": writes,
                 }

@@ -107,7 +107,7 @@ def test_existing_membership_id_is_usable_without_catalog_aliases():
     assert [a.uri for a in kinds(acts, "add_item")] == ["spotify:track:member-id"]
 
 
-def test_undo_uses_retained_membership_id_without_alias_search():
+def test_relike_does_not_restore_retained_membership():
     m = Mirror(
         {"A": song("A", liked=0, ids=[])},
         {"CU": pl("CU", "curated", "curated")},
@@ -117,10 +117,10 @@ def test_undo_uses_retained_membership_id_without_alias_search():
     )
     li = LiveItem("A", None, None, T, None, False, None, [])
     acts = reconcile.plan(m, Live({"CU": live_pl("CU", "curated", [])}, {"A": li}, {}), NOW)
-    assert [a.uri for a in kinds(acts, "add_item")] == ["spotify:track:undo-id"]
+    assert not kinds(acts, "add_item")
 
 
-@pytest.mark.parametrize("route", ["verified", "live", "fallback", "membership"])
+@pytest.mark.parametrize("route", ["verified", "live", "membership"])
 def test_routing_membership_inspections_are_bounded(route):
     class CountedMemberships(dict):
         inspections = 0
@@ -180,8 +180,8 @@ def test_unknown_and_unverified_alias_never_trigger_relink(availability):
     assert bool(kinds(acts, "flag")) is (availability is False)
 
 
-@pytest.mark.parametrize("market, expected", [("US", ["spotify:track:verified"]), ("GB", [])])
-def test_relink_uses_retained_positive_evidence_only_in_observed_market(market, expected):
+@pytest.mark.parametrize("market, expected", [("US", []), ("GB", [])])
+def test_positive_evidence_does_not_authorize_alias_replacement(market, expected):
     m = Mirror(
         {"A": song("A", ids=["legacy", "actual", "verified"])},
         {"CU": pl("CU", "curated", "curated")},
@@ -260,7 +260,7 @@ def test_added_to_curated_while_unliked_gets_liked_and_edge():
         {"A": item("A"), "B": item("B")},
         {},
     )
-    acts = reconcile.plan(m, live, NOW)
+    acts = reconcile.plan(m, live, NOW, curation_likes={"C"})
     assert [a.uri for a in kinds(acts, "like")] == ["spotify:track:tC"]
     assert any(a.kind == "upsert_song" and a.row["id"] == "C" and a.row["liked"] == 1 for a in acts)
     assert any(
@@ -272,7 +272,7 @@ def test_added_to_curated_while_unliked_gets_liked_and_edge():
     )
 
 
-def test_unheart_removes_from_curated_and_smart_and_wins_tie():
+def test_unheart_preserves_curated_and_smart_rule_removes():
     m = base()
     live = Live(
         {
@@ -285,14 +285,13 @@ def test_unheart_removes_from_curated_and_smart_and_wins_tie():
     )
     acts = reconcile.plan(m, live, NOW)
     removed = {(a.playlist_id, a.uri) for a in kinds(acts, "remove_item")}
-    assert removed == {("CU", "spotify:track:tA"), ("SM", "spotify:track:tA")}
+    assert removed == {("SM", "spotify:track:tA")}
     assert not kinds(acts, "like")
-    assert {a.row["id"] for a in kinds(acts, "delete_membership")} == {"CU:A", "SM:A"}
+    assert {a.row["id"] for a in kinds(acts, "delete_membership")} == {"SM:A"}
 
 
-def test_unheart_removes_skipped_playlist_memberships_via_mirror():
-    # steady state: hearting/un-hearting never bumps a curated playlist's snapshot, so
-    # pull_live skips it (items=None) - un-heart must still fall back to the mirror row
+def test_unheart_does_not_mutate_skipped_playlists():
+    # A missing playlist pull cannot authorize removals.
     m = base()
     live = Live(
         {
@@ -305,8 +304,8 @@ def test_unheart_removes_skipped_playlist_memberships_via_mirror():
     )
     acts = reconcile.plan(m, live, NOW)
     removed = {(a.playlist_id, a.uri) for a in kinds(acts, "remove_item")}
-    assert removed == {("CU", "spotify:track:tA"), ("SM", "spotify:track:tA")}
-    assert {a.row["id"] for a in kinds(acts, "delete_membership")} == {"CU:A", "SM:A"}
+    assert removed == set()
+    assert {a.row["id"] for a in kinds(acts, "delete_membership")} == set()
 
 
 def test_smart_materializes_when_curated_and_inbox_skipped():
@@ -347,7 +346,7 @@ def test_rule_error_flags_instead_of_raising_other_smart_playlists_still_materia
     assert [a.uri for a in kinds(acts, "add_item") if a.playlist_id == "SM"] == ["spotify:track:tD"]
 
 
-def test_undo_restores_curated_within_window():
+def test_relike_never_restores_curated_regardless_tombstone_age():
     m = base()
     m.songs["A"].liked = 0
     m.memberships.pop(("CU", "A"))
@@ -364,7 +363,9 @@ def test_undo_restores_curated_within_window():
         {},
     )
     acts = reconcile.plan(m, live, NOW)
-    assert ("CU", "spotify:track:tA") in {(a.playlist_id, a.uri) for a in kinds(acts, "add_item")}
+    assert ("CU", "spotify:track:tA") not in {
+        (a.playlist_id, a.uri) for a in kinds(acts, "add_item")
+    }
     # plan() must not mutate its input: the mirror's own "A" is still unliked, so the
     # second call below is a genuine test of the cutoff window, not of a stale mutation
     assert m.songs["A"].liked == 0
@@ -422,7 +423,7 @@ def test_smart_materialization_and_description():
     )
 
 
-def test_unplayable_relink_or_flag():
+def test_unplayable_requires_review():
     m = base()
     m.songs["A"].spotify_ids = ["tA2", "tA"]
     m.songs["B"].spotify_playable = 0
@@ -438,14 +439,12 @@ def test_unplayable_relink_or_flag():
         {},
     )
     acts = reconcile.plan(m, live, NOW)
-    assert ("CU", "spotify:track:tA") in {
-        (a.playlist_id, a.uri) for a in kinds(acts, "remove_item")
-    }
-    assert ("CU", "spotify:track:tA2") in {(a.playlist_id, a.uri) for a in kinds(acts, "add_item")}
+    assert not [a for a in kinds(acts, "remove_item") if a.playlist_id == "CU"]
+    assert not [a for a in kinds(acts, "add_item") if a.playlist_id == "CU"]
     assert any(a.kind == "flag" and "B" in a.text for a in acts)
 
 
-def test_duplicate_isrc_keeps_earliest():
+def test_duplicate_isrc_requires_keeper_review():
     m = base()
     live = Live(
         {
@@ -464,13 +463,12 @@ def test_duplicate_isrc_keeps_earliest():
         {},
     )
     acts = reconcile.plan(m, live, NOW)
-    assert [a.uri for a in kinds(acts, "remove_item") if a.playlist_id == "CU"] == [
-        "spotify:track:tA"
-    ]
+    assert not [a for a in kinds(acts, "remove_item") if a.playlist_id == "CU"]
+    assert any("keeper" in a.text for a in kinds(acts, "flag"))
     assert not kinds(acts, "readd_item")  # different uris: no readd needed
 
 
-def test_duplicate_isrc_same_uri_needs_readd():
+def test_duplicate_same_uri_is_preserved_for_review():
     m = base()
     live = Live(
         {
@@ -489,12 +487,9 @@ def test_duplicate_isrc_same_uri_needs_readd():
         {},
     )
     acts = reconcile.plan(m, live, NOW)
-    assert [a.uri for a in kinds(acts, "remove_item") if a.playlist_id == "CU"] == [
-        "spotify:track:tA"
-    ]
-    assert [a.uri for a in kinds(acts, "readd_item") if a.playlist_id == "CU"] == [
-        "spotify:track:tA"
-    ]
+    assert not [a for a in kinds(acts, "remove_item") if a.playlist_id == "CU"]
+    assert any("keeper" in a.text for a in kinds(acts, "flag"))
+    assert not kinds(acts, "readd_item")
 
 
 def test_ephemeral_expiry_and_skipped_playlists():
@@ -571,7 +566,7 @@ def test_new_unliked_curated_song_has_one_edge_created_row_1():
         {"A": item("A"), "B": item("B")},
         {},
     )
-    acts = reconcile.plan(m, live, NOW)
+    acts = reconcile.plan(m, live, NOW, curation_likes={"E"})
     edges = [a for a in kinds(acts, "edge") if a.row["to_ref"] == "E"]
     assert len(edges) == 1 and edges[0].row["detail"]["created_row"] == 1
     assert [a.uri for a in kinds(acts, "like") if a.isrc == "E"] == ["spotify:track:tE"]

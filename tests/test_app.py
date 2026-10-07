@@ -701,3 +701,19 @@ def test_post_add_rate_limit_retains_added_and_retry_after(capture_api, monkeypa
     response = post("/capture-consumer", CONSUMER_BODY, token)
     assert response.json()["spotify_outcome"] == "added"
     assert response.headers["Retry-After"] == "60"
+
+
+def test_reconcile_response_exposes_quiet_review_items(settings, monkeypatch):
+    from core import config, run
+    from core.actions import RunLog
+
+    reviews = [{"id": "curation-unlike:recording", "reason": "unliked_while_curated"}]
+    monkeypatch.setattr(config, "Settings", lambda: settings)
+    monkeypatch.setattr("core.workspaces.settings_for", lambda base, workspace: base)
+    monkeypatch.setattr(
+        run, "reconcile", lambda *args, **kw: RunLog(dry_run=True, review_items=reviews)
+    )
+    out = app._run(True)
+    assert out["review_items"] == reviews
+    assert "curation-unlike:recording" in out["summary"]
+    assert not out["flags"]
