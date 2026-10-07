@@ -17,6 +17,8 @@ KEYS = {
     "first_year",
     "in_playlist_any",
     "not_in_playlist",
+    "in_playlist_ids_any",
+    "not_in_playlist_ids",
     "captured_by",
     "liked_after",
 }
@@ -39,7 +41,14 @@ def validate(rule: dict) -> None:
     unknown = set(rule) - KEYS
     if unknown:
         raise RuleError(f"unknown keys: {sorted(unknown)}")
-    for k in ("deezer_genres_any", "mb_tags_any", "in_playlist_any", "not_in_playlist"):
+    for k in (
+        "deezer_genres_any",
+        "mb_tags_any",
+        "in_playlist_any",
+        "not_in_playlist",
+        "in_playlist_ids_any",
+        "not_in_playlist_ids",
+    ):
         if k in rule:
             _str_list(rule[k], k)
     if "first_year" in rule:
@@ -73,12 +82,25 @@ def _q(s: str) -> str:
 def _pid(name: str, playlist_ids: dict[str, str]) -> str:
     if name not in playlist_ids:
         raise RuleError(f"unknown playlist: {name}")
+    if playlist_ids[name] is None:
+        raise RuleError(f"ambiguous playlist: {name}; use its stable ID")
     return _q(playlist_ids[name])
 
 
-def to_sql(rule: dict, playlist_ids: dict[str, str]) -> str:
+def to_sql(rule: dict, playlist_ids: dict[str, str], known_ids: set[str] | None = None) -> str:
     validate(rule)
     parts = []
+    known_ids = known_ids if known_ids is not None else set(playlist_ids.values())
+    for key, prefix in (("in_playlist_ids_any", ""), ("not_in_playlist_ids", "NOT ")):
+        if key in rule:
+            missing = set(rule[key]) - known_ids
+            if missing:
+                raise RuleError(f"unknown playlist ID: {', '.join(sorted(missing))}")
+            parts.append(
+                f"{prefix}EXISTS (SELECT 1 FROM playlist_songs ps WHERE ps.isrc = s.id "
+                "AND ps.deleted_at IS NULL AND ps.playlist_id IN (%s))"
+                % ",".join(_q(pid) for pid in rule[key])
+            )
     if "deezer_genres_any" in rule:
         parts.append(
             "EXISTS (SELECT 1 FROM json_each(s.deezer_genres) WHERE value IN (%s))"
@@ -117,8 +139,11 @@ def to_sql(rule: dict, playlist_ids: dict[str, str]) -> str:
     return "(" + " AND ".join(parts) + ")" if parts else "(1=1)"
 
 
-def describe(rule: dict, synced: str) -> str:
+def describe(rule: dict, synced: str, playlist_names: dict[str, str] | None = None) -> str:
     seg = ["smart"]
+    for key, label in (("in_playlist_ids_any", "in: "), ("not_in_playlist_ids", "not in: ")):
+        if key in rule:
+            seg.append(label + ", ".join((playlist_names or {}).get(pid, pid) for pid in rule[key]))
     if "deezer_genres_any" in rule:
         seg.append("genre: " + ", ".join(rule["deezer_genres_any"]))
     if "mb_tags_any" in rule:
@@ -181,12 +206,18 @@ def evaluate(
     mirror: Mirror, playlist_ids: dict[str, str], errors: dict[str, str] | None = None
 ) -> dict[str, set[str]]:
     db = load_sqlite(mirror)
+    playlist_ids = dict(playlist_ids)
+    current_names = {}
+    for p in mirror.playlists.values():
+        if p.name in current_names and current_names[p.name] != p.id:
+            playlist_ids[p.name] = None
+        current_names[p.name] = p.id
     out = {}
     for p in mirror.playlists.values():
         if p.kind != "smart":
             continue
         try:
-            sql = f"SELECT id FROM songs s WHERE s.liked = 1 AND {to_sql(p.rule, playlist_ids)}"
+            sql = f"SELECT id FROM songs s WHERE s.liked = 1 AND {to_sql(p.rule, playlist_ids, set(mirror.playlists))}"
         except RuleError as e:
             if errors is None:
                 raise

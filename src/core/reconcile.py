@@ -52,8 +52,11 @@ def plan(
     today = today or now.date().isoformat()
     now_s = _iso(now)
     acts: list[Action] = []
-    names = {p.name: p.id for p in mirror.playlists.values()}
-    names.update({p.name: p.id for p in live.playlists.values()})
+    current_names = {p.id: p.name for p in mirror.playlists.values()}
+    current_names.update({p.id: p.name for p in live.playlists.values()})
+    names = {}
+    for pid, name in current_names.items():
+        names[name] = None if name in names else pid
     kind_of = {pid: p.kind for pid, p in mirror.playlists.items()}
     inbox_ids = {pid for pid, k in kind_of.items() if k == "inbox"}
     liked_now = set(live.liked)
@@ -79,7 +82,7 @@ def plan(
             key = (lp.id, it.isrc)
             if key not in actual:
                 actual[key] = it
-            elif lp.id not in inbox_ids:
+            else:
                 duplicates.setdefault(key, []).append(it)
 
     # Seed complete identity before tombstones, including a conflicting new add/un-heart.
@@ -270,6 +273,10 @@ def plan(
         lp = live.playlists.get(pid)
         if not lp or lp.items is None:
             continue
+        if any(duplicate_pid == pid for duplicate_pid, _ in duplicates):
+            # URI removal affects every matching occurrence, and membership rows
+            # cannot choose a surviving occurrence without the owner's review.
+            continue
         with_isrc = sorted([it for it in lp.items if it.isrc], key=lambda x: x.added_at)
         for it in with_isrc[: max(0, len(with_isrc) - inbox_cap)]:
             acts.append(
@@ -355,7 +362,7 @@ def plan(
                 )
             )
             actual.pop((pid, isrc))
-        text = rules.describe(p.rule, today)
+        text = rules.describe(p.rule, today, {p.id: p.name for p in view.playlists.values()})
         if _strip_synced(text) != _strip_synced(lp.description):
             acts.append(Action("set_description", playlist_id=pid, text=text))
 
