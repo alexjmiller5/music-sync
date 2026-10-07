@@ -132,6 +132,9 @@ class FakeHub:
         self.pushed.append((table, rows))
         return {"upserted": len(rows), "rejected": []}
 
+    def insert(self, table, rows):
+        return {"inserted": [row["id"] for row in rows], "existing": [], "rejected": []}
+
 
 INBOX = [
     {
@@ -314,3 +317,91 @@ def test_pending_replay_blocks_capture_before_search_or_hub_read(settings, monke
     monkeypatch.setattr(capture.archive, "get", lambda *args: pending)
     out = capture.capture({"title": "Title", "artist": "Artist"}, object(), object(), settings, NOW)
     assert not out["ok"] and "recovery" in out["message"]
+
+
+def test_recognition_events_survive_retries_and_repeat_recognition(settings, monkeypatch):
+    from datetime import timedelta
+
+    objects = {}
+    monkeypatch.setattr(capture.archive, "get", lambda s, k: objects.get(k))
+    monkeypatch.setattr(capture.archive, "put", lambda s, k, v: objects.__setitem__(k, v))
+    tr = track("observed", "Song", "Artist")
+    sp = FakeSpotify([tr])
+    hub = FakeHub(INBOX)
+    inserted = {}
+
+    def insert(table, rows):
+        assert table == "provenance"
+        for row in rows:
+            inserted.setdefault(row["id"], row)
+
+    hub.insert = insert
+    payload = {
+        "capture_id": "capture-one",
+        "title": "Song",
+        "artist": "Artist",
+        "recognized_at": "2026-09-01T08:12:34.123456-04:00",
+    }
+    capture.capture(payload, sp, hub, settings, NOW, client_id="phone")
+    original = dict(objects)
+    capture.capture(payload, sp, hub, settings, NOW + timedelta(days=1), client_id="phone")
+    assert len(inserted) == 1
+    edge = next(iter(inserted.values()))
+    key, locator = edge["from_ref"].split("#")
+    assert locator == "/event" and objects[key] == original[key]
+    event = json.loads(gzip.decompress(objects[key]))["event"]
+    assert event["payload"] == payload
+    assert event["received_at"] == "2026-09-08T12:00:00.000Z"
+    assert event["recognized_at"] == payload["recognized_at"]
+    assert not any("at" in field or "date" in field for field in edge["detail"])
+    capture.capture(
+        {**payload, "capture_id": "capture-two"},
+        sp,
+        hub,
+        settings,
+        NOW + timedelta(days=2),
+        client_id="phone",
+    )
+    assert len(inserted) == 2
+    assert len([c for c in sp.calls if c[0] == "add"]) == 1
+
+
+def test_recognition_identity_is_client_scoped_and_missing_date_stays_unknown(
+    settings, monkeypatch
+):
+    objects, events = {}, []
+    monkeypatch.setattr(capture.archive, "get", lambda s, k: objects.get(k))
+    monkeypatch.setattr(capture.archive, "put", lambda s, k, v: objects.__setitem__(k, v))
+    tr = track("observed", "Song", "Artist")
+    sp, hub = FakeSpotify([tr]), FakeHub(INBOX)
+    hub.insert = lambda table, rows: events.extend(rows)
+    payload = {"capture_id": "same-id", "title": "Song", "artist": "Artist"}
+    for client in ["one", "two"]:
+        capture.capture(payload, sp, hub, settings, NOW, client_id=client)
+    assert len({row["id"] for row in events}) == 2
+    for row in events:
+        event = json.loads(gzip.decompress(objects[row["from_ref"].split("#")[0]]))["event"]
+        assert event["recognized_at"] is None
+
+
+def test_changed_recognition_payload_cannot_overwrite_retained_event(settings, monkeypatch):
+    objects = {}
+    monkeypatch.setattr(capture.archive, "get", lambda s, k: objects.get(k))
+    monkeypatch.setattr(capture.archive, "put", lambda s, k, v: objects.__setitem__(k, v))
+    sp, hub = FakeSpotify([track("t", "Song", "Artist")]), FakeHub(INBOX)
+    hub.insert = lambda *args: None
+    payload = {"capture_id": "same-id", "title": "Song", "artist": "Artist"}
+    capture.capture(payload, sp, hub, settings, NOW, client_id="phone")
+    before = dict(objects)
+    sp.calls.clear()
+    with pytest.raises(ValueError, match="different payload"):
+        capture.capture(
+            {**payload, "shazam_url": "https://example.test/changed"},
+            sp,
+            hub,
+            settings,
+            NOW,
+            client_id="phone",
+        )
+    assert all(objects[key] == value for key, value in before.items())
+    assert sp.calls == []

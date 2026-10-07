@@ -33,3 +33,15 @@ Incomplete observations never imply explicit unlike. Saved normalization does no
 - Baseline: 448 tests passed on current main.
 
 - Curated independence and durable review regression tests pass; configured review delivery preserves long evidence. Suite: 457 passed; ruff check clean.
+
+- Release selection and duplicate review are assigned elsewhere. Unfinished local
+  selection work is preserved outside the active branch for owner reconciliation;
+  it is not part of this release candidate. No duplicate decisions are repeated.
+- Capture now retains one event per client/capture ID and reuses it on retries;
+  event timestamps remain in retained originals, with create-only provenance
+  references. Source recognition time is optional and never inferred from arrival.
+- Review delivery destination is still a preference awaiting activation approval.
+  No destination is configured or cut over by this branch. Existing optional
+  Notion delivery support does not choose a destination for the user.
+- Historical event backfill, catalog projections, replacement decisions and the
+  full fresh integration preview remain rollout preparation, not completed work.

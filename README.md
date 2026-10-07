@@ -152,6 +152,21 @@ Spotify by that ISRC and accepts only a candidate carrying the same ISRC.
 Without one, matching requires normalized exact title and artist identity,
 including version words such as live or remix.
 
+Clients may also send `recognized_at`, a timezone-aware ISO timestamp from the
+recognition source. Its original offset and precision are retained. Omitting it
+leaves the recognition time unknown; the separate processing receipt time is
+not substituted. Both optional fields participate in capture replay identity.
+Each new capture UUID preserves a distinct retained recognition event, even when
+the recording is already in the inbox. Retrying that UUID reuses the original
+event. Client and workspace identity prevent cross-device collisions.
+
+Event originals live under `raw/spotify-capture/events/` through the Life Data
+file interface. Create-only provenance references the exact `#/event` locator;
+it does not store event timestamps in `detail`. Existing recording-level origin
+edges remain available. Historical event recovery and user-visible catalog
+projections require their own reviewed data preparation. Legacy operator
+captures without a capture ID cannot distinguish a retry from a new event.
+
 Only a selected Spotify track with a valid ISRC, track ID and URI is stored
 with the payload identity before Spotify or hub side effects. An incomplete
 candidate is not stored, so the same capture UUID can resolve it on a later
@@ -164,7 +179,7 @@ by a durable receipt in Music Sync's R2:
 
 Repeating the same client, capture UUID and payload resumes the stored track or
 replays its completed receipt without selecting a different recording. The
-optional ISRC participates in payload identity. Reusing the UUID with a changed
+optional metadata participates in payload identity. Reusing the UUID with a changed
 payload returns `409`. Missing, invalid or revoked credentials return `401`;
 malformed requests return `422`; storage or capture availability failures return `503`.
 Only a response with HTTP 200, `ok: true`, the matching `capture_id` and a

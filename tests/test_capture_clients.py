@@ -230,3 +230,17 @@ def test_clients_are_bound_to_a_workspace(settings, objects):
     mine = capture_clients.issue(settings, "my phone")
     assert capture_clients.client_workspace(settings, friend["client_id"]) == "friend"
     assert capture_clients.client_workspace(settings, mine["client_id"]) == "default"
+
+
+@pytest.mark.parametrize("value", ["bad", "2026-09-01T12:00:00", "", None])
+def test_recognition_time_rejects_unknown_or_naive_input(value):
+    with pytest.raises(capture_clients.InvalidRequest):
+        capture_clients.validate_payload({**PAYLOAD, "recognized_at": value})
+
+
+def test_recognition_time_retains_source_offset_and_precision():
+    value = "2026-09-01T08:12:34.123456-04:00"
+    assert (
+        capture_clients.validate_payload({**PAYLOAD, "recognized_at": value})["recognized_at"]
+        == value
+    )

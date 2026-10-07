@@ -85,6 +85,17 @@ class Store:
             self.tables[table].setdefault(row["id"], {}).update(copy.deepcopy(row))
         return {"upserted": len(rows), "rejected": []}
 
+    def insert(self, table, rows):
+        if self.fail == table:
+            self.fail = None
+            raise HubError("injected hub failure")
+        result = {"inserted": [], "existing": [], "rejected": []}
+        for row in rows:
+            key = "existing" if row["id"] in self.tables[table] else "inserted"
+            result[key].append(row["id"])
+            self.tables[table].setdefault(row["id"], copy.deepcopy(row))
+        return result
+
 
 class Spotify:
     def __init__(self, items=None, liked=True):
@@ -445,7 +456,11 @@ def test_capture_raw_archive_precedes_add_and_trim(settings, archive_store, mock
 
     def put(settings, key, data):
         assert sp.calls == []
-        assert json.loads(gzip.decompress(data))["items"] == before
+        body = json.loads(gzip.decompress(data))
+        if "items" in body:
+            assert body["items"] == before
+        else:
+            assert body["event"]["observation_ref"] in archive_store
         return original(settings, key, data)
 
     mocker.patch("core.archive.put", side_effect=put)
@@ -684,7 +699,12 @@ def test_observation_import_meets_hub_datetime_contract_and_recovers(
                         },
                     )
         try:
-            return httpx.Response(200, json=store.push(table, body["rows"]))
+            return httpx.Response(
+                200,
+                json=(store.insert if req.url.path.endswith("/insert") else store.push)(
+                    table, body["rows"]
+                ),
+            )
         except HubError as exc:
             return httpx.Response(500, text=str(exc))
 
@@ -918,7 +938,12 @@ def test_direct_imports_keep_hub_timestamp_fallback(settings, archive_store, flo
         received.append(body)
         for row in body["rows"]:
             assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", row["updated_at"])
-        return httpx.Response(200, json=store.push(table, body["rows"]))
+        return httpx.Response(
+            200,
+            json=(store.insert if req.url.path.endswith("/insert") else store.push)(
+                table, body["rows"]
+            ),
+        )
 
     hub = Hub("https://hub.test", "dummy", httpx.Client(transport=httpx.MockTransport(handler)))
     if flow == "capture":
@@ -933,6 +958,7 @@ def test_direct_imports_keep_hub_timestamp_fallback(settings, archive_store, flo
         assert store.tables["playlist_songs"][f"P:{A}"]["deleted_at"] is not None
         assert [body["table"] for body in received] == [
             "songs",
+            "provenance",
             "playlist_songs",
             "provenance",
             "playlist_songs",

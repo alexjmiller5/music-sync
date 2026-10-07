@@ -78,7 +78,19 @@ runs in tests, locally, or on any future platform.
   without enabling enforcement. It fills existing songs only and checkpoints
   remaining provenance with song patches. Retained source market is used only
   when explicitly present in the archive; otherwise evidence market is null.
-- Consumer capture accepts five required string fields plus an optional ISRC.
+- Consumer capture accepts five required string fields plus optional ISRC and
+  `recognized_at` (timezone-aware ISO timestamp, preserved with source precision).
+  Each client/capture UUID retains an individual event under
+  `raw/spotify-capture/events/`, linking its accepted payload, recognition time
+  (unknown when omitted), processing receipt time and first pre-write observation.
+  Retries reuse that original; changed payload/recording fails closed. Legacy
+  captures without an ID have no retry identity and produce separate events.
+  Event provenance uses create-only insertion and an exact archive JSON pointer;
+  its detail holds no timestamps. This does not backfill historical events or
+  configure catalog projections. Repeated real captures remain separate history.
+  `Hub.insert` validates complete inserted/existing/rejected accounting. There
+  is no cross-table transaction or server-enforced append-only guarantee.
+  `Hub.pull` follows validated continuation cursors before returning rows.
   A supplied ISRC is normalized, searched directly and must
   match the returned recording. Without one, capture requires normalized exact
   title and artist identity; it never strips version suffixes or accepts an
