@@ -14,6 +14,38 @@ def make(handler):
     )
 
 
+def test_create_only_insert_accounts_for_existing_without_upsert():
+    rows = [{"id": "event-a", "from_ref": "archive#/event"}]
+
+    def handler(req):
+        assert req.url.path == "/v1/rows/insert"
+        body = json.loads(req.content)
+        assert body["rows"][0]["from_ref"] == "archive#/event"
+        assert body["rows"][0]["updated_at"].endswith("Z")
+        return httpx.Response(200, json={"inserted": [], "existing": ["event-a"], "rejected": []})
+
+    assert make(handler).insert("provenance", rows) == {
+        "inserted": [],
+        "existing": ["event-a"],
+        "rejected": [],
+    }
+    assert "updated_at" not in rows[0]
+
+
+@pytest.mark.parametrize(
+    "receipt",
+    [
+        {"inserted": [], "existing": [], "rejected": []},
+        {"inserted": ["a"], "existing": ["a"], "rejected": []},
+        {"inserted": ["other"], "existing": [], "rejected": []},
+        {"inserted": [], "existing": [], "rejected": [{"id": "a", "rule": "denied"}]},
+    ],
+)
+def test_insert_rejects_incomplete_ambiguous_or_rejected_receipt(receipt):
+    with pytest.raises(HubError):
+        make(lambda r: httpx.Response(200, json=receipt)).insert("provenance", [{"id": "a"}])
+
+
 def test_catalog_gets_real_shape_with_auth():
     body = {
         "tables": [],
@@ -47,6 +79,39 @@ def test_pull_posts_table_columns_since_with_bearer_and_user_agent():
     assert seen["body"] == {"table": "songs", "columns": ["id"], "since": ""}
     assert seen["h"]["Authorization"] == "Bearer tok"
     assert "music-sync" in seen["h"]["User-Agent"]
+
+
+def test_pull_consumes_all_pages_without_losing_projection_or_filter():
+    calls = []
+
+    def handler(req):
+        body = json.loads(req.content)
+        calls.append(body)
+        assert body["where"] == {"deleted_at": None}
+        assert body["columns"] == ["id"] and body["since"] == "stamp"
+        if "after" not in body:
+            return httpx.Response(200, json={"rows": [{"id": "a"}], "next_cursor": "a"})
+        assert body["after"] == "a"
+        return httpx.Response(200, json={"rows": [{"id": "b"}], "next_cursor": None})
+
+    assert make(handler).pull("songs", ["id"], "stamp", {"deleted_at": None}) == [
+        {"id": "a"},
+        {"id": "b"},
+    ]
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        {"rows": [], "next_cursor": "a"},
+        {"rows": [{"id": "a"}], "next_cursor": ""},
+        {"rows": [{"id": "a"}], "next_cursor": 1},
+    ],
+)
+def test_pull_rejects_invalid_continuations(page):
+    with pytest.raises(HubError, match="cursor"):
+        make(lambda req: httpx.Response(200, json=page)).pull("songs", ["id"])
 
 
 def test_push_chunks_stamp_once_per_invocation_without_changing_rows(monkeypatch):

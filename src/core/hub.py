@@ -35,7 +35,16 @@ class Hub:
         body = {"table": table, "columns": columns, "since": since}
         if where:
             body["where"] = where
-        return self._post("/v1/rows/pull", body)["rows"]
+        rows = []
+        while True:
+            page = self._post("/v1/rows/pull", body)
+            rows.extend(page["rows"])
+            cursor = page.get("next_cursor")
+            if cursor is None:
+                return rows
+            if not isinstance(cursor, str) or cursor <= body.get("after", "") or not page["rows"]:
+                raise HubError("invalid pull cursor")
+            body["after"] = cursor
 
     def catalog(self) -> dict:
         try:
@@ -45,6 +54,46 @@ class Hub:
         if r.status_code >= 400:
             raise HubError(f"hub HTTP {r.status_code}: {r.text[:300]}")
         return r.json()
+
+    def insert(self, table: str, rows: list[dict]) -> dict:
+        """Create-only evidence insertion; existing IDs never authorize an overwrite."""
+        ids = [row.get("id") for row in rows]
+        if any(not isinstance(i, str) or not i.strip() for i in ids) or len(set(ids)) != len(ids):
+            raise ValueError("insert requires unique nonempty IDs")
+        stamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        prepared = [{"updated_at": stamp, **row} for row in rows]
+        if prepared and any(set(row) != set(prepared[0]) for row in prepared):
+            raise ValueError("insert rows must have the same columns")
+        result = {"inserted": [], "existing": [], "rejected": []}
+        for offset in range(0, len(prepared), PUSH_CHUNK):
+            chunk = prepared[offset : offset + PUSH_CHUNK]
+            out = self._post(
+                "/v1/rows/insert",
+                {
+                    "table": table,
+                    "columns": sorted(chunk[0]),
+                    "rows": chunk,
+                },
+            )
+            if not isinstance(out, dict) or any(not isinstance(out.get(k), list) for k in result):
+                raise HubError("invalid insert receipt")
+            accounted = (
+                out["inserted"]
+                + out["existing"]
+                + [row.get("id") if isinstance(row, dict) else None for row in out["rejected"]]
+            )
+            wanted = {row["id"] for row in chunk}
+            if (
+                any(not isinstance(i, str) or i not in wanted for i in accounted)
+                or len(accounted) != len(set(accounted))
+                or set(accounted) != wanted
+            ):
+                raise HubError("incomplete or ambiguous insert receipt")
+            if out["rejected"]:
+                raise HubError(f"{table}: insert rejected: {out['rejected'][0]}")
+            for key in result:
+                result[key].extend(out[key])
+        return result
 
     def push(self, table: str, rows: list[dict]) -> dict:
         if not rows:

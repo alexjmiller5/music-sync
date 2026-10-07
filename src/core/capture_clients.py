@@ -9,13 +9,13 @@ from hashlib import sha256
 from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
-from core import archive
+from core import archive, recognition
 from core.config import Settings
 
 CLIENTS_KEY = "music-sync/capture-clients.json.gz"
 RECEIPTS_PREFIX = "music-sync/capture-receipts"
 _REQUIRED_PAYLOAD_FIELDS = {"capture_id", "title", "artist", "apple_music_id", "shazam_url"}
-_PAYLOAD_FIELDS = _REQUIRED_PAYLOAD_FIELDS | {"isrc"}
+_PAYLOAD_FIELDS = _REQUIRED_PAYLOAD_FIELDS | {"isrc", "recognized_at"}
 _ISRC = re.compile(r"[A-Z]{2}[A-Z0-9]{3}\d{7}")
 
 
@@ -116,12 +116,16 @@ def validate_payload(payload: dict) -> dict:
     ):
         raise InvalidRequest(
             "capture requires capture_id, title, artist, apple_music_id and shazam_url; "
-            "isrc is optional"
+            "isrc and recognized_at are optional"
         )
     if not all(isinstance(value, str) for value in payload.values()):
         raise InvalidRequest("capture fields must be strings")
     if not payload["title"].strip() or not payload["artist"].strip():
         raise InvalidRequest("title and artist must be nonempty")
+    try:
+        recognition.validate_time(payload.get("recognized_at"))
+    except ValueError as exc:
+        raise InvalidRequest(str(exc)) from exc
     try:
         capture_id = str(UUID(payload["capture_id"]))
     except ValueError as exc:
