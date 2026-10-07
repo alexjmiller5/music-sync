@@ -7,6 +7,7 @@ are unit-tested with mocks.
 """
 
 import time
+from urllib.parse import urlsplit
 
 import httpx
 import structlog
@@ -18,7 +19,7 @@ log = structlog.get_logger()
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 API = "https://api.spotify.com"
 ITEM_FIELDS = (
-    "next,items(added_at,item(id,uri,name,is_local,is_playable,external_ids,"
+    "next,total,offset,items(added_at,item(id,uri,name,is_local,is_playable,external_ids,"
     "duration_ms,linked_from(id),artists(name),album(name,release_date)))"
 )
 MAX_429_RETRIES = 5
@@ -82,11 +83,46 @@ class SpotifyClient:
 
     def _paginate(self, url: str, params: dict) -> list[dict]:
         items, body = [], self._get(url, params)
+        origin = urlsplit(url)
+        seen = {url}
+        expected_total = None
         while True:
-            items.extend(body.get("items") or [])
-            if not body.get("next"):
+            if (
+                not isinstance(body, dict)
+                or not isinstance(body.get("items"), list)
+                or any(not isinstance(item, dict) for item in body["items"])
+                or "next" not in body
+                or type(body.get("total")) is not int
+                or body["total"] < 0
+            ):
+                raise ValueError("Spotify pagination: incomplete page")
+            if expected_total is None:
+                expected_total = body["total"]
+            if body["total"] != expected_total:
+                raise ValueError("Spotify pagination: total changed during collection")
+            if "offset" in body and (
+                type(body["offset"]) is not int or body["offset"] != len(items)
+            ):
+                raise ValueError("Spotify pagination: unexpected offset")
+            items.extend(body["items"])
+            next_url = body["next"]
+            if next_url is None:
+                if len(items) != expected_total:
+                    raise ValueError("Spotify pagination: incomplete total")
                 return items
-            body = self._get(body["next"])
+            if not isinstance(next_url, str) or not next_url or next_url in seen:
+                raise ValueError("Spotify pagination: invalid or repeated next URL")
+            target = urlsplit(next_url)
+            if (
+                (target.scheme, target.netloc, target.path)
+                != (origin.scheme, origin.netloc, origin.path)
+                or target.fragment
+                or not body["items"]
+                or len(items) >= expected_total
+            ):
+                raise ValueError("Spotify pagination: invalid continuation")
+            seen.add(next_url)
+            body = self._get(next_url)
 
     # reads
     def me(self) -> dict:
@@ -105,7 +141,16 @@ class SpotifyClient:
         )
 
     def get_liked(self, market: str) -> list[dict]:
-        return self._paginate(f"{API}/v1/me/tracks", {"limit": 50, "market": market})
+        items = self._paginate(f"{API}/v1/me/tracks", {"limit": 50, "market": market})
+        for item in items:
+            track = item.get("track")
+            if (
+                not isinstance(track, dict)
+                or not isinstance(track.get("id"), str)
+                or not track["id"]
+            ):
+                raise ValueError("Spotify pagination: unidentified liked item")
+        return items
 
     def get_track(self, track_id: str, market: str) -> dict:
         return self._get(f"{API}/v1/tracks/{track_id}", {"market": market})
