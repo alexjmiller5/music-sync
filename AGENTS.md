@@ -89,7 +89,16 @@ runs in tests, locally, or on any future platform.
   errors stop the flow. Keep the pending key unchanged.
 - Hub patches group by exact present keys. Never turn omitted columns into
   nulls. Preserve membership identity and `added_at` through soft deletion
-  for seven-day undo. Un-heart/rule removal/expiry override dedupe re-adds.
+  as retained history. Explicit unlikes preserve curated memberships and create
+  a workspace-owned durable review exception before the baseline advances.
+  Existing exceptions block automatic re-liking on later curated additions.
+  Re-liking never restores intentionally removed curated memberships.
+  Smart rule removal/expiry still override dedupe re-adds.
+- Full observations precede reconciliation and enforcement previews. Review
+  state lives beside pending intent in `review-state.json.gz`, per workspace.
+  The optional `notion_review_page_id` and `notion_review_property_id` select
+  an existing review task by stable IDs; findings are deduplicated and never
+  truncated. Oversized or incomplete task properties fail without overwriting.
 - `Hub.push` adds one UTC millisecond `updated_at` per invocation where absent,
   preserving supplied timestamps and caller rows. Spotify `added_at` and
   `liked_at` are normalized to UTC milliseconds on the wire, including replay.
