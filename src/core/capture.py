@@ -102,7 +102,9 @@ def capture(
         return {"ok": False, "message": "no inbox playlist in life-data", "isrc": isrc}
     raw_items = spotify.get_playlist_items(inbox.id, settings.spotify_market)
     observed_items = [mirror_mod.item_from_raw(r) for r in raw_items]
-    existing = next((it for it in observed_items if it.isrc == isrc), None)
+    mirror_mod.validate_recording_aliases([resolved, *observed_items])
+    matches = [it for it in observed_items if it.isrc == isrc]
+    existing = matches[0] if matches else None
     if existing is not None and record_outcome:
         record_outcome("added")
     source_ref = f"raw/spotify-capture/{now.strftime('%Y-%m-%dT%H%M%S')}-{uuid4().hex}.json.gz"
@@ -160,19 +162,20 @@ def capture(
     if song_rows:
         hub.push("songs", song_rows)
     hub.insert_rows("provenance", [event_edge])
-    hub.push(
-        "playlist_songs",
-        [
-            {
-                "id": f"{inbox.id}:{isrc}",
-                "playlist_id": inbox.id,
-                "isrc": isrc,
-                "spotify_track_id": existing.track_id if existing else tr["id"],
-                "added_at": existing.added_at if existing else now_s,
-                "deleted_at": None,
-            },
-        ],
-    )
+    if len(matches) < 2:
+        hub.push(
+            "playlist_songs",
+            [
+                {
+                    "id": f"{inbox.id}:{isrc}",
+                    "playlist_id": inbox.id,
+                    "isrc": isrc,
+                    "spotify_track_id": existing.track_id if existing else tr["id"],
+                    "added_at": existing.added_at if existing else now_s,
+                    "deleted_at": None,
+                },
+            ],
+        )
     ref = str(payload.get("apple_music_id") or isrc)
     hub.push(
         "provenance",
@@ -200,10 +203,12 @@ def capture(
         ),
         key=lambda x: x.added_at,
     )
+    mirror_mod.validate_recording_aliases(items)
     extra = [i for i in items if i.isrc][
         : max(0, len([i for i in items if i.isrc]) - settings.inbox_cap)
     ]
-    if extra:
+    identities = [item.isrc for item in items if item.isrc]
+    if extra and len(set(identities)) == len(identities):
         spotify.remove_items(inbox.id, [i.uri for i in extra])
         hub.push(
             "playlist_songs", [{"id": f"{inbox.id}:{i.isrc}", "deleted_at": now_s} for i in extra]

@@ -140,7 +140,9 @@ class Spotify:
     def add_items(self, pid, uris):
         self._call("add", uris)
         for uri in uris:
-            self.items.append(raw(tid=uri.split(":")[-1]))
+            source = next((row for row in self.liked if row["item"]["uri"] == uri), None)
+            isrc = source["item"]["external_ids"]["isrc"] if source else A
+            self.items.append(raw(isrc, tid=uri.split(":")[-1]))
             self.snapshot += 1
             if self.partial_add:
                 self.partial_add = False
@@ -444,6 +446,45 @@ def test_capture_raw_archive_precedes_add_and_trim(settings, archive_store, mock
     assert [c[0] for c in sp.calls] == ["add", "remove"]
     assert sp.items[0]["item"]["id"] == "a"
     assert any(key.startswith("raw/spotify-capture/") for key in archive_store)
+
+
+@pytest.mark.parametrize("path", ["reconcile", "capture"])
+@pytest.mark.parametrize("second_isrc", [A, B])
+def test_duplicate_inbox_occurrences_hold_fifo_and_preserve_existing_membership(
+    settings, archive_store, path, second_isrc
+):
+    hub = Store(kind="inbox")
+    sp = Spotify([raw(A, "a"), raw(second_isrc, "a"), raw(B, "b")], liked=False)
+    settings.inbox_cap = 1
+    member = hub.tables["playlist_songs"][f"P:{A}"]
+    member["spotify_track_id"] = "previous-evidence"
+    member["added_at"] = "2020-01-01T00:00:00.000Z"
+    before = copy.deepcopy(member)
+    if second_isrc != A:
+        with pytest.raises(ValueError, match="conflicting recording"):
+            if path == "reconcile":
+                execute(settings, sp, hub)
+            else:
+                capture.capture({"title": "Song", "artist": "Artist"}, sp, hub, settings, NOW)
+        assert sp.calls == [] and hub.tables["playlist_songs"][f"P:{A}"] == before
+        return
+    if path == "reconcile":
+        out = execute(settings, sp, hub)
+        assert any("review" in flag for flag in out.flags)
+    else:
+        assert capture.capture({"title": "Song", "artist": "Artist"}, sp, hub, settings, NOW)["ok"]
+    assert sp.calls == []
+    assert hub.tables["playlist_songs"][f"P:{A}"] == before
+    assert len(sp.items) == 3
+
+
+def test_capture_revalidates_fresh_inbox_before_fifo(settings, archive_store, mocker):
+    sp, hub = Spotify(items=[], liked=False), Store(kind="inbox", member=False)
+    settings.inbox_cap = 1
+    mocker.patch.object(sp, "get_playlist_items", side_effect=[[], [raw(A, "a"), raw(B, "a")]])
+    with pytest.raises(ValueError, match="conflicting recording"):
+        capture.capture({"title": "Song", "artist": "Artist"}, sp, hub, settings, NOW)
+    assert [call[0] for call in sp.calls] == ["add"]
 
 
 def test_all_entrypoints_share_one_serial_modal_worker(monkeypatch):
