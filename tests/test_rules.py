@@ -131,6 +131,26 @@ def test_evaluate_all_predicates():
     assert out == {"R": {"A"}, "H": {"D"}, "F": {"A"}}
 
 
+def test_stable_playlist_references_survive_renames_and_duplicate_names():
+    m = make_mirror()
+    m.playlists["F"].rule = {"v": 1, "in_playlist_ids_any": ["PF"], "not_in_playlist_ids": ["PS"]}
+    m.playlists["PF"].name = m.playlists["PS"].name = "Renamed"
+    assert rules.evaluate(m, {}, {})["F"] == {"A", "D"}
+    m.playlists["F"].rule["in_playlist_ids_any"] = ["missing"]
+    errors = {}
+    assert "F" not in rules.evaluate(m, {}, errors)
+    assert "unknown playlist ID" in errors["F"]
+
+
+def test_ambiguous_legacy_playlist_names_are_held_for_review():
+    m = make_mirror()
+    m.playlists["PS"].name = "feel good"
+    errors = {}
+    out = rules.evaluate(m, {"feel good": "PF"}, errors)
+    assert "F" not in out
+    assert "ambiguous playlist" in errors["F"]
+
+
 def test_evaluate_records_error_and_skips_playlist_when_errors_dict_given():
     m = make_mirror()
     m.playlists["BAD"] = Playlist(

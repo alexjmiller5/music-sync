@@ -393,6 +393,13 @@ the text summary separates Spotify mutations from mirror patches.
 
 ## Rollout preview
 
+Playlist predicates should reference stable IDs through `in_playlist_ids_any`
+and `not_in_playlist_ids` lists. Renames do not affect those references;
+descriptions use the current display names. Unknown IDs and ambiguous legacy
+name references stop that rule for review. Duplicate inbox occurrences also
+pause FIFO trimming and membership replacement until the keeper is reviewed;
+they do not stop retaining genuine new recognition history.
+
 Followed-artist source collection is independently read-only:
 
 ```sh

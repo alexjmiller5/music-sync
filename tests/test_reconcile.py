@@ -52,6 +52,33 @@ def kinds(actions, kind):
     return [a for a in actions if a.kind == kind]
 
 
+@pytest.mark.parametrize("known_second", [False, True])
+def test_new_live_name_collision_cannot_change_smart_membership(known_second):
+    playlists = {
+        "P": pl("P", "Source", "curated"),
+        "S": pl("S", "Smart", "smart", {"v": 1, "in_playlist_any": ["Source"]}),
+    }
+    if known_second:
+        playlists["Q"] = pl("Q", "Other", "curated")
+    m = Mirror({"A": song("A")}, playlists, {}, [], set())
+    live = Live(
+        {
+            "P": live_pl("P", "Source", [item("A")]),
+            "Q": live_pl("Q", "Source", []),
+            "S": live_pl("S", "Smart", [item("A")]),
+        },
+        {"A": item("A")},
+        {},
+    )
+    acts = reconcile.plan(m, live, NOW)
+    assert not [
+        a
+        for a in acts
+        if a.playlist_id == "S" and a.kind in {"remove_item", "add_item", "set_description"}
+    ]
+    assert any("ambiguous playlist" in a.text for a in kinds(acts, "flag"))
+
+
 def test_new_song_keeps_observed_metadata_without_derivation():
     live = Live({}, {"A": item("A", track_id="observed")}, {})
     actions = reconcile.plan(Mirror({}, {}, {}, [], set()), live, NOW)
@@ -533,7 +560,7 @@ def test_no_isrc_items_are_one_flag_not_rows():
     )
 
 
-def test_inbox_exempt_from_relink_and_dedupe():
+def test_inbox_duplicates_are_reviewed_without_relink_or_dedupe():
     m = base()
     m.songs["A"].spotify_ids = ["tA2", "tA"]
     items = [
@@ -552,7 +579,7 @@ def test_inbox_exempt_from_relink_and_dedupe():
     acts = reconcile.plan(m, live, NOW)
     assert not [a for a in kinds(acts, "remove_item") if a.playlist_id == "IN"]
     assert not [a for a in kinds(acts, "add_item") if a.playlist_id == "IN"]
-    assert not [a for a in kinds(acts, "flag") if a.reason == "attention"]
+    assert any("keeper" in a.text for a in kinds(acts, "flag") if a.reason == "attention")
 
 
 def test_new_unliked_curated_song_has_one_edge_created_row_1():
