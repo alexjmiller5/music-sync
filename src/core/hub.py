@@ -38,13 +38,10 @@ class Hub:
     def pull(
         self, table: str, columns: list[str], since: str = "", where: dict | None = None
     ) -> list[dict]:
-        body = {"table": table, "columns": columns, "since": since}
-        if where:
-            body["where"] = where
-        return self._post("/v1/rows/pull", body)["rows"]
+        return self.scan(table, columns, where=where, since=since)
 
-    def scan(self, table, columns, *, where=None):
-        body = {"table": table, "columns": columns, "since": "", "limit": 200}
+    def scan(self, table, columns, *, where=None, since=""):
+        body = {"table": table, "columns": columns, "since": since, "limit": 200}
         if where is not None:
             body["where"] = where
         rows, seen = [], set()
@@ -73,6 +70,26 @@ class Hub:
             or receipt["inserted"] + receipt["existing"] != [row["id"]]
         ):
             raise HubError("invalid or rejected insert receipt")
+        return receipt
+
+    def insert_rows(self, table, rows):
+        if not rows:
+            return {"inserted": [], "existing": [], "rejected": []}
+        if len(rows) > 100:
+            raise HubError("insert batch exceeds 100 rows")
+        ids = [row["id"] for row in rows]
+        if len(set(ids)) != len(ids) or any(set(row) != set(rows[0]) for row in rows):
+            raise HubError("insert rows require unique IDs and identical columns")
+        receipt = self._post(
+            "/v1/rows/insert", {"table": table, "columns": sorted(rows[0]), "rows": rows}
+        )
+        if not all(
+            isinstance(receipt.get(key), list) for key in ("inserted", "existing", "rejected")
+        ):
+            raise HubError("invalid insert receipt")
+        accounted = receipt["inserted"] + receipt["existing"]
+        if receipt["rejected"] or len(accounted) != len(ids) or set(accounted) != set(ids):
+            raise HubError("incomplete or rejected insert receipt")
         return receipt
 
     def patch(self, table, row_id, values, revision):

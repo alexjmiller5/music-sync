@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import httpx
 import structlog
 
-from core import actions, archive, curation, flags, mirror, metadata
+from core import actions, archive, curation, flags, history, mirror, metadata
 from core import reconcile as reconcile_mod
 from core.config import Settings
 from core.hub import Hub
@@ -110,6 +110,11 @@ def reconcile_run(
             market=settings.spotify_market,
             curation_likes=to_like,
         )
+        occurrence_actions, fingerprints = history.occurrence_evidence(
+            live.raw, source_ref, (previous or {}).get("occurrence_fingerprints", {})
+        )
+        plan = [*plan, *occurrence_actions]
+        next_curation["occurrence_fingerprints"] = fingerprints
         confirmed_on_success = {a.isrc for a in plan if a.kind == "like"} if writes else set()
         next_curation["baseline"]["own_likes"] = sorted(confirmed_on_success)
         next_curation["pending_likes"] = sorted(
@@ -163,6 +168,29 @@ def reconcile_run(
         pending=pending["operations"] if pending else None,
         market=settings.spotify_market,
     )
+    if dry_run and not pending:
+        out.snapshot = {
+            "observed_at": now.isoformat(),
+            "market": settings.spotify_market,
+            "retained_remotely": False,
+            "atomic": False,
+            "spotify": live.raw,
+            "revisions": m.revisions,
+            "mirror": {
+                "observations": m.observations,
+                "captures": [list(pair) for pair in sorted(m.captures)],
+                "songs": [asdict(row) for row in m.songs.values()],
+                "playlists": [asdict(row) for row in m.playlists.values()],
+                "memberships": [asdict(row) for row in m.memberships.values()],
+                "deleted_memberships": [asdict(row) for row in m.deleted_memberships],
+            },
+            "migration_candidates": curation.bootstrap_candidates(
+                set(live.liked), members, next_curation["exceptions"]
+            ),
+            "curation_before": previous,
+            "curation_after_if_applied": next_curation,
+            "planner_settings": {"inbox_cap": settings.inbox_cap, "undo_days": settings.undo_days},
+        }
     out.review_items = [
         {"id": f"curation-unlike:{isrc}", "isrc": isrc, **item}
         for isrc, item in (next_curation or {}).get("exceptions", {}).items()

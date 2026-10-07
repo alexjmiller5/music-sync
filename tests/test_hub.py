@@ -40,11 +40,11 @@ def test_pull_posts_table_columns_since_with_bearer_and_user_agent():
 
     def handler(req):
         seen["url"], seen["body"], seen["h"] = str(req.url), json.loads(req.content), req.headers
-        return httpx.Response(200, json={"rows": [{"id": "A"}]})
+        return httpx.Response(200, json={"next_cursor": None, "rows": [{"id": "A"}]})
 
     assert make(handler).pull("songs", ["id"]) == [{"id": "A"}]
     assert seen["url"] == "https://hub.test/v1/rows/pull"
-    assert seen["body"] == {"table": "songs", "columns": ["id"], "since": ""}
+    assert seen["body"] == {"table": "songs", "columns": ["id"], "since": "", "limit": 200}
     assert seen["h"]["Authorization"] == "Bearer tok"
     assert "music-sync" in seen["h"]["User-Agent"]
 
