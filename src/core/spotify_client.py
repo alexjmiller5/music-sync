@@ -81,12 +81,14 @@ class SpotifyClient:
     def _get(self, url: str, params: dict | None = None):
         return self._request("GET", url, params=params)
 
-    def _paginate(self, url: str, params: dict) -> list[dict]:
+    def _paginate(self, url: str, params: dict, *, page_key: str | None = None) -> list[dict]:
         items, body = [], self._get(url, params)
         origin = urlsplit(url)
         seen = {url}
         expected_total = None
         while True:
+            if page_key and isinstance(body, dict):
+                body = body.get(page_key)
             if (
                 not isinstance(body, dict)
                 or not isinstance(body.get("items"), list)
@@ -151,6 +153,15 @@ class SpotifyClient:
             ):
                 raise ValueError("Spotify pagination: unidentified liked item")
         return items
+
+    def get_followed_artists(self) -> list[dict]:
+        rows = self._paginate(
+            f"{API}/v1/me/following", {"type": "artist", "limit": 50}, page_key="artists"
+        )
+        ids = [row.get("id") for row in rows]
+        if any(not isinstance(id, str) or not id for id in ids) or len(set(ids)) != len(ids):
+            raise ValueError("Spotify pagination: invalid or repeated followed artist identity")
+        return rows
 
     def get_track(self, track_id: str, market: str) -> dict:
         return self._get(f"{API}/v1/tracks/{track_id}", {"market": market})
