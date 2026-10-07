@@ -43,17 +43,26 @@ Playlists come in three kinds:
   nothing (not liked by being there, not removed by un-hearting). Songs that
   age out unliked stay in the catalog with their capture history.
 - **curated** - every other playlist the user edits by hand. The reconciler
-  never adds or removes songs here except as a consequence of hearting
-  (below) or relinking an unplayable track.
+  preserves membership independently of likes. Duplicate keepers and
+  replacement aliases require review.
 - **smart** - membership = a rule over the pool (every liked song), fully
   materialized each run; the description is rewritten each run.
 
-The heart in the Spotify app is the only gesture needed to sort a song into
-every smart playlist it matches: liking a song puts it in the pool, adding an
-unliked song to a curated playlist likes it, un-hearting removes it from
-every curated and smart playlist (soft-deleted, restorable within 7 days by
-re-liking). The hourly cron does the diffing; see spec section 5 for the
-full event table.
+Liking a song makes it eligible for smart rules. Unliking never removes it
+from a curated playlist, and re-liking never restores a removed curated item.
+After a complete baseline, a newly curated unliked song is proposed for liking.
+A recording previously observed both liked and curated, then unliked while
+still curated, becomes one persistent review exception and is not silently
+re-liked, including through another curated playlist. These exceptions are
+returned as `review_items`; they do not generate notifications or automatically
+activate a Tasks destination.
+
+The first complete observation does not execute a migration of existing
+curated-but-unliked songs. That migration needs an explicit reviewed selection.
+Unknown playlists need classification before they can authorize auto-likes.
+Duplicate occurrences stay unchanged for keeper/metadata review; smart-rule
+changes for a playlist with duplicate conflicts are held rather than partially
+removing one alias.
 
 ## Endpoints
 
@@ -353,9 +362,9 @@ normal reconciliation is disabled and capture traffic is paused.
 
 `run.reconcile(..., writes=False)` is an observation-only import: full owned
 playlist pulls, actual liked values and complete observed membership rows.
-It does not enforce auto-like, FIFO, dedupe, relink, undo, rules or expiry.
-New owned playlists are classified curated before event detection during
-normal enforcement, so their initial additions get liked exactly once.
+It does not enforce auto-like, FIFO, rules or expiry. It retains newly detected
+auto-like intent separately so an import cannot consume it. Unknown playlist
+classification and duplicate membership aliases remain unresolved for review.
 
 Every reconcile (including recovery) archives a fresh raw pull under
 `raw/spotify-pull/`; captures archive the inbox before adding or trimming
@@ -368,10 +377,19 @@ bucket. It checkpoints after each successful batch, stops at the first
 Spotify, hub or checkpoint failure, and clears the object to JSON null only
 when all batches finish. A new run resumes this plan before adopting a new
 mirror baseline. Adds check live URI presence, so retries after uncertain
-responses or partial 100-item client batches do not add duplicates. Same-URI
-repair retains the re-add intent across crashes. Hub patches merge by ID
-and transmit only exact sets of present columns, preserving undo identity
+responses or partial 100-item client batches do not add duplicates. A like
+attempt is checkpointed before the request: uncertain outcomes require positive
+current evidence or review, never a blind retry that could reverse an unlike.
+Hub patches merge by ID and transmit only present columns, preserving identity
 and timestamps; explicit null remains an intentional update.
+
+Curation state lives under `music-sync/curation/<workspace-hash>.json.gz`,
+separate from catalog rows. It records the last full observation's raw archive
+reference, liked/curated sets, confirmed app-origin likes, pending like intent,
+and persistent unlike exceptions with before/after archive references. Its
+next version is embedded in pending intent and committed only after all batches
+succeed. Older mutating recovery plans are held for review because they may
+contain removals from a superseded policy. Dry runs update none of this state.
 `Hub.push` supplies one `updated_at` per invocation in UTC milliseconds when
 absent, preserving any caller-supplied value. Spotify `added_at` and `liked_at`
 are converted to UTC milliseconds ending in `Z` for the hub validator, including
