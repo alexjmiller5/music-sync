@@ -124,6 +124,10 @@ runs in tests, locally, or on any future platform.
   Spotify collection requires complete pages and stable totals, rejects repeated
   or foreign continuation URLs, and checks returned offsets. Any failure stops
   before baseline advancement or mutations; a missing page is never an unlike.
+  A missing/changed recording identity on a known liked Spotify alias also stops
+  collection for review. `scripts/followed_artists.py --output <private-path>`
+  exports the complete followed-artist observation with the existing grant;
+  no artist import, follow/unfollow, credential change or inferred follow date.
 - Changed raw playlist contents produce occurrence-specific `insert_edge`
   provenance through create-only rows/insert, in bounded 100-row batches. Require
   every ID in the receipt; retain pending intent on partial/invalid receipts.

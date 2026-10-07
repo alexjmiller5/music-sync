@@ -50,6 +50,21 @@ def test_unlike_preview_preserves_curated_and_has_zero_writes(settings, archive_
     assert hub.tables == original and sp.calls == [] and archive_store == {}
 
 
+@pytest.mark.parametrize("reported", [None, "USAAA2600009"])
+def test_changed_recording_identity_in_saved_track_is_not_an_unlike(
+    settings, archive_store, reported
+):
+    hub, sp = Store(), Spotify()
+    assert not execute(settings, sp, hub).errors
+    before = copy.deepcopy((hub.tables, archive_store))
+    sp.calls.clear()
+    sp.liked[0]["item"]["external_ids"] = {"isrc": reported}
+    with pytest.raises(ValueError, match="Liked recording identity"):
+        execute(settings, sp, hub)
+    assert (hub.tables, archive_store) == before
+    assert sp.calls == []
+
+
 def test_bootstrap_is_preview_only_then_new_curated_song_auto_likes(settings, archive_store):
     hub, sp = Store(liked=0), Spotify(liked=False)
     assert not execute(settings, sp, hub).errors
