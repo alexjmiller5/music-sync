@@ -47,15 +47,18 @@ def validate(rule: dict) -> None:
         if not isinstance(fy, dict) or not fy or set(fy) - {"lt", "gte", "between"}:
             raise RuleError("first_year: object with lt / gte / between")
         for k in ("lt", "gte"):
-            if k in fy and not isinstance(fy[k], int):
+            if k in fy and type(fy[k]) is not int:
                 raise RuleError(f"first_year.{k}: int")
         if "between" in fy and not (
             isinstance(fy["between"], list)
             and len(fy["between"]) == 2
-            and all(isinstance(x, int) for x in fy["between"])
+            and all(type(x) is int for x in fy["between"])
+            and fy["between"][0] <= fy["between"][1]
         ):
             raise RuleError("first_year.between: [a, b]")
-    if "captured_by" in rule and rule["captured_by"] not in CAPTURE_KINDS:
+    if "captured_by" in rule and (
+        not isinstance(rule["captured_by"], str) or rule["captured_by"] not in CAPTURE_KINDS
+    ):
         raise RuleError(f"captured_by: one of {sorted(CAPTURE_KINDS)}")
     if "liked_after" in rule and not (
         isinstance(rule["liked_after"], str) and DATE_RE.match(rule["liked_after"])
@@ -180,7 +183,7 @@ def evaluate(
     db = load_sqlite(mirror)
     out = {}
     for p in mirror.playlists.values():
-        if p.kind != "smart" or not p.rule:
+        if p.kind != "smart":
             continue
         try:
             sql = f"SELECT id FROM songs s WHERE s.liked = 1 AND {to_sql(p.rule, playlist_ids)}"
@@ -196,8 +199,7 @@ def evaluate(
 def check_sql(smart: list[Playlist], playlist_ids: dict[str, str]) -> str:
     parts = [
         f"SELECT ps.id FROM playlist_songs ps JOIN songs s ON s.id = ps.isrc WHERE ps.deleted_at IS NULL "
-        f"AND ps.playlist_id = {_q(p.id)} AND NOT (s.liked = 1 AND {to_sql(p.rule, playlist_ids)})"
+        f"AND ps.playlist_id = {_q(p.id)} AND (s.liked = 1 AND {to_sql(p.rule, playlist_ids)}) IS NOT TRUE"
         for p in smart
-        if p.rule
     ]
     return " UNION ALL ".join(parts) if parts else "SELECT id FROM playlist_songs WHERE 0"

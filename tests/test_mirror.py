@@ -32,7 +32,9 @@ class FakeHub:
 
     def pull(self, table, columns, since="", where=None):
         if table == "provenance":
-            assert not set(columns) - PROVENANCE_COLUMNS, "unknown provenance projection"
+            assert not set(columns) - (PROVENANCE_COLUMNS | {"hub_at"}), (
+                "unknown provenance projection"
+            )
         rows = self.tables.get(table, [])
         rows = [r for r in rows if all(r.get(k) == v for k, v in (where or {}).items())]
         return [{c: r.get(c) for c in columns} for r in rows]

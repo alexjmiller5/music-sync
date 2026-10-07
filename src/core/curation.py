@@ -60,3 +60,12 @@ def advance(previous, liked, members, source_ref, *, own_likes=frozenset()):
         },
         "exceptions": exceptions,
     }
+
+
+def bootstrap_candidates(liked, members, exceptions):
+    """Review-only selection; never an implicit instruction to mutate likes."""
+    ids = {isrc for _, isrc in members} - liked - set(exceptions)
+    return [
+        {"isrc": isrc, "source_playlist_ids": sorted(pid for pid, i in members if i == isrc)}
+        for isrc in sorted(ids)
+    ]

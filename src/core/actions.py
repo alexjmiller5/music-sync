@@ -13,6 +13,7 @@ HUB_TABLE = {
     "upsert_membership": "playlist_songs",
     "delete_membership": "playlist_songs",
     "edge": "provenance",
+    "insert_edge": "provenance",
 }
 SPOTIFY_WRITE_KINDS = {
     "like",
@@ -33,6 +34,7 @@ class RunLog:
     errors: list[str] = field(default_factory=list)
     planned: list[dict] = field(default_factory=list)
     review_items: list[dict] = field(default_factory=list)
+    snapshot: dict | None = None
 
     def summary(self) -> str:
         lines = [f"applied {k}: {v}" for k, v in sorted(self.applied.items()) if v]
@@ -75,13 +77,18 @@ def _batches(actions: list[Action], writes: bool) -> list[dict]:
     for table in ("songs", "playlists", "playlist_songs", "provenance"):
         rows, counts = {}, defaultdict(int)
         for a in actions:
-            if HUB_TABLE.get(a.kind) == table:
+            if a.kind != "insert_edge" and HUB_TABLE.get(a.kind) == table:
                 rows.setdefault(a.row["id"], {}).update(a.row)
                 counts[a.kind] += 1
         if rows:
             ops.append(
                 {"kind": "hub", "table": table, "rows": list(rows.values()), "counts": dict(counts)}
             )
+    evidence = [a.row for a in actions if a.kind == "insert_edge"]
+    for index in range(0, len(evidence), 100):
+        ops.append(
+            {"kind": "hub_insert", "table": "provenance", "rows": evidence[index : index + 100]}
+        )
     return ops
 
 
@@ -106,7 +113,7 @@ def apply(
     # Copy intent before checkpointing, including unstamped recovery batches.
     ops = [
         {**op, "rows": [{"updated_at": stamp, **row} for row in op["rows"]]}
-        if op["kind"] == "hub"
+        if op["kind"] in {"hub", "hub_insert"}
         else dict(op)
         for op in ops
     ]
@@ -117,7 +124,10 @@ def apply(
         for index, op in enumerate(ops):
             kind, pid = op["kind"], op.get("playlist_id")
             operation = f"{kind} {pid or op.get('table', '')}".strip()
-            if kind == "hub":
+            if kind == "hub_insert":
+                hub.insert_rows(op["table"], op["rows"])
+                out.applied["insert_edge"] += len(op["rows"])
+            elif kind == "hub":
                 hub.push(op["table"], op["rows"])
                 for name, count in op["counts"].items():
                     out.applied[name] += count
