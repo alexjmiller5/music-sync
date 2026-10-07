@@ -6,7 +6,7 @@ import re
 from uuid import uuid4
 from datetime import datetime
 
-from core import archive, metadata
+from core import archive, metadata, recognition
 from core import mirror as mirror_mod
 from core.config import Settings
 from core.model import Live
@@ -66,10 +66,12 @@ def capture(
     now: datetime,
     resolved_track: dict | None = None,
     record_outcome=None,
+    client_id: str | None = None,
 ) -> dict:
     title, artist = (payload.get("title") or "").strip(), (payload.get("artist") or "").strip()
     if not title or not artist:
         return {"ok": False, "message": "title and artist required", "isrc": None}
+    recognition.validate_time(payload.get("recognized_at"))
     pending = archive.get(settings, archive.pending_key(settings))
     if pending and json.loads(gzip.decompress(pending)):
         return {
@@ -122,6 +124,7 @@ def capture(
                             "apple_music_id",
                             "shazam_url",
                             "isrc",
+                            "recognized_at",
                         )
                         if key in payload
                     },
@@ -138,6 +141,7 @@ def capture(
         source_ref=source_ref,
         market=settings.spotify_market,
     )
+    event_edge = recognition.retain(settings, payload, now, source_ref, isrc, client_id)
     now_s = _iso(now)
     if existing is None:
         if record_outcome:
@@ -155,6 +159,7 @@ def capture(
             song_rows.append(row)
     if song_rows:
         hub.push("songs", song_rows)
+    hub.insert_rows("provenance", [event_edge])
     hub.push(
         "playlist_songs",
         [

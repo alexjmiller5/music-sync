@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from core import run  # noqa: E402
 from core.config import Settings  # noqa: E402
+from core.hub import HubError  # noqa: E402
 
 
 def main(argv=None):
@@ -30,8 +31,17 @@ def main(argv=None):
         except Exception as exc:
             # Transport and validation messages may contain private response data.
             # Emit only the exception category; do not print the original traceback.
-            json.dump({"dry_run": True, "errors": [type(exc).__name__], "incomplete": True}, stream)
-            print(json.dumps({"dry_run": True, "incomplete": True, "error": type(exc).__name__}))
+            failure = (
+                exc.diagnostic if isinstance(exc, HubError) else {"category": type(exc).__name__}
+            )
+            receipt = {
+                "dry_run": True,
+                "errors": [type(exc).__name__],
+                "incomplete": True,
+                "failure": failure,
+            }
+            json.dump(receipt, stream)
+            print(json.dumps(receipt))
             return 1
         stream.write(document + "\n")
     print(
