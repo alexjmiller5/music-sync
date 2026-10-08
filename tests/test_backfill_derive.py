@@ -666,7 +666,8 @@ class BoundedService(Service):
             return httpx.Response(
                 200,
                 json={
-                    "rows": [r for r in response.json()["rows"] if r["id"] == body["where"]["id"]]
+                    "next_cursor": None,
+                    "rows": [r for r in response.json()["rows"] if r["id"] == body["where"]["id"]],
                 },
             )
         response = super().respond(request)
@@ -957,9 +958,10 @@ def test_large_refresh_preview_pages_songs_but_selects_only_explicit_ids():
         def respond(self, request):
             if request.url.path == "/v1/rows/pull":
                 body = json.loads(request.content)
-                if body.get("limit"):
+                # Every pull pages; only the unfiltered preview walks the table.
+                if "where" not in body:
                     assert body["table"] == "songs" and body["limit"] == 200
-                    assert "where" not in body and "ids" not in body
+                    assert "ids" not in body
                     assert "id" in body["columns"] and "hub_at" in body["columns"]
                     self.pages.append(body.get("after"))
                     rows = list(self.rows.values())
@@ -1125,3 +1127,45 @@ def test_refresh_does_not_confuse_omitted_year_output_with_null_write(previous):
     assert out["completed_recordings"] == 0
     assert "omits output" in out["failed"][0]["errors"][0]["error"]
     assert service.rows["S0000"]["first_year"] == previous
+
+
+def test_bounded_source_refresh_rederives_reused_genres_then_follows_year():
+    service = BoundedService()
+    for id in service.rows:
+        service.persist(id, "deezer_genres", {"deezer_genres": [], "deezer_year": 2010})
+    service.outputs["deezer_genres"] = {"deezer_genres": ["Rap/Hip Hop"], "deezer_year": 2010}
+    out = backfill_derive.run(service.hub, "songs", "deezer_genres", ids=["S0000"])
+    assert service.calls == [] and out["skipped"] == 2
+    out = backfill_derive.run(service.hub, "songs", "deezer_genres", ids=["S0000"], refresh=True)
+    assert service.calls == [("S0000", "deezer_genres"), ("S0000", "first_year")]
+    assert service.rows["S0000"]["deezer_genres"] == ["Rap/Hip Hop"]
+    assert service.rows["S0001"]["deezer_genres"] == []
+    assert out["completed_recordings"] == 1 and out["failed"] == []
+    assert out["rows"] == [
+        {
+            "id": "S0000",
+            "before": [],
+            "before_hub_at": None,
+            "after_hub_at": None,
+            "after": ["Rap/Hip Hop"],
+            "status": "complete",
+        }
+    ]
+    assert {table for table, _ in service.read_ids} == {"songs", "provenance"}
+    assert all(id.startswith(("S0000", "songs:S0000:")) for _, id in service.read_ids)
+
+
+def test_bounded_source_refresh_reports_unchanged_empty_genres_as_complete():
+    service = BoundedService()
+    service.persist("S0000", "deezer_genres", {"deezer_genres": [], "deezer_year": 2010})
+    service.outputs["deezer_genres"] = {"deezer_year": 2010}
+    out = backfill_derive.run(service.hub, "songs", "deezer_genres", ids=["S0000"], refresh=True)
+    assert out["rows"][0]["before"] == out["rows"][0]["after"] == []
+    assert out["failed"] == []
+
+
+def test_bounded_selection_requires_a_source_column():
+    service = BoundedService()
+    with pytest.raises(ValueError):
+        backfill_derive.run(service.hub, "songs", None, ids=["S0000"], refresh=True)
+    assert service.calls == []

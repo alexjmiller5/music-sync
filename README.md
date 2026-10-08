@@ -237,8 +237,10 @@ operator's own setup is the `default` workspace (env). Another person is a
 workspace record holding their life-data hub, Notion target and limits, plus
 the Spotify refresh token they grant themselves through a **Connect Spotify**
 link (`just workspace connect-link <id>`). Their Cochlea devices get
-tokens bound to that workspace (`just clients issue "<device>" <id>`). See
-AGENTS.md for the mechanics.
+tokens bound to that workspace (`just clients issue "<device>" <id>`).
+Workspace secrets are encrypted at rest with `WORKSPACE_SECRET_KEY`, a Fernet
+key in the ENV item (`python -c "from cryptography.fernet import Fernet;
+print(Fernet.generate_key().decode())"`). See AGENTS.md for the mechanics.
 
 ## Commands
 

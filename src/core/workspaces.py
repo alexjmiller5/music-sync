@@ -6,8 +6,9 @@ acts for.
 record in the app's own R2 state (one registry object) that overrides the
 per-user Settings fields: its Spotify refresh token (from Connect Spotify,
 core/spotify_connect.py), its life-data hub, its Notion flags target, its
-limits. The app's Spotify developer app and R2 bucket are app infrastructure
-every workspace shares. Adding a person = one record + a Connect Spotify link
+limits. Secret fields are encrypted at rest with WORKSPACE_SECRET_KEY. The
+app's Spotify developer app and R2 bucket are app infrastructure every
+workspace shares. Adding a person = one record + a Connect Spotify link
 + capture clients bound to it; no user database, no code change.
 """
 
@@ -15,6 +16,8 @@ import gzip
 import json
 import os
 import re
+
+from cryptography.fernet import Fernet
 
 from core import archive
 from core.config import Settings
@@ -56,9 +59,45 @@ class UnknownWorkspace(KeyError):
     pass
 
 
+ENCRYPTED = "fernet:"
+
+
+def _cipher(settings: Settings) -> Fernet | None:
+    return Fernet(settings.workspace_secret_key) if settings.workspace_secret_key else None
+
+
 def _registry(settings: Settings) -> dict:
     data = archive.get(settings, REGISTRY_KEY)
-    return json.loads(gzip.decompress(data)) if data else {}
+    registry = json.loads(gzip.decompress(data)) if data else {}
+    for record in registry.values():
+        for field in SECRET_FIELDS & record.keys():
+            value = record[field]
+            if isinstance(value, str) and value.startswith(ENCRYPTED):
+                cipher = _cipher(settings)
+                if cipher is None:
+                    raise InvalidWorkspace(
+                        "WORKSPACE_SECRET_KEY is required to read workspace secrets"
+                    )
+                record[field] = cipher.decrypt(value[len(ENCRYPTED) :].encode()).decode()
+    return registry
+
+
+def _write(settings: Settings, registry: dict) -> None:
+    """Secret fields are encrypted at rest; a legacy plaintext value is
+    re-encrypted by any save, since the whole registry is rewritten."""
+    cipher = _cipher(settings)
+    stored = {}
+    for workspace, record in registry.items():
+        stored[workspace] = dict(record)
+        for field in SECRET_FIELDS & record.keys():
+            if not record[field]:
+                continue
+            if cipher is None:
+                raise InvalidWorkspace(
+                    "WORKSPACE_SECRET_KEY is required to store workspace secrets"
+                )
+            stored[workspace][field] = ENCRYPTED + cipher.encrypt(record[field].encode()).decode()
+    archive.put(settings, REGISTRY_KEY, gzip.compress(json.dumps(stored, sort_keys=True).encode()))
 
 
 def save(settings: Settings, workspace: str, **fields) -> None:
@@ -74,9 +113,7 @@ def save(settings: Settings, workspace: str, **fields) -> None:
     record = registry.get(workspace, {})
     record.update({k: allowed[k](v) for k, v in fields.items()})
     registry[workspace] = record
-    archive.put(
-        settings, REGISTRY_KEY, gzip.compress(json.dumps(registry, sort_keys=True).encode())
-    )
+    _write(settings, registry)
 
 
 def remove(settings: Settings, workspace: str) -> bool:
@@ -84,9 +121,7 @@ def remove(settings: Settings, workspace: str) -> bool:
     if workspace == DEFAULT or workspace not in registry:
         return False
     del registry[workspace]
-    archive.put(
-        settings, REGISTRY_KEY, gzip.compress(json.dumps(registry, sort_keys=True).encode())
-    )
+    _write(settings, registry)
     return True
 
 

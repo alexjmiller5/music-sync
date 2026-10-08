@@ -202,6 +202,12 @@ runs in tests, locally, or on any future platform.
   life-data hub, Notion flags target, limits) via
   `workspaces.settings_for(base, id)`; the Spotify developer app and R2 bucket
   are shared app infrastructure. `Settings.workspace` names the active one.
+- Workspace secrets (`spotify_refresh_token`, `life_hub_token`,
+  `notion_token`) are Fernet-encrypted at rest with `WORKSPACE_SECRET_KEY`
+  (ENV item, Modal secret `music-sync`); other fields stay plain. Saving a
+  secret without the key is refused, and any save rewrites the whole registry,
+  re-encrypting a legacy plaintext value. Losing or rotating the key means
+  re-entering every workspace's secrets.
 - Capture clients carry their workspace; the consumer capture runs entirely
   in it (resolve, capture, hub, flags). Pending-reconcile intent is per
   workspace (`archive.pending_key`; default keeps the original key).

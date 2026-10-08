@@ -53,10 +53,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--col", choices=SOURCES, help="one source group, then refresh first_year")
     p.add_argument("--batch-size", type=int, default=BATCH_SIZE)
     p.add_argument(
-        "--ids-file", type=Path, help="JSON array of explicit recording IDs (first_year only)"
+        "--ids-file", type=Path, help="JSON array of explicit recording IDs (requires --col)"
     )
     p.add_argument(
-        "--refresh", action="store_true", help="recompute selected years despite matching proofs"
+        "--refresh",
+        action="store_true",
+        help="re-derive the selected --col despite matching proofs",
     )
     p.add_argument(
         "--dry-run", action="store_true", help="read and report selection without deriving"
@@ -126,13 +128,16 @@ def run(
             or len(set(ids)) != len(ids)
         ):
             raise ValueError("ids-file must contain a nonempty JSON array of unique nonempty IDs")
-        if col != "first_year":
-            raise ValueError("bounded selection currently supports --col first_year only")
+        if col is None:
+            raise ValueError("bounded selection requires --col")
         ids = sorted(ids)
     if refresh and ids is None:
         raise ValueError("--refresh requires --ids-file; no unbounded refresh")
+    # A year repair verifies canonical years; a source refresh re-derives only
+    # the selected source and lets first_year follow its normal confirmation.
+    repair = refresh and col == "first_year"
     require_observed_contract(hub)
-    if refresh:
+    if repair:
         properties = [p for p in hub.catalog()["properties"] if not p.get("deleted_at")]
         bound = [
             (p.get("tbl"), p.get("col"))
@@ -163,7 +168,7 @@ def run(
 
     def read_state(selected=None, include_proofs=True):
         if ids is not None:
-            if selected is None and refresh and len(ids) > 200:
+            if selected is None and repair and len(ids) > 200:
                 # The API has equality filters only. Large previews use its
                 # bounded pages, then retain exactly the explicit selection.
                 found, after, seen = {}, None, set()
@@ -188,11 +193,12 @@ def run(
                 current.update(found)
                 return proofs, current
             selected = ids if selected is None else selected
+            fields = [f for group in groups for f in SOURCES[group][1]]
             requests = [
                 (name, row_id, columns)
                 for song_id in selected
                 for name, row_id, columns in (
-                    ("provenance", f"{table}:{song_id}:first_year", PROOF_COLS),
+                    *(("provenance", f"{table}:{song_id}:{f}", PROOF_COLS) for f in fields),
                     (table, song_id, [*COLS, "liked", "liked_at"]),
                 )
                 if include_proofs or name != "provenance"
@@ -287,7 +293,8 @@ def run(
                 raise HubError(f"selected ID disappeared before planning: {row_id}")
             row = current.get(row_id, {"id": row_id})
             needs_refresh = source == "first_year" and row_id in refresh_year
-            if not refresh and not needs_refresh and complete(row, table, source, proofs):
+            forced = refresh and source == col
+            if not forced and not needs_refresh and complete(row, table, source, proofs):
                 out["skipped"] += 1
                 done[row_id].add(source)
                 continue
@@ -319,6 +326,7 @@ def run(
                             before, latest = baseline[row_id], current.get(row_id, {})
                             if row_id not in current or (
                                 refresh
+                                and source == col
                                 and any(
                                     latest.get(c) != before.get(c)
                                     for c in (*protected, "first_year")
@@ -358,7 +366,7 @@ def run(
                                 "col": source,
                                 "error": "unresolved: source fields/proofs not confirmed",
                             }
-                    if refresh:
+                    if repair:
                         for row_id in unresolved:
                             if row_id in failed:
                                 continue
@@ -489,15 +497,26 @@ def run(
     )
     if ids is not None:
         failed_ids = {e["id"] for e in out["failed"]}
+        field = SOURCES[col][1][0]
         out["rows"] = [
             {
                 "id": row_id,
-                "before": baseline[row_id].get("first_year"),
+                "before": baseline[row_id].get(field),
                 "before_hub_at": baseline[row_id].get("hub_at"),
                 "after_hub_at": current.get(row_id, {}).get("hub_at"),
-                "expected": expected_year(baseline[row_id]),
-                **({"expected_omitted": True} if expected_year(baseline[row_id]) is None else {}),
-                "after": current.get(row_id, {}).get("first_year"),
+                **(
+                    {
+                        "expected": expected_year(baseline[row_id]),
+                        **(
+                            {"expected_omitted": True}
+                            if expected_year(baseline[row_id]) is None
+                            else {}
+                        ),
+                    }
+                    if col == "first_year"
+                    else {}
+                ),
+                "after": current.get(row_id, {}).get(field),
                 "status": "failed"
                 if row_id in failed_ids
                 else "complete"

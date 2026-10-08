@@ -81,11 +81,32 @@ def test_pending_reconcile_state_is_per_workspace(settings, objects):
     )
 
 
-def test_registry_is_one_gzipped_json_object(settings, objects):
-    workspaces.save(settings, "friend", notion_token="n")
-    assert json.loads(gzip.decompress(objects[workspaces.REGISTRY_KEY])) == {
-        "friend": {"notion_token": "n"}
-    }
+def test_registry_is_one_gzipped_json_object_with_secrets_encrypted(settings, objects):
+    workspaces.save(settings, "friend", notion_token="n-secret", spotify_market="GB")
+    stored = json.loads(gzip.decompress(objects[workspaces.REGISTRY_KEY]))
+    assert stored["friend"]["spotify_market"] == "GB"
+    assert stored["friend"]["notion_token"].startswith("fernet:")
+    assert b"n-secret" not in gzip.decompress(objects[workspaces.REGISTRY_KEY])
+    assert workspaces.settings_for(settings, "friend").notion_token == "n-secret"
+
+
+def test_legacy_plaintext_secrets_still_load_and_the_next_save_encrypts_them(settings, objects):
+    legacy = {"friend": {"life_hub_token": "plain-hub", "spotify_refresh_token": "plain-rt"}}
+    objects[workspaces.REGISTRY_KEY] = gzip.compress(json.dumps(legacy).encode())
+    assert workspaces.settings_for(settings, "friend").life_hub_token == "plain-hub"
+    workspaces.save(settings, "other", spotify_market="GB")
+    raw = gzip.decompress(objects[workspaces.REGISTRY_KEY])
+    assert b"plain-hub" not in raw and b"plain-rt" not in raw
+    assert workspaces.settings_for(settings, "friend").spotify_refresh_token == "plain-rt"
+
+
+def test_secrets_are_never_stored_without_a_key(settings, objects):
+    keyless = settings.model_copy(update={"workspace_secret_key": ""})
+    with pytest.raises(workspaces.InvalidWorkspace, match="WORKSPACE_SECRET_KEY"):
+        workspaces.save(keyless, "friend", life_hub_token="t")
+    assert workspaces.REGISTRY_KEY not in objects
+    workspaces.save(keyless, "friend", spotify_market="GB")  # no secret, no key needed
+    assert workspaces.summary(keyless, "friend")["spotify_market"] == "GB"
 
 
 def test_default_record_overrides_env_field_by_field(settings, objects):
