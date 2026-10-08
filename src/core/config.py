@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     r2_bucket: str
     r2_api_token: str
     r2_access_key_id: str
+    # Fernet key that encrypts workspace secrets at rest (core/workspaces.py).
+    workspace_secret_key: str = ""
     inbox_cap: int = 100
     undo_days: int = 7
     # Which workspace these settings act for (core/workspaces.py); set by

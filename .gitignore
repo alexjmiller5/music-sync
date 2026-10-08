@@ -9,3 +9,6 @@ data/
 sandbox_config.json
 .DS_Store
 .worktrees/
+
+# Added by ggshield
+.cache_ggshield

@@ -1,4 +1,5 @@
 import pytest
+from cryptography.fernet import Fernet
 
 from core.config import Settings
 
@@ -18,6 +19,8 @@ def settings():
         r2_bucket="bucket",
         r2_api_token="r2tok",
         r2_access_key_id="r2-key-id",
+        # Workspace secrets are encrypted at rest; each test gets a fresh key.
+        workspace_secret_key=Fernet.generate_key().decode(),
     )
 
 
