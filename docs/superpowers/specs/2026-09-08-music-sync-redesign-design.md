@@ -162,16 +162,17 @@ owner is not the user.
   the inbox are not liked by being there, and un-hearting does not remove
   from it. Songs that age out unliked remain in `songs` with their capture
   edge (permanent Shazam history without clutter).
-* **curated** - every other playlist the user edits by hand (feel good, love
-  songs, 🍄, karaoke, ski, artist and event playlists). A curated playlist is
+* **curated** - every other playlist the user edits by hand (mood,
+  genre, artist and event playlists). A curated playlist is
   the user's tag. The reconciler never adds or removes songs here except as
   consequences of hearting rules (§5.3) and unplayable relinking (§3).
 * **smart** - membership = rule over the pool. Fully materialized each run:
   desired minus actual is added, actual minus desired is removed. Description
-  is rewritten each run (§6.2). The user's three big buckets become the first
-  smart playlists after migration (§9): `the good stuff` = pool, first\_year ≥
-  2000; `galaxy` = pool, first\_year < 2000; `rap` = pool, deezer\_genres any
-  `Rap/Hip Hop`.
+  is rewritten each run (§6.2). The user's three big bucket playlists get smart
+  destinations through the rollout package (§9): a post-2000 bucket = pool,
+  first\_year ≥ 2000; a pre-2000 bucket = pool, first\_year < 2000; a rap
+  bucket = pool, deezer\_genres any `Rap/Hip Hop`. The original curated
+  playlists are renamed and kept untouched as rollback copies.
 
 ### 5.2 The pool
 
@@ -223,7 +224,7 @@ appends to that task rather than creating another.
   "deezer_genres_any": ["Rap/Hip Hop"],
   "mb_tags_any": ["house", "deep house"],
   "first_year": {"gte": 1990, "lt": 2000},
-  "in_playlist_any": ["feel good"],
+  "in_playlist_any": ["<curated playlist>"],
   "not_in_playlist": ["😴"],
   "captured_by": "shazam",
   "liked_after": "2025-01-01"
@@ -370,8 +371,8 @@ error the user sees.
 Consequences: the phone holds no Spotify credentials; `SPOTIFY_*` and
 `SPOTIFY_SHAZAM_PLAYLIST_ID` leave `iOS Shortcuts ENV`; the `Spotify Reauth`
 shortcut and its design spec are deleted; the Hammerspoon hyper+S binding
-keeps running the same (rewritten) shortcut on the Mac. `My Shazam Tracks`
-becomes an ordinary curated playlist; its 1,021 existing songs get
+keeps running the same (rewritten) shortcut on the Mac. The legacy Shazam
+playlist becomes an ordinary curated playlist; its 1,021 existing songs get
 `captured_by=shazam` edges during migration from the playlist's `added_at`.
 The shortcut rewrite (ios-shortcuts repo, `cherri` skill) ships in the same
 milestone as the endpoint and is E2E-tested from the phone before the old
@@ -400,8 +401,9 @@ src/core/reconcile.py        pure diff: (mirror, live) → list of actions
 src/core/actions.py          apply actions to Spotify and the hub; run log
 src/core/flags.py            batch flags into one Notion task
 src/core/capture.py          /capture: resolve a Shazam result, add to inbox, record the edge
-scripts/migrate.py           one-time §9 steps, each idempotent, --dry-run
-scripts/review.py            §9.7 non-compliance report over the mirror (read-only)
+scripts/preview.py           read-only dry-run receipt (local or through the worker)
+scripts/rollout.py           observation import, rollout package build/apply, recognition import
+scripts/rules.py             playlist kind/rule configuration (`just rules`)
 scripts/backfill_derive.py   chunked /v1/derive with pacing
 tests/                       reconcile diff cases, rule rendering, FIFO, undo, flags
 ```
@@ -412,7 +414,7 @@ Deleted: `export_ingest.py`, `notion_sync.py`, `playlist_builder.py`,
 `life-data-archive/raw/spotify-export/` (originals are sacred) and the local
 copies are removed.
 
-## 9. Migration (one-time, `scripts/migrate.py`, dry-run first)
+## 9. Migration (one-time, dry-run first; steps 5-9 run through `scripts/rollout.py`)
 
 1. Create catalog tables and rules (§4) via the `life` CLI; document them in
    life-map; regenerate schema.md.
@@ -430,37 +432,41 @@ copies are removed.
    backup; the R2 objects are the originals.
 5. First pull into the mirror: every owned playlist and liked songs →
    `songs`, `playlist_songs`, `playlists` (all `curated`), capture edges
-   (`like` from like `added_at`; `shazam` for `My Shazam Tracks` rows;
+   (`like` from like `added_at`; `shazam` for legacy Shazam playlist rows;
    `playlist` otherwise). No Spotify writes or enforcement planning. Observation imports preserve
    actual likes and all observed memberships, even on resumed imports and
    overflowing inboxes; no auto-like, FIFO, undo, dedupe, relink, rules or expiry.
 6. Backfill derivations (§7.2). Nothing below depends on Spotify writes yet.
-7. **Manual compliance review (gate).** `scripts/review.py` reads only the
-   mirror and prints the non-compliance report, one section per category,
-   with counts and a per-song listing (title, artists, year, the playlists it
-   is in):
+7. **Manual compliance review (gate).** A full preview receipt
+   (`scripts/preview.py`) is reviewed one category at a time, with counts and
+   a per-song listing (title, artists, year, the playlists it is in):
    * songs in curated playlists that are not liked (\~1,600 in the buckets)
    * liked songs in no playlist (398)
    * songs the bucket rules would remove or move (`first_year` disagrees
-     with `the good stuff` / `galaxy`; not `Rap/Hip Hop` in `rap`)
+     with the post-2000 / pre-2000 buckets; not `Rap/Hip Hop` in the rap bucket)
    * unplayable songs, split into "alternate id exists" and "no alternate"
    * the same ISRC twice in one playlist (213 extra ids)
    * same title and artist under different ISRCs (142), for the user to mark
      as versions to keep or duplicates to collapse
-   * `My Shazam Tracks` songs never liked (923), the inbox backlog
+   * legacy Shazam playlist songs never liked (923), the inbox backlog
    * songs without ISRC or local files that were in a playlist
      The review happens in chat, in batches, finance-review style: the agent
      presents a section, the user decides (like, remove, keep as version,
      move, ignore), and the agent applies each decision **through the
      `spotify`** **skill**, never through life-data. Decisions that are rules
-     rather than one-offs (for example "songs in `feel good` are always liked")
+     rather than one-offs (for example "songs in a curated playlist are always liked")
      are already the reconciler's behavior and need no action. The review ends
      when the report is empty or every remaining line is an accepted
      exception, and the accepted exceptions are written down in the run log.
-8. Convert the three buckets to `smart` with the rules in §5.1.
-9. Run `create_50s_playlist.py` once through the spotify skill flow into a
-   curated `50s Gold` playlist, then delete the script (data never lives in
-   code).
+     Owner decisions (keepers, replacements, exceptions) form a decision
+     manifest outside git; `scripts/rollout.py build` turns it into an exact
+     rollout package that is confirmed before `apply`.
+8. The package renames the three bucket playlists to rollback copies, creates
+   private smart destinations with the rules in §5.1 (`core/smart.py`, keyed by
+   the new playlist IDs), applies occurrence edits, the one-time likes and like
+   normalization, and verifies by readback.
+9. Owner-curated draft playlists are created through the `spotify` skill from
+   data kept in Notion or life-data, never from literals in code.
 10. **Activation gate.** Re-pull, then run the reconciler in `--dry-run`. It
     must report zero proposed Spotify mutations other than the accepted
     exceptions from step 7; routine mirror patches are listed separately.
