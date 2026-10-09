@@ -28,10 +28,17 @@ def reconcile_run(
     writes: bool = True,
     package: dict | None = None,
     deadline: float | None = None,
+    observation_key: str | None = None,
 ) -> actions.RunLog:
-    """`package` (dry runs only) previews the first reconciliation after that package."""
+    """`package` (dry runs only) previews the first reconciliation after that package.
+
+    `observation_key` (dry runs only) plans from a retained complete raw pull instead
+    of reading Spotify, e.g. while Spotify is rate limiting the app.
+    """
     if package is not None and not dry_run:
         raise ValueError("a package is applied only through the package operation")
+    if observation_key is not None and not dry_run:
+        raise ValueError("a retained observation is only a dry-run input")
     now = now or datetime.now(timezone.utc)
     today = now.date().isoformat()
     saved = archive.get(settings, archive.pending_key(settings))
@@ -71,7 +78,7 @@ def reconcile_run(
     if not dry_run:
         metadata.require_observed_contract(hub)
     try:
-        me = spotify.me()["id"]
+        me = None if observation_key else spotify.me()["id"]
     except SpotifyAuthError as e:
         out = actions.RunLog(
             dry_run=dry_run,
@@ -98,8 +105,17 @@ def reconcile_run(
             cache=cache,
             checkpoint=None if dry_run else lambda: mirror.save_cache(settings, cache),
         )
-        live = mirror.pull_live(spotify, settings.spotify_market, me, m, full=True)
-        source_ref = archive.key_for(now)
+        if observation_key:
+            retained = archive.get(settings, observation_key)
+            if retained is None:
+                raise FileNotFoundError(observation_key)
+            raw = json.loads(gzip.decompress(retained))
+            inbox = next(p.id for p in m.playlists.values() if p.kind == "inbox")
+            me = next(p["owner"]["id"] for p in raw["playlists"] if p["id"] == inbox)
+            live = mirror.live_from_raw(raw, me, m)
+        else:
+            live = mirror.pull_live(spotify, settings.spotify_market, me, m, full=True)
+        source_ref = observation_key or archive.key_for(now)
         if not dry_run:
             archive.put(settings, source_ref, gzip.compress(json.dumps(live.raw).encode()))
         retained = archive.get(settings, curation.state_key(settings.workspace))
@@ -203,6 +219,7 @@ def reconcile_run(
             "retained_remotely": False,
             "atomic": False,
             "me": me,
+            "observation_key": observation_key,
             "spotify": observed_raw,
             "package": None
             if package is None

@@ -740,7 +740,7 @@ def test_observation_import_and_preview_run_while_reconciliation_is_disabled(set
     assert worker("observe", {}) == {"applied": {}, "flags": ["f"], "errors": []}
     receipt = json.loads(gzip.decompress(worker("preview", {"package": {"version": 1}})))
     assert receipt["dry_run"] is True
-    assert calls[1] == {"dry_run": True, "package": {"version": 1}}
+    assert calls[1] == {"dry_run": True, "package": {"version": 1}, "observation_key": None}
     assert calls[0]["writes"] is False and calls[0]["dry_run"] is False
     assert calls[0]["deadline"] > 0  # observation imports stop cleanly within budget
 

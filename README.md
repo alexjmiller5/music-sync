@@ -367,7 +367,9 @@ smart playlists and trims the inbox. Nothing about the catalog is edited by hand
 runs a full read-only reconciliation in the deployed worker (operator Modal
 auth: the `MODAL_TOKEN_ID`/`MODAL_TOKEN_SECRET` pair used by `just workspace`)
 and writes a mode-0600 receipt. Without `--remote` it runs locally under
-`op run --env-file=.env.tpl`. **Ad-hoc real run:** `POST /reconcile` with
+`op run --env-file=.env.tpl`. While Spotify is rate limiting the app,
+`--observation <raw/spotify-pull/...>` plans from a retained complete pull
+instead (a mutating run always takes a fresh pull). **Ad-hoc real run:** `POST /reconcile` with
 `{"dry_run": false}` and the Modal proxy-auth headers; it still requires
 `RECONCILE_ENABLED=1`.
 
