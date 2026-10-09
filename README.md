@@ -391,8 +391,10 @@ no longer write `playlists.rule`, `kind`, `pinned` or `expires_at` directly.
 `music-sync/pending-reconcile.json.gz` (see Preservation and recovery). Rerun
 the same operation: reconcile resumes its batches, metadata replay its
 archive, and a rollout package resumes from its checkpoint when applied again
-with the same digest. Long runs stop cleanly after about 20 minutes of applying
-and stay pending; rerun the same operation to continue. Capture and new
+with the same digest. Long runs stop cleanly 50 minutes into a call and stay
+pending; rerun the same operation to continue. The first run after a deploy with
+an empty mirror cache (or the weekly rebuild) reads the whole catalog; later
+runs read only what changed. Capture and new
 baselines wait until it finishes. The one sanctioned exit is
 `scripts/rollout.py observe --replan`, which replaces a pending observation-only
 import (it never touched Spotify) with a fresh plan; it refuses any mutation,

@@ -402,7 +402,9 @@ def test_capture_archive_retains_recognition_request_without_inventing_recogniti
         payload, Spotify(items=[]), Store(kind="inbox", member=False), settings, NOW
     )
     assert out["ok"]
-    original = next(iter(objects.values()))
+    original = next(
+        v for k, v in objects.items() if k.startswith("raw/spotify-capture/") and "events" not in k
+    )
     assert original["capture"] == payload
     assert original["received_at"] == "2026-09-08T12:00:00.000Z"
     assert "recognized_at" not in original

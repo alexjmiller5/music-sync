@@ -52,7 +52,7 @@ PROV_COLS = [
 
 
 CACHE_VERSION = 1
-FULL_REFRESH_SECONDS = 24 * 3600
+FULL_REFRESH_SECONDS = 7 * 24 * 3600
 
 
 def new_cache(now: float | None = None) -> dict:
@@ -108,12 +108,15 @@ def load_playlists(hub) -> Mirror:
     return Mirror({}, playlists, {}, [], set())
 
 
-def load_mirror(hub, cache: dict | None = None, now: float | None = None) -> Mirror:
+def load_mirror(
+    hub, cache: dict | None = None, now: float | None = None, checkpoint=None
+) -> Mirror:
     """Full pulls, or with `cache` only rows the hub stamped since the last load.
 
     The hub stamps `hub_at` on every accepted write and `since` is inclusive, so a
     delta merged by ID reproduces the full read; soft deletes arrive as rows. A
-    cache older than a day is rebuilt from scratch (purges never appear in deltas).
+    cache older than a week is rebuilt from scratch (purges never appear in deltas).
+    `checkpoint` persists the cache after each slice so a cold load survives a timeout.
     """
     revisions = {}
     now = time.time() if now is None else now
@@ -136,6 +139,8 @@ def load_mirror(hub, cache: dict | None = None, now: float | None = None) -> Mir
             ]
             slot["cursor"] = max([slot["cursor"], *stamps])
             rows = list(slot["rows"].values())
+            if checkpoint:
+                checkpoint()
         revisions.setdefault(table, {}).update(
             {row["id"]: {key: row.get(key) for key in ("updated_at", "hub_at")} for row in rows}
         )

@@ -56,12 +56,20 @@ def test_changed_recording_identity_in_saved_track_is_not_an_unlike(
 ):
     hub, sp = Store(), Spotify()
     assert not execute(settings, sp, hub).errors
-    before = copy.deepcopy((hub.tables, archive_store))
+
+    def state():
+        # The incremental mirror cache is a derived read cache, not evidence or state.
+        kept = {
+            k: v for k, v in archive_store.items() if not k.startswith("music-sync/mirror-cache/")
+        }
+        return copy.deepcopy((hub.tables, kept))
+
+    before = state()
     sp.calls.clear()
     sp.liked[0]["item"]["external_ids"] = {"isrc": reported}
     with pytest.raises(ValueError, match="Liked recording identity"):
         execute(settings, sp, hub)
-    assert (hub.tables, archive_store) == before
+    assert state() == before
     assert sp.calls == []
 
 
