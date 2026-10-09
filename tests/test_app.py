@@ -829,3 +829,33 @@ def test_replan_discards_only_an_observation_only_import(settings, monkeypatch, 
     else:
         assert out["errors"] and not calls
         assert json.loads(gzip.decompress(store[key])) == pending
+
+
+def test_definitive_no_match_tells_the_client_to_stay_away(capture_api, monkeypatch):
+    from core import capture as cap
+
+    post, _ = capture_api
+    token = issue_capture_token(post)["token"]
+    searches = []
+    monkeypatch.setattr(cap, "resolve_track", lambda *args: searches.append(1))
+    response = post("/capture-consumer", CONSUMER_BODY, token)
+    assert response.status_code == 422
+    assert response.json()["spotify_outcome"] == "not_added"
+    assert response.json()["reason"] == "no_match"
+    # A client retrying every 30 s would search Spotify ~2,900 times a day.
+    assert int(response.headers["Retry-After"]) == app.NO_MATCH_RETRY_AFTER >= 86400
+
+
+def test_transient_refusal_keeps_the_normal_retry(capture_api, monkeypatch):
+    from core import capture as cap
+
+    post, _ = capture_api
+    token = issue_capture_token(post)["token"]
+    monkeypatch.setattr(cap, "resolve_track", lambda *args: {"id": "selected"})
+    monkeypatch.setattr(
+        app,
+        "_capture",
+        lambda *args, **kw: {"ok": False, "message": "Pending recovery; retry later", "isrc": None},
+    )
+    response = post("/capture-consumer", CONSUMER_BODY, token)
+    assert response.status_code == 422 and "Retry-After" not in response.headers
