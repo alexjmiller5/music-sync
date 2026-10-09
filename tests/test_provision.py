@@ -77,3 +77,19 @@ def test_r2_mint_creates_owned_bucket_without_revoking_existing_credentials(monk
     monkeypatch.setattr(provision.httpx, "Client", lambda **kwargs: client)
     assert provision.mint_r2_token() == "new-token"
     assert any(r.url.path.endswith("/r2/buckets") and r.method == "POST" for r in calls)
+
+
+def test_r2_mint_checks_every_token_page_before_creating(monkeypatch):
+    def handler(req):
+        assert req.method == "GET" and req.url.path == "/user/tokens"
+        page = int(req.url.params.get("page", 1))
+        rows = (
+            [{"id": "x", "name": "other"}] if page == 1 else [{"id": "y", "name": provision.NAME}]
+        )
+        return httpx.Response(200, json={"result": rows, "result_info": {"total_pages": 2}})
+
+    client = httpx.Client(base_url="https://cf.test", transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(provision, "op_read", lambda ref: "dummy")
+    monkeypatch.setattr(provision.httpx, "Client", lambda **kwargs: client)
+    with pytest.raises(RuntimeError, match="exists"):
+        provision.mint_r2_token()

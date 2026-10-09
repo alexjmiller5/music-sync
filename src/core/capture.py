@@ -222,6 +222,10 @@ def capture(
         : max(0, len([i for i in items if i.isrc]) - settings.inbox_cap)
     ]
     identities = [item.isrc for item in items if item.isrc]
+    # Only recordings the catalog already holds in the inbox (or this capture) are
+    # evicted; a hand-added song waits until reconciliation imports its history.
+    cataloged = {i for (pid, i) in m.memberships if pid == inbox.id} | {isrc}
+    extra = [i for i in extra if i.isrc in cataloged]
     if extra and len(set(identities)) == len(identities):
         spotify.remove_items(inbox.id, [i.uri for i in extra])
         hub.push(

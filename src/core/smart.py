@@ -27,6 +27,8 @@ def row(pid, name, rule, today, names, pinned=1, expires_at=None) -> dict:
 
 
 def _check(rule, mirror: Mirror):
+    if isinstance(rule, dict) and {"in_playlist_any", "not_in_playlist"} & set(rule):
+        raise ConfigError("reference playlists by ID: in_playlist_ids_any / not_in_playlist_ids")
     names = {}
     for p in mirror.playlists.values():
         names[p.name] = None if p.name in names else p.id

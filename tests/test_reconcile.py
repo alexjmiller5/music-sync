@@ -631,3 +631,33 @@ def test_replacement_alias_keeps_the_earliest_membership_date():
     row = next(a.row for a in kinds(acts, "upsert_membership") if a.playlist_id == "CU")
     assert row["spotify_track_id"] == "new-alias"
     assert row["added_at"] == "2018-06-12T02:13:23.000Z"
+
+
+def test_readded_smart_member_is_not_tombstoned_in_the_same_run():
+    m = Mirror(
+        {"A": song("A")},
+        {"SM": pl("SM", "pool", "smart", {"v": 1})},
+        {("SM", "A"): Membership("SM", "A", "tA", "2020-01-01T00:00:00.000Z")},
+        [],
+        set(),
+    )
+    live = Live({"SM": live_pl("SM", "pool", [])}, {"A": item("A")}, {})
+    acts = reconcile.plan(m, live, NOW)
+    assert [a.isrc for a in kinds(acts, "add_item")] == ["A"]
+    assert not [a for a in kinds(acts, "delete_membership") if a.playlist_id == "SM"]
+    row = next(a.row for a in kinds(acts, "upsert_membership") if a.playlist_id == "SM")
+    assert row["deleted_at"] is None and row["added_at"] == "2020-01-01T00:00:00.000Z"
+
+
+def test_missing_or_duplicate_inbox_is_flagged():
+    m = Mirror(
+        {},
+        {"N": pl("N", "new songs", "inbox"), "M": pl("M", "other inbox", "inbox")},
+        {},
+        [],
+        set(),
+    )
+    acts = reconcile.plan(m, Live({"M": live_pl("M", "other inbox", [])}, {}, {}), NOW)
+    texts = [a.text for a in kinds(acts, "flag")]
+    assert any("N: inbox playlist missing from Spotify" in t for t in texts)
+    assert any("2 inbox playlists" in t for t in texts)

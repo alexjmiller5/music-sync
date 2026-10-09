@@ -239,9 +239,20 @@ def test_capture_trims_inbox(settings):
         }
         for i in range(3)
     ]
+    members = [
+        {
+            "id": f"IN:US{i:010d}"[:15],
+            "playlist_id": "IN",
+            "isrc": f"US{i:010d}"[:12],
+            "spotify_track_id": str(i),
+            "added_at": items[i]["added_at"],
+            "deleted_at": None,
+        }
+        for i in range(3)
+    ]
     sp, hub = (
         FakeSpotify([track("9", "New", "A", isrc="GBBTV1101287")], inbox_items=items),
-        FakeHub(INBOX),
+        FakeHub(INBOX, memberships=members),
     )
     settings.inbox_cap = 2
     capture.capture({"title": "New", "artist": "A"}, sp, hub, settings, NOW)
@@ -253,6 +264,31 @@ def test_capture_trims_inbox(settings):
             assert "spotify:track:9" not in call[2]
 
 
+def test_capture_never_evicts_an_inbox_song_the_catalog_has_not_imported(settings):
+    items = [
+        {
+            "added_at": f"2026-08-{i + 1:02d}T00:00:00.000Z",
+            "item": track(str(i), "n", "a", isrc=f"US{i:010d}"[:12]),
+        }
+        for i in range(2)
+    ]
+    cataloged = {
+        "id": "IN:US0000000001",
+        "playlist_id": "IN",
+        "isrc": "US0000000001",
+        "spotify_track_id": "1",
+        "added_at": items[1]["added_at"],
+        "deleted_at": None,
+    }
+    sp = FakeSpotify([track("9", "New", "A", isrc="GBBTV1101287")], inbox_items=items)
+    hub = FakeHub(INBOX, memberships=[cataloged])
+    settings.inbox_cap = 1
+    capture.capture({"title": "New", "artist": "A"}, sp, hub, settings, NOW)
+    removed = [uri for call in sp.calls if call[0] == "remove" for uri in call[2]]
+    # Item 0 was added by hand and never imported: it waits for reconciliation.
+    assert removed == ["spotify:track:1"]
+
+
 @pytest.mark.parametrize("known", [False, True])
 def test_capture_first_write_keeps_resolved_and_expiring_metadata(settings, mocker, known):
     tr = track("resolved", "Title", "Artist", isrc="USAAA2600001")
@@ -262,7 +298,17 @@ def test_capture_first_write_keeps_resolved_and_expiring_metadata(settings, mock
         "track": track("old", "Old title", "Old artist", isrc="USAAA2600002"),
     }
     sp = FakeSpotify([tr], [old])
-    hub = FakeHub(INBOX, songs=[{"id": "USAAA2600001", "liked": 1}] if known else [])
+    member = {
+        "id": "IN:USAAA2600002",
+        "playlist_id": "IN",
+        "isrc": "USAAA2600002",
+        "spotify_track_id": "old",
+        "added_at": old["added_at"],
+        "deleted_at": None,
+    }
+    hub = FakeHub(
+        INBOX, songs=[{"id": "USAAA2600001", "liked": 1}] if known else [], memberships=[member]
+    )
     settings.inbox_cap = 1
     saved = {}
     before = deepcopy(sp.inbox_items)

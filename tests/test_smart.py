@@ -64,6 +64,7 @@ def test_create_makes_a_private_smart_playlist_keyed_by_its_new_id():
         {"action": "create", "name": "curated list", "rule": {"v": 1}},
         {"action": "create", "name": "x", "rule": {"v": 1, "in_playlist_ids_any": ["GONE"]}},
         {"action": "create", "name": "x", "rule": {"v": 2}},
+        {"action": "create", "name": "x", "rule": {"v": 1, "in_playlist_any": ["curated list"]}},
         {"action": "smart", "playlist_id": "MISSING", "rule": {"v": 1}},
         {"action": "clear", "playlist_id": "C"},
         {"action": "curated", "playlist_id": "N"},

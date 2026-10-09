@@ -4,7 +4,7 @@ import dataclasses
 from datetime import datetime, timezone
 
 from core import metadata, rules
-from core.model import Action, Live, Membership, Mirror, Song
+from core.model import Action, Live, LiveItem, Membership, Mirror, Song
 
 ORDER = [
     "like",
@@ -277,6 +277,11 @@ def plan(
     # Re-liking does not resurrect a removed curated membership. Retained
     # tombstones are evidence, not an instruction to undo a user's removal.
 
+    if len(inbox_ids) > 1:
+        flags.append(f"{len(inbox_ids)} inbox playlists are configured; exactly one is expected")
+    for pid in sorted(inbox_ids - set(live.playlists)):
+        flags.append(f"{pid}: inbox playlist missing from Spotify")
+
     # inbox FIFO (rule 6)
     for pid in inbox_ids:
         lp = live.playlists.get(pid)
@@ -337,6 +342,7 @@ def plan(
             acts.append(
                 Action("add_item", playlist_id=pid, isrc=isrc, uri=uri, reason="matches rule")
             )
+            known = mirror.memberships.get((pid, isrc))
             acts.append(
                 Action(
                     "upsert_membership",
@@ -347,10 +353,14 @@ def plan(
                         "playlist_id": pid,
                         "isrc": isrc,
                         "spotify_track_id": uri.split(":")[-1],
-                        "added_at": now_s,
+                        "added_at": _earliest(known.added_at if known else None, now_s),
                         "deleted_at": None,
                     },
                 )
+            )
+            # The planned addition is final membership: upkeep must not tombstone it.
+            actual[(pid, isrc)] = LiveItem(
+                isrc, uri.split(":")[-1], uri, now_s, None, False, None, []
             )
         for isrc in sorted(have - want):
             acts.append(

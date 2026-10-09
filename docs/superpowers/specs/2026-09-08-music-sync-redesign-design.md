@@ -139,12 +139,13 @@ music-sync cron.
 | spotify\_track\_id | text            | yes | The id actually in the playlist.        |
 | added\_at          | datetime        | yes | Spotify `added_at`.                     |
 
-Soft delete on removal; the 7-day undo (§5.4) reads soft-deleted rows.
+Soft delete on removal; tombstones are evidence, never an instruction to
+restore a removed curated membership.
 
-Invariants for `life check`: `curated-songs-are-liked` (every non-deleted
-row whose playlist is `curated` references a song with liked=1) and
-`smart-songs-match-rule` (one generic SQL over the JSON predicates, §6.3).
-Both only catch reconciler bugs; the reconciler is the enforcement.
+Check-only invariant for `life check`: `curated-songs-are-liked` (every
+non-deleted row whose playlist is `curated` references a song with liked=1),
+excepting recordings held as unlike-while-curated review exceptions. It only
+catches reconciler bugs; the reconciler is the enforcement.
 
 ### 4.4 Followed playlists, followed artists
 
@@ -224,8 +225,8 @@ appends to that task rather than creating another.
   "deezer_genres_any": ["Rap/Hip Hop"],
   "mb_tags_any": ["house", "deep house"],
   "first_year": {"gte": 1990, "lt": 2000},
-  "in_playlist_any": ["<curated playlist>"],
-  "not_in_playlist": ["😴"],
+  "in_playlist_ids_any": ["<curated playlist id>"],
+  "not_in_playlist_ids": ["<playlist id>"],
   "captured_by": "shazam",
   "liked_after": "2025-01-01"
 }
@@ -233,8 +234,10 @@ appends to that task rather than creating another.
 
 Every key optional except `v`; keys AND together; list values OR within a
 key. `first_year` accepts `lt`, `gte`, `between: [a, b]`. Playlist references
-are by name and resolved to ids at reconcile time; an unresolvable name is a
-flag. The pool (liked=1) is always implied. Validation is a catalog invariant
+are stable Spotify playlist IDs, so renames never break a rule; an unknown ID
+is a flag. Legacy `in_playlist_any` / `not_in_playlist` name keys remain
+readable for old rows (an ambiguous name is held for review) but the
+configuration path (`just rules`) accepts IDs only. The pool (liked=1) is always implied. Validation is a catalog invariant
 on `playlists.rule`: `json_valid`, `v = 1`, no keys outside this set, correct
 value types. Unknown keys fail validation rather than being ignored.
 
@@ -249,9 +252,10 @@ rewrites it every run and does not read it back.
 
 One function renders a rule to a `WHERE` clause over `songs` (joined with
 `playlist_songs` for the playlist predicates and `provenance` for
-`captured_by`). The same renderer produces the generic `life check`
-invariant by iterating `playlists WHERE kind='smart'` and unioning the
-mismatches. No per-playlist rule objects exist in the catalog.
+`captured_by`). The reconciler evaluates it over an in-memory copy of the
+mirror every run. No static copy of the rules is installed in the catalog;
+the hub's `playlists-rule-iff-smart` invariant only checks that a smart row
+carries a valid rule.
 
 ## 7. Runtime
 

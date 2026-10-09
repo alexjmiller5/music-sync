@@ -67,17 +67,29 @@ def account_id(client: httpx.Client | None = None) -> str:
     return accounts[0]["id"]
 
 
+def _named_token_ids(client) -> list[str]:
+    """IDs of every token named NAME, across all pages."""
+    ids, page = [], 1
+    while True:
+        body = (
+            client.get("/user/tokens", params={"per_page": 100, "page": page})
+            .raise_for_status()
+            .json()
+        )
+        ids.extend(t["id"] for t in body["result"] or [] if t["name"] == NAME)
+        if page >= body.get("result_info", {}).get("total_pages", page):
+            return ids
+        page += 1
+
+
 def mint_r2_token() -> str:
     admin = op_read(OP_CF_TOKEN)
     c = httpx.Client(
         base_url="https://api.cloudflare.com/client/v4",
         headers={"Authorization": f"Bearer {admin}"},
     )
-    for t in (
-        c.get("/user/tokens", params={"per_page": 100}).raise_for_status().json()["result"] or []
-    ):
-        if t["name"] == NAME:
-            raise RuntimeError(f"{NAME} exists; preserve it until a replacement is verified")
+    if _named_token_ids(c):
+        raise RuntimeError(f"{NAME} exists; preserve it until a replacement is verified")
     account = account_id(c)
     bucket_route = f"/accounts/{account}/r2/buckets"
     buckets = c.get(bucket_route).raise_for_status().json()["result"]["buckets"]
@@ -111,21 +123,11 @@ def mint_r2_token() -> str:
 
 def r2_access_key_id() -> str:
     """Look up the minted token without rotating it or caching its secret."""
-    ids, page = [], 1
     with httpx.Client(
         base_url="https://api.cloudflare.com/client/v4",
         headers={"Authorization": f"Bearer {op_read(OP_CF_TOKEN)}"},
     ) as client:
-        while True:
-            body = (
-                client.get("/user/tokens", params={"per_page": 100, "page": page})
-                .raise_for_status()
-                .json()
-            )
-            ids.extend(t["id"] for t in body["result"] if t["name"] == NAME)
-            if page >= body.get("result_info", {}).get("total_pages", page):
-                break
-            page += 1
+        ids = _named_token_ids(client)
     if len(ids) != 1:
         raise RuntimeError(f"Expected exactly one {NAME} token; mint R2_API_TOKEN first")
     return ids[0]
