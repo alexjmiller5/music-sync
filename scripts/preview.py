@@ -5,6 +5,7 @@ The receipt contains personal catalog data and must stay outside source control.
 `--remote` runs the dry run in the deployed worker with the app's own credentials
 (operator Modal auth); otherwise Settings come from the environment (`op run`).
 `--package` previews the first reconciliation after that rollout package.
+`--observation <raw/spotify-pull/...>` plans from a retained complete pull (no Spotify reads).
 """
 
 import argparse
@@ -27,6 +28,9 @@ def main(argv=None):
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--remote", action="store_true")
     parser.add_argument("--package", type=Path)
+    parser.add_argument(
+        "--observation", help="plan from this retained raw pull key instead of reading Spotify"
+    )
     args = parser.parse_args(argv)
     package = None
     if args.package:
@@ -43,10 +47,14 @@ def main(argv=None):
 
                 worker = modal.Function.from_name("music-sync", "worker")
                 body = {} if package is None else {"package": package}
+                if args.observation:
+                    body["observation_key"] = args.observation
                 document = gzip.decompress(worker.remote("preview", body)).decode()
                 out = SimpleNamespace(**json.loads(document))
             else:
                 extra = {} if package is None else {"package": package}
+                if args.observation:
+                    extra["observation_key"] = args.observation
                 out = run.reconcile(Settings(), dry_run=True, **extra)
                 document = json.dumps(asdict(out), ensure_ascii=False, indent=2, allow_nan=False)
         except Exception as exc:

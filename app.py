@@ -388,7 +388,12 @@ def _preview(body: dict):
 
     from core import run
 
-    log = run.reconcile(_settings(body), dry_run=True, package=body.get("package"))
+    log = run.reconcile(
+        _settings(body),
+        dry_run=True,
+        package=body.get("package"),
+        observation_key=body.get("observation_key"),
+    )
     return gzip.compress(json.dumps(asdict(log), ensure_ascii=False, allow_nan=False).encode())
 
 

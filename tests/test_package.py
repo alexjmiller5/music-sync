@@ -483,3 +483,39 @@ def test_dry_run_with_package_previews_the_first_reconciliation_after_it(setting
     filed.assert_not_called()
     with pytest.raises(ValueError):
         run.reconcile(settings, dry_run=False, now=NOW, spotify=Me(), hub=object(), package=p)
+
+
+def test_dry_run_can_plan_from_a_retained_observation_without_spotify(settings, mocker):
+    from core import run
+
+    m, live, out = built()
+    raw = raw_observation()
+    store = {"raw/spotify-pull/retained.json.gz": gzip.compress(json.dumps(raw).encode())}
+    mocker.patch("core.run.archive.get", side_effect=lambda s, k: store.get(k))
+    mocker.patch("core.run.archive.put", side_effect=AssertionError("dry runs write nothing"))
+    mocker.patch("core.run.mirror.load_mirror", return_value=m)
+    mocker.patch("core.run.mirror.load_cache", return_value=None)
+    pulled = mocker.patch("core.run.mirror.pull_live")
+
+    class NoSpotify:
+        def me(self):
+            raise AssertionError("no Spotify request")
+
+    key = "raw/spotify-pull/retained.json.gz"
+    log = run.reconcile(
+        settings,
+        dry_run=True,
+        now=NOW,
+        spotify=NoSpotify(),
+        hub=object(),
+        package=out["package"],
+        observation_key=key,
+    )
+    pulled.assert_not_called()
+    assert not log.errors
+    assert log.snapshot["observation_key"] == key and log.snapshot["me"] == ME
+    assert any(a["playlist_id"] == "planned:older" for a in log.planned if a["kind"] == "add_item")
+    with pytest.raises(ValueError):
+        run.reconcile(
+            settings, dry_run=False, spotify=NoSpotify(), hub=object(), observation_key=key
+        )
