@@ -201,7 +201,7 @@ def test_fill_only_album_pair_does_not_overwrite_half_existing_pair():
     assert not {"album", "album_year"} & rows(acts)[0].keys()
 
 
-def test_same_value_refresh_updates_only_directly_observed_sources():
+def test_same_value_refresh_keeps_existing_evidence_and_records_changes():
     tables = persisted(observe())
     m = load_mirror(FakeHub(tables))
     from core.metadata import observation_actions
@@ -210,9 +210,13 @@ def test_same_value_refresh_updates_only_directly_observed_sources():
         m, live(raw(album=None)), NOW, source_ref="raw/spotify-pull/new.json.gz", market="US"
     )
     assert not rows(acts)
-    assert evidence(acts, "title")[0]["from_ref"] == "raw/spotify-pull/new.json.gz"
-    assert not evidence(acts, "album")
-    assert not evidence(acts, "album_year")
+    # Unchanged observations keep pointing at the archive that first saw them.
+    assert not [a for a in acts if a.kind == "edge"]
+    changed = observation_actions(
+        m, live(raw(name="Renamed")), NOW, source_ref="raw/spotify-pull/new.json.gz", market="US"
+    )
+    assert evidence(changed, "title")[0]["from_ref"] == "raw/spotify-pull/new.json.gz"
+    assert not evidence(changed, "album")
 
 
 def test_without_retained_source_does_not_invent_provenance():

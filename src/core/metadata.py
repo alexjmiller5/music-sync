@@ -194,8 +194,14 @@ def observation_actions(
                     "market": market,
                 },
             }
-            old = prior.get(row["id"], {})
-            if (fill_only and old) or all(old.get(k) == v for k, v in row.items()):
+            old = prior.get(row["id"])
+            # The archive that first observed the current value stays its evidence;
+            # re-pointing every run would rewrite tens of thousands of rows hourly.
+            unchanged = old is not None and all(
+                (old.get("detail") or {}).get(k) == row["detail"][k]
+                for k in ("field", "value", "track_id", "market")
+            )
+            if (fill_only and old) or unchanged:
                 return
             acts.append(Action("edge", isrc=isrc, row=row))
 
