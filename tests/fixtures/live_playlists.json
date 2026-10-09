@@ -1,7 +1,7 @@
 [
  {
   "id": "P1",
-  "name": "feel good",
+  "name": "mood list",
   "description": "",
   "snapshot_id": "s1",
   "owner": {
@@ -16,7 +16,7 @@
  },
  {
   "id": "P2",
-  "name": "rap",
+  "name": "genre picks",
   "description": "post 2000s",
   "snapshot_id": "s2",
   "owner": {

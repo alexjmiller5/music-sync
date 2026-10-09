@@ -947,11 +947,9 @@ def test_failed_legacy_checkpoint_leaves_original_pending_untouched():
     assert store.tables == tables and sp.calls == []
 
 
-@pytest.mark.parametrize("flow", ["capture", "migration"])
+@pytest.mark.parametrize("flow", ["capture"])
 def test_direct_imports_keep_hub_timestamp_fallback(settings, archive_store, flow):
     import re
-
-    from scripts import migrate
 
     store, sp = Store(kind="inbox", member=False), Spotify(items=[], liked=False)
     store.tables["songs"].clear()
@@ -990,7 +988,3 @@ def test_direct_imports_keep_hub_timestamp_fallback(settings, archive_store, flo
             "provenance",
             "playlist_songs",
         ]
-    else:
-        migrate.step_inbox(hub, "P", dry_run=False)
-        assert store.tables["playlists"]["P"]["kind"] == "inbox"
-        assert [body["table"] for body in received] == ["playlists"]

@@ -90,7 +90,7 @@ def test_load_mirror_splits_deleted_memberships_and_parses_json():
             "playlists": [
                 {
                     "id": "P",
-                    "name": "rap",
+                    "name": "genre picks",
                     "kind": "smart",
                     "rule": '{"v":1}',
                     "description": None,
