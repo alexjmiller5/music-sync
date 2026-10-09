@@ -583,8 +583,89 @@ def _saved(spotify, market) -> dict[str, str]:
     return out
 
 
+LIKE_CHUNK = 40
+
+
 def apply(package, spotify, hub, settings, now, state, save) -> dict:
-    """Serialized-worker execution. `state` is the retained checkpoint; `save` persists it."""
+    """Serialized-worker execution. `state` is the retained checkpoint; `save` persists it.
+
+    Every Spotify write is checkpointed. A rate limit longer than the client waits stops
+    the run there and returns the exact remaining Spotify actions, so another client can
+    finish them; rerunning the same package then adopts that work and completes the
+    catalog side without repeating a write.
+    """
+    import httpx
+
+    try:
+        return _apply(package, spotify, hub, settings, now, state, save)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code != 429:
+            raise
+        # Remaining creations may be made elsewhere; the resumed run adopts them by name.
+        attempted = state.setdefault("attempted", [])
+        for smart in package["smart"]:
+            if smart["name"] not in state.get("created", {}) and smart["name"] not in attempted:
+                attempted.append(smart["name"])
+        save()
+        return {
+            "applied": False,
+            "problems": ["Spotify rate limit; finish the remaining actions, then rerun"],
+            "rate_limited": {
+                "retry_after": exc.response.headers.get("Retry-After"),
+                "url": str(exc.request.url).split("?")[0],
+                "at": _iso(datetime.now(timezone.utc)),
+            },
+            "backup": state.get("backup"),
+            "remaining": remaining(package, state, now.date().isoformat()),
+        }
+
+
+def remaining(package: dict, state: dict, today: str) -> dict:
+    """Spotify actions the checkpoint does not record as done, in execution order."""
+    created = state.get("created", {})
+    planned_names = {f"planned:{s['name']}": s["name"] for s in package["smart"]}
+    done_ops = state.get("edit_ops", {})
+    liked, unliked = set(state.get("liked", [])), set(state.get("unliked", []))
+    to_like = state.get("to_like", [like["uri"] for like in package["likes"]])
+    to_unlike = state.get("to_unlike", [u["uri"] for u in package["unlikes"]])
+    keepers = {u["uri"]: u["keeper"] for u in package["unlikes"]}
+    return {
+        "package_digest": digest(package),
+        "order": "renames, creations, playlist_edits (ops in order), likes, then unlikes "
+        "whose keeper is liked",
+        "renames": [
+            {"playlist_id": r["playlist_id"], "from": r["from"], "to": r["to"]}
+            for r in package["renames"]
+            if r["playlist_id"] not in set(state.get("renamed", []))
+        ],
+        "creations": [
+            {
+                "name": s["name"],
+                "public": False,
+                "description": rules.describe(s["rule"], today, planned_names),
+            }
+            for s in package["smart"]
+            if s["name"] not in created
+        ],
+        "playlist_edits": [
+            {
+                "playlist_id": e["playlist_id"],
+                "name": e["name"],
+                "ops_done": done_ops.get(e["playlist_id"], 0),
+                "ops": e["ops"][done_ops.get(e["playlist_id"], 0) :],
+                "items_after": len(e["after"]),
+            }
+            for e in package["playlists"]
+            if done_ops.get(e["playlist_id"], 0) < len(e["ops"])
+        ],
+        "likes": [u for u in to_like if u not in liked],
+        "unlikes": [
+            {"uri": u, "keeper": keepers[u]} for u in to_unlike if u not in unliked and u in keepers
+        ],
+    }
+
+
+def _apply(package, spotify, hub, settings, now, state, save) -> dict:
     market = settings.spotify_market
     me = spotify.me()["id"]
     m = mirror_mod.load_mirror(hub, cache=mirror_mod.load_cache(settings))
@@ -615,9 +696,13 @@ def apply(package, spotify, hub, settings, now, state, save) -> dict:
                 }
             ],
         )
+    renamed = state.setdefault("renamed", [])
     for row in package["renames"]:
         if live.playlists[row["playlist_id"]].name != row["to"]:
             spotify.rename_playlist(row["playlist_id"], row["to"])
+        if row["playlist_id"] not in renamed:
+            renamed.append(row["playlist_id"])
+            save()
         hub.push("playlists", [{"id": row["playlist_id"], "name": row["to"]}])
         names[row["playlist_id"]] = row["to"]
     attempted = state.setdefault("attempted", [])
@@ -658,26 +743,40 @@ def apply(package, spotify, hub, settings, now, state, save) -> dict:
             ],
         )
     edited = 0
+    edit_ops = state.setdefault("edit_ops", {})
     for edit in package["playlists"]:
         pid = edit["playlist_id"]
+        if edit_ops.get(pid) == len(edit["ops"]):
+            continue
         current = _uris(
             mirror_mod.item_from_raw(r) for r in spotify.get_playlist_items(pid, market)
         )
         done = progress(current, edit["before"], edit["ops"])
         if done is None:
             raise PackageError(f"{pid}: contents changed during the package run")
-        for op in edit["ops"][done:]:
+        edit_ops[pid] = done
+        save()
+        for index, op in enumerate(edit["ops"][done:], start=done):
             if op["op"] == "delete":
                 spotify.remove_items(pid, op["uris"])
             else:
                 spotify.add_items(pid, op["uris"], position=op["position"])
             edited += 1
+            edit_ops[pid] = index + 1
+            save()
     saved = _saved(spotify, market)
     to_like = [like["uri"] for like in package["likes"] if like["uri"] not in saved]
     if to_like:
         state["likes_attempted"] = True
+        state["to_like"] = to_like
         save()
-        spotify.like(to_like)
+        liked = state.setdefault("liked", [])
+        for i in range(0, len(to_like), LIKE_CHUNK):
+            chunk = [u for u in to_like[i : i + LIKE_CHUNK] if u not in liked]
+            if chunk:
+                spotify.like(chunk)
+                liked.extend(chunk)
+                save()
         saved = _saved(spotify, market)
     missing = [u for u in (like["uri"] for like in package["likes"]) if u not in saved]
     keepers = set(saved)
@@ -686,7 +785,14 @@ def apply(package, spotify, hub, settings, now, state, save) -> dict:
     ]
     held = [u["uri"] for u in package["unlikes"] if u["keeper"] not in keepers]
     if to_unlike:
-        spotify.unlike(to_unlike)
+        state["to_unlike"] = to_unlike
+        save()
+        unliked = state.setdefault("unliked", [])
+        for i in range(0, len(to_unlike), LIKE_CHUNK):
+            chunk = to_unlike[i : i + LIKE_CHUNK]
+            spotify.unlike(chunk)
+            unliked.extend(chunk)
+            save()
     after = mirror_mod.pull_live(spotify, market, me, m, full=True)
     key = archive.key_for(datetime.now(timezone.utc))
     archive.put(settings, key, gzip.compress(json.dumps(after.raw).encode()))
@@ -725,7 +831,9 @@ def apply(package, spotify, hub, settings, now, state, save) -> dict:
     kinds.update({r["playlist_id"]: r["kind"] for r in package["classify"]})
     retained = archive.get(settings, curation.state_key(settings.workspace))
     previous = json.loads(gzip.decompress(retained)) if retained else None
-    unliked_isrcs = {u["isrc"] for u in package["unlikes"] if u["uri"] in to_unlike}
+    # Normalization unlikes count as the package's own however they were executed: this
+    # run, an earlier interrupted run, or another client finishing the remaining actions.
+    unliked_isrcs = {u["isrc"] for u in package["unlikes"] if u["keeper"] in saved_after}
     adjusted = adjust_curation(previous, package, after, kinds, unliked_isrcs)
     archive.put(
         settings,

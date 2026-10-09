@@ -444,7 +444,8 @@ def _package(body: dict):
     receipt = pkg.apply(
         doc, SpotifyClient(settings), hub, settings, datetime.now(timezone.utc), state, save
     )
-    archive.put(settings, key, gzip.compress(json.dumps(None).encode()))
+    if not receipt.get("rate_limited"):  # a rate-limited stop resumes from this checkpoint
+        archive.put(settings, key, gzip.compress(json.dumps(None).encode()))
     return receipt
 
 

@@ -579,3 +579,120 @@ def test_planned_reference_must_name_a_smart_destination_of_the_package():
     s["smart"].pop()
     with pytest.raises(package.PackageError, match="planned:rap"):
         package.build(live, m, decisions(), s, observed_at=NOW.isoformat())
+
+
+# --- a long Spotify rate limit stops at a checkpoint with the exact remaining actions ---
+
+
+class RateLimitedSpotify(FakeSpotify):
+    """Rejects the Nth mutation with a long 429 (nothing applied), then nothing more."""
+
+    MUTATIONS = (
+        "rename_playlist",
+        "create_playlist",
+        "add_items",
+        "remove_items",
+        "like",
+        "unlike",
+    )
+
+    def __init__(self, raw, extra_tracks, limit_at):
+        super().__init__(raw, extra_tracks)
+        self.limit_at, self.mutations, self.limited = limit_at, 0, True
+
+    def __getattribute__(self, name):
+        attr = object.__getattribute__(self, name)
+        if name in RateLimitedSpotify.MUTATIONS and object.__getattribute__(self, "limited"):
+
+            def gated(*args, **kwargs):
+                self.mutations += 1
+                if self.mutations >= self.limit_at:
+                    import httpx
+
+                    request = httpx.Request("PUT", "https://api.spotify.com/v1/me/library")
+                    response = httpx.Response(
+                        429, headers={"Retry-After": "70000"}, request=request
+                    )
+                    raise httpx.HTTPStatusError("429", request=request, response=response)
+                return attr(*args, **kwargs)
+
+            return gated
+        return attr
+
+
+def execute_externally(spotify, remaining):
+    """What another Spotify client does with the manifest, top to bottom."""
+    for row in remaining["renames"]:
+        spotify.rename_playlist(row["playlist_id"], row["to"])
+    for row in remaining["creations"]:
+        spotify.create_playlist(row["name"], row["description"], public=False)
+    for edit in remaining["playlist_edits"]:
+        for op in edit["ops"]:
+            if op["op"] == "delete":
+                spotify.remove_items(edit["playlist_id"], op["uris"])
+            else:
+                spotify.add_items(edit["playlist_id"], op["uris"], position=op["position"])
+    for uri in remaining["likes"]:  # one per call, like the app with LIKE_CHUNK = 1
+        spotify.like([uri])
+    saved = {r["track"]["uri"] for r in spotify.liked}
+    for uri in [u["uri"] for u in remaining["unlikes"] if u["keeper"] in saved]:
+        spotify.unlike([uri])
+
+
+def test_long_rate_limit_hands_over_exact_remaining_actions_at_every_stop(settings, mocker, store):
+    mocker.patch.object(package, "LIKE_CHUNK", 1)  # every like and unlike is its own stop
+    m, live, out = built()
+    p = out["package"]
+    full = RateLimitedSpotify(raw_observation(), p["tracks"], limit_at=10**6)
+    assert run_apply(settings, mocker, full, p, {}, m)["verified"]
+    total = full.mutations
+    assert total >= 5
+    full_writes = len(full.calls)
+    liked_before = {r["track"]["external_ids"]["isrc"] for r in raw_observation()["liked"]}
+    _, before = curation.advance(None, liked_before, {(G, "GBREM0000001")}, "pre")
+    for limit_at in range(1, total + 1):
+        store[curation.state_key("default")] = gzip.compress(json.dumps(before).encode())
+        spotify = RateLimitedSpotify(raw_observation(), p["tracks"], limit_at=limit_at)
+        state = {}
+        stopped = run_apply(settings, mocker, spotify, p, state, m)
+        assert stopped["applied"] is False and stopped["rate_limited"]["retry_after"] == "70000"
+        remaining = stopped["remaining"]
+        assert remaining["package_digest"] == package.digest(p)
+        spotify.limited = False
+        execute_externally(spotify, remaining)
+        calls = len(spotify.calls)
+        assert calls == full_writes, f"stop {limit_at}: the manifest repeats or misses a write"
+        resumed = run_apply(settings, mocker, spotify, p, state, m)
+        assert resumed["verified"], (limit_at, resumed)
+        assert len(spotify.calls) == calls, f"stop {limit_at}: resumed run repeated Spotify writes"
+        names = [pl["name"] for pl in spotify.playlists.values()]
+        assert names.count("newer") == 1 and names.count("older") == 1
+        # Externally executed normalization unlikes are still the package's, not owner unlikes.
+        cur = json.loads(gzip.decompress(store[curation.state_key("default")]))
+        liked_now = {r["track"]["external_ids"]["isrc"] for r in spotify.liked}
+        _, nxt = curation.advance(cur, liked_now, {(G, "GBREM0000001")}, "next")
+        assert nxt["exceptions"] == {}, limit_at
+
+
+def test_rate_limit_during_readback_hands_over_nothing(settings, mocker, store):
+    mocker.patch.object(package, "LIKE_CHUNK", 1)
+    m, live, out = built()
+    p = out["package"]
+    full = RateLimitedSpotify(raw_observation(), p["tracks"], limit_at=10**6)
+    assert run_apply(settings, mocker, full, p, {}, m)["verified"]
+
+    class ReadbackLimited(RateLimitedSpotify):
+        def get_liked(self, market):
+            if self.mutations >= full.mutations:  # every write done; the readback is limited
+                import httpx
+
+                request = httpx.Request("GET", "https://api.spotify.com/v1/me/tracks")
+                response = httpx.Response(429, headers={"Retry-After": "70000"}, request=request)
+                raise httpx.HTTPStatusError("429", request=request, response=response)
+            return super().get_liked(market)
+
+    spotify = ReadbackLimited(raw_observation(), p["tracks"], limit_at=10**6)
+    stopped = run_apply(settings, mocker, spotify, p, {}, m)
+    assert stopped["rate_limited"]["retry_after"] == "70000"
+    left = stopped["remaining"]
+    assert not any(left[k] for k in ("renames", "creations", "playlist_edits", "likes", "unlikes"))
