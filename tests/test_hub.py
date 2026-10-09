@@ -198,3 +198,30 @@ def test_http_error_is_huberror():
 
     with pytest.raises(HubError, match="500"):
         make(handler).pull("songs", ["id"])
+
+
+def test_scan_retries_transient_hub_failures_but_not_client_errors(mocker):
+    sleep = mocker.patch("core.hub.time.sleep")
+
+    def worker_hub(handler):
+        transport = httpx.Client(transport=httpx.MockTransport(handler))
+        return Hub("https://hub.test", "t", transport, read_retries=(2, 5))
+
+    replies = [
+        httpx.Response(500, text='{"error":"D1_ERROR: Network connection lost."}'),
+        httpx.Response(200, json={"rows": [{"id": "a"}], "next_cursor": None}),
+    ]
+    assert worker_hub(lambda r: replies.pop(0)).scan("songs", ["id"]) == [{"id": "a"}]
+    assert sleep.call_count == 1
+    with pytest.raises(HubError):
+        worker_hub(lambda r: httpx.Response(403, text="scope")).scan("songs", ["id"])
+    with pytest.raises(HubError):
+        worker_hub(lambda r: httpx.Response(503, text="x")).scan("songs", ["id"])
+    assert sleep.call_count == 1 + 2
+
+
+def test_worker_clients_opt_into_read_retries():
+    from core.hub import with_read_retries
+
+    assert with_read_retries(Hub("https://hub.test", "t")).read_retries
+    assert Hub("https://hub.test", "t").read_retries == ()
