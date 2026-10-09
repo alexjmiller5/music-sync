@@ -5,7 +5,7 @@ about the current deployment or catalog. Do not activate cron or start blanket
 provider backfills. Keep `RECONCILE_ENABLED=0` throughout.
 
 1. Back up the current catalog, songs, provenance, playlists and memberships
-   through supported Life Data catalog/row interfaces. Retain the original
+   through supported Soma catalog/row interfaces. Retain the original
    raw Spotify files through `/v1/files/` and preserve the project recovery
    object through its existing R2 interface. Verify backups are readable and
    record their identities outside source control.
@@ -19,10 +19,10 @@ provider backfills. Keep `RECONCILE_ENABLED=0` throughout.
    supported catalog option interface before removing its last dynamic binding.
    Verify old provenance still validates. Do not relabel or delete old evidence.
    Preserve all property types, constraints and identities.
-4. Use the installed Life Data CLI's supported atomic SQL update:
+4. Use the installed Soma CLI's supported atomic SQL update:
 
    ```sh
-   life sql "UPDATE catalog_properties SET derived_by=NULL, inputs=NULL WHERE tbl='songs' AND col IN ('title','artists','album','album_year','duration_ms','spotify_ids','spotify_playable') AND deleted_at IS NULL"
+   soma sql "UPDATE catalog_properties SET derived_by=NULL, inputs=NULL WHERE tbl='songs' AND col IN ('title','artists','album','album_year','duration_ms','spotify_ids','spotify_playable') AND deleted_at IS NULL"
    ```
 
    This command shape was verified by the controller in an isolated CLI fixture;
@@ -31,10 +31,10 @@ provider backfills. Keep `RECONCILE_ENABLED=0` throughout.
    seven live property rows via `GET /v1/catalog` and verify both bindings null.
 5. Deploy the reviewed, tested code through the approved CI/CD flow and verify
    its result. Include the separately reviewed non-erasing enrichment service
-   change before permitting enrichment again. The existing Life Data checked
+   change before permitting enrichment again. The existing Soma checked
    commit guard rejects in-flight writes whose catalog binding changed; this
    does not replace draining writers. Refresh catalog documentation with the
-   supported `life doc` workflow. Verify the deployed ownership gate against
+   supported `soma doc` workflow. Verify the deployed ownership gate against
    the read-back catalog without enabling enforcement.
 6. Use the existing authenticated reconcile endpoint with a retained archive
    key, its actual observation time and `dry_run:true`:

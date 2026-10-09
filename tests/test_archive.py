@@ -136,8 +136,8 @@ def test_raw_archives_use_life_api_without_r2_credentials(settings, monkeypatch)
             return httpx.Response(201, json={"key": "raw/spotify-pull/a.json.gz"})
         return httpx.Response(200, content=data)
 
-    settings.life_hub_url = "https://hub"
-    settings.life_hub_token = "hub-token"
+    settings.soma_hub_url = "https://hub"
+    settings.soma_hub_token = "hub-token"
     client = httpx.Client(transport=httpx.MockTransport(handler))
     monkeypatch.setattr(archive, "_client", lambda *_: pytest.fail("raw archive used R2"))
     monkeypatch.setattr(httpx, "request", client.request)

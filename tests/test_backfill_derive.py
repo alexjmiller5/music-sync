@@ -364,8 +364,8 @@ def test_rate_limit_without_valid_delay_still_stops_premature_retries(retry_afte
 def test_empty_success_is_failure_and_cli_exits_nonzero(monkeypatch, capsys):
     service = Service()
     service.replies[("S0000", "first_year")] = [{"derived": 0, "failed": []}] * 3
-    monkeypatch.setenv("LIFE_HUB_URL", "https://hub.test")
-    monkeypatch.setenv("LIFE_HUB_TOKEN", "dummy")
+    monkeypatch.setenv("SOMA_HUB_URL", "https://hub.test")
+    monkeypatch.setenv("SOMA_HUB_TOKEN", "dummy")
     monkeypatch.setattr("core.hub.Hub", lambda *args: service.hub)
     monkeypatch.setattr(backfill_derive.time, "sleep", lambda _: None)
     monkeypatch.setattr(sys, "argv", ["backfill_derive.py", "--col", "first_year"])
@@ -770,8 +770,8 @@ def test_cli_rejects_bad_ids_file_without_falling_back_to_unbounded_scan(
     service = BoundedService()
     path = tmp_path / "ids.json"
     path.write_text(contents)
-    monkeypatch.setenv("LIFE_HUB_URL", "https://hub.test")
-    monkeypatch.setenv("LIFE_HUB_TOKEN", "dummy")
+    monkeypatch.setenv("SOMA_HUB_URL", "https://hub.test")
+    monkeypatch.setenv("SOMA_HUB_TOKEN", "dummy")
     monkeypatch.setattr("core.hub.Hub", lambda *args: service.hub)
     monkeypatch.setattr(
         sys,
@@ -788,8 +788,8 @@ def test_cli_preview_reports_selected_ids_and_never_derives(tmp_path, monkeypatc
     service.rows["S0001"]["hub_at"] = "2026-01-01T00:00:00.000Z"
     path = tmp_path / "ids.json"
     path.write_text('["S0001"]')
-    monkeypatch.setenv("LIFE_HUB_URL", "https://hub.test")
-    monkeypatch.setenv("LIFE_HUB_TOKEN", "dummy")
+    monkeypatch.setenv("SOMA_HUB_URL", "https://hub.test")
+    monkeypatch.setenv("SOMA_HUB_TOKEN", "dummy")
     monkeypatch.setattr("core.hub.Hub", lambda *args: service.hub)
     monkeypatch.setattr(
         sys,

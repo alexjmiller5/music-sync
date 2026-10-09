@@ -8,7 +8,7 @@
 
 `default` is the operator's own workspace, configured by env. Any other one is
 a record in the app's state overriding the per-user fields: SPOTIFY_MARKET,
-LIFE_HUB_URL, LIFE_HUB_TOKEN, NOTION_TOKEN, NOTION_TASKS_DATA_SOURCE_ID,
+SOMA_HUB_URL, SOMA_HUB_TOKEN, NOTION_TOKEN, NOTION_TASKS_DATA_SOURCE_ID,
 NOTION_PROJECT_PAGE_ID, INBOX_CAP, UNDO_DAYS, RECONCILE_ENABLED (its own
 switch; the app-wide RECONCILE_ENABLED must also be on). The Spotify refresh
 token comes from the person approving Music Sync through `connect-link` (add

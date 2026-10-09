@@ -1,4 +1,4 @@
-"""Retained raw pulls through life-data; recovery checkpoints in project-owned R2."""
+"""Retained raw pulls through soma; recovery checkpoints in project-owned R2."""
 
 from contextlib import closing, nullcontext
 from datetime import datetime
@@ -77,9 +77,9 @@ def _file_request(
 ) -> bytes | None:
     response = httpx.request(
         method,
-        f"{settings.life_hub_url.rstrip('/')}/v1/files/{quote(key, safe='/')}",
+        f"{settings.soma_hub_url.rstrip('/')}/v1/files/{quote(key, safe='/')}",
         headers={
-            "Authorization": f"Bearer {settings.life_hub_token}",
+            "Authorization": f"Bearer {settings.soma_hub_token}",
             "User-Agent": USER_AGENT,
             "Content-Type": "application/gzip",
         },

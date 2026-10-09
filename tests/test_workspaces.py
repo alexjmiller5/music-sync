@@ -29,11 +29,11 @@ def test_a_workspace_overrides_only_the_per_user_fields(settings, objects):
         settings,
         "friend",
         spotify_refresh_token="friend-rt",
-        life_hub_url="https://friend.hub",
+        soma_hub_url="https://friend.hub",
         inbox_cap="50",
     )
     s = workspaces.settings_for(settings, "friend")
-    assert (s.workspace, s.spotify_refresh_token, s.life_hub_url, s.inbox_cap) == (
+    assert (s.workspace, s.spotify_refresh_token, s.soma_hub_url, s.inbox_cap) == (
         "friend",
         "friend-rt",
         "https://friend.hub",
@@ -91,9 +91,9 @@ def test_registry_is_one_gzipped_json_object_with_secrets_encrypted(settings, ob
 
 
 def test_legacy_plaintext_secrets_still_load_and_the_next_save_encrypts_them(settings, objects):
-    legacy = {"friend": {"life_hub_token": "plain-hub", "spotify_refresh_token": "plain-rt"}}
+    legacy = {"friend": {"soma_hub_token": "plain-hub", "spotify_refresh_token": "plain-rt"}}
     objects[workspaces.REGISTRY_KEY] = gzip.compress(json.dumps(legacy).encode())
-    assert workspaces.settings_for(settings, "friend").life_hub_token == "plain-hub"
+    assert workspaces.settings_for(settings, "friend").soma_hub_token == "plain-hub"
     workspaces.save(settings, "other", spotify_market="GB")
     raw = gzip.decompress(objects[workspaces.REGISTRY_KEY])
     assert b"plain-hub" not in raw and b"plain-rt" not in raw
@@ -103,7 +103,7 @@ def test_legacy_plaintext_secrets_still_load_and_the_next_save_encrypts_them(set
 def test_secrets_are_never_stored_without_a_key(settings, objects):
     keyless = settings.model_copy(update={"workspace_secret_key": ""})
     with pytest.raises(workspaces.InvalidWorkspace, match="WORKSPACE_SECRET_KEY"):
-        workspaces.save(keyless, "friend", life_hub_token="t")
+        workspaces.save(keyless, "friend", soma_hub_token="t")
     assert workspaces.REGISTRY_KEY not in objects
     workspaces.save(keyless, "friend", spotify_market="GB")  # no secret, no key needed
     assert workspaces.summary(keyless, "friend")["spotify_market"] == "GB"
@@ -112,7 +112,7 @@ def test_secrets_are_never_stored_without_a_key(settings, objects):
 def test_default_record_overrides_env_field_by_field(settings, objects):
     workspaces.save(settings, "default", spotify_refresh_token="regranted")
     s = workspaces.settings_for(settings, "default")
-    assert s.spotify_refresh_token == "regranted" and s.life_hub_url == settings.life_hub_url
+    assert s.spotify_refresh_token == "regranted" and s.soma_hub_url == settings.soma_hub_url
     assert workspaces.ids(settings) == ["default"]
 
 

@@ -1,4 +1,4 @@
-"""Load the life-data mirror and pull live Spotify state into plain dataclasses."""
+"""Load the soma mirror and pull live Spotify state into plain dataclasses."""
 
 import gzip
 import hashlib
