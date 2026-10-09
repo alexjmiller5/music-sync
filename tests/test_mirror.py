@@ -259,3 +259,63 @@ def test_pull_live_always_fetches_smart_playlists_even_if_snapshot_unchanged():
     live = mirror.pull_live(sp, "US", "alexmiller", m)
     assert live.playlists["P1"].items is not None
     assert sp.item_calls == ["P1", "P2"]
+
+
+class StampedHub(FakeHub):
+    """Rows carry hub_at; incremental pulls return only rows stamped at or after since."""
+
+    def __init__(self, tables):
+        super().__init__(tables)
+        self.pulls = []
+
+    def pull(self, table, columns, since="", where=None):
+        self.pulls.append((table, since))
+        rows = super().pull(table, [*columns, "hub_at"], since, where)
+        return [r for r in rows if not since or (r.get("hub_at") or "") >= since]
+
+
+def stamped_tables():
+    song = {
+        "id": "USAAA2600001",
+        "liked": 1,
+        "liked_at": "2026-01-01T00:00:00.000Z",
+        "first_seen": "2026-01-01T00:00:00.000Z",
+        "title": "One",
+        "hub_at": "2026-10-01T00:00:00.000Z",
+    }
+    playlist = {
+        "id": "P",
+        "name": "list",
+        "kind": "curated",
+        "pinned": 1,
+        "hub_at": "2026-10-01T00:00:00.000Z",
+    }
+    return {"songs": [song], "playlists": [playlist], "playlist_songs": [], "provenance": []}
+
+
+def test_cached_mirror_pulls_only_changes_and_applies_soft_deletes():
+    tables = stamped_tables()
+    hub, cache = StampedHub(tables), mirror.new_cache(now=1000)
+    first = mirror.load_mirror(hub, cache=cache, now=1000)
+    assert set(first.songs) == {"USAAA2600001"} and all(s == "" for _, s in hub.pulls)
+    tables["songs"][0].update(title="Renamed", hub_at="2026-10-02T00:00:00.000Z")
+    tables["songs"].append(
+        {**tables["songs"][0], "id": "USAAA2600002", "hub_at": "2026-10-02T00:00:00.000Z"}
+    )
+    tables["playlists"][0].update(
+        deleted_at="2026-10-02T00:00:00.000Z", hub_at="2026-10-02T00:00:00.000Z"
+    )
+    hub.pulls.clear()
+    second = mirror.load_mirror(hub, cache=json.loads(json.dumps(cache)), now=2000)
+    assert ("songs", "2026-10-01T00:00:00.000Z") in hub.pulls
+    assert second.songs["USAAA2600001"].title == "Renamed" and "USAAA2600002" in second.songs
+    assert second.playlists == {}
+
+
+def test_stale_cache_falls_back_to_a_full_pull():
+    hub = StampedHub(stamped_tables())
+    cache = mirror.new_cache(now=0)
+    mirror.load_mirror(hub, cache=cache, now=0)
+    hub.pulls.clear()
+    mirror.load_mirror(hub, cache=cache, now=mirror.FULL_REFRESH_SECONDS + 1)
+    assert all(since == "" for _, since in hub.pulls)

@@ -440,6 +440,8 @@ def test_capture_raw_archive_precedes_add_and_trim(settings, archive_store, mock
     original = archive.put
 
     def put(settings, key, data):
+        if key.startswith("music-sync/mirror-cache/"):
+            return original(settings, key, data)
         assert sp.calls == []
         saved = json.loads(gzip.decompress(data))
         if "event" in saved:

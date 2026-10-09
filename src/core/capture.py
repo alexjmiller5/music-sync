@@ -96,7 +96,8 @@ def capture(
     isrc = resolved.isrc
     if not isrc:
         return {"ok": False, "message": f"{title} by {artist} has no ISRC on Spotify", "isrc": None}
-    m = mirror_mod.load_mirror(hub)
+    cache = mirror_mod.load_cache(settings)
+    m = mirror_mod.load_mirror(hub, cache=cache)
     inbox = next((p for p in m.playlists.values() if p.kind == "inbox"), None)
     if not inbox:
         return {"ok": False, "message": "no inbox playlist in life-data", "isrc": isrc}
@@ -231,5 +232,6 @@ def capture(
         hub.push(
             "playlist_songs", [{"id": f"{inbox.id}:{i.isrc}", "deleted_at": now_s} for i in extra]
         )
+    mirror_mod.save_cache(settings, cache)
     message = "is already in" if existing else "added to"
     return {"ok": True, "message": f"{title} by {artist} {message} new songs", "isrc": isrc}

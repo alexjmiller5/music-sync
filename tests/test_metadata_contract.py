@@ -95,7 +95,9 @@ def test_old_contract_preview_available(settings, monkeypatch, path):
     body["properties"][0]["derived_by"] = "spotify_isrc"
     hub = SimpleNamespace(catalog=lambda: body)
     monkeypatch.setattr(archive, "get", lambda *args: None)
-    monkeypatch.setattr(run.mirror, "load_mirror", lambda *args: Mirror({}, {}, {}, [], set()))
+    monkeypatch.setattr(
+        run.mirror, "load_mirror", lambda *args, **kw: Mirror({}, {}, {}, [], set())
+    )
     monkeypatch.setattr(run.mirror, "pull_live", lambda *args, **kw: Live({}, {}, {}))
     monkeypatch.setattr(metadata_replay, "_read_live", lambda *args: Live({}, {}, {}))
 
