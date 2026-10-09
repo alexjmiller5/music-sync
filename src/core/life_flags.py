@@ -170,3 +170,43 @@ def file_life(settings, http, flags, errors, today):
         state["batches"][digest] = record
         save()
     return _deliver(state["batches"][digest], hub, save)
+
+
+def deliver_reviews(settings, http, items, today):
+    """One create-only task row per review exception; an existing row stays untouched.
+
+    The row identity comes from the exception itself, so repeated runs, retries and
+    a row the owner already closed or deleted never produce a second task.
+    """
+    binding = settings.flags_task_config
+    if not binding or not items:
+        return []
+    hub = Hub(settings.life_hub_url.rstrip("/"), settings.life_hub_token, http)
+    col = binding["columns"]
+    ids = []
+    for item in items:
+        identity = json.dumps(
+            [settings.workspace, item["id"], item.get("before_ref")], separators=(",", ":")
+        )
+        row_id = uuid5(NAMESPACE_URL, "music-sync-review-v1:" + identity).hex
+        values = {
+            **binding["defaults"],
+            "title": f"Music Sync review: {item.get('title') or item['isrc']} was unliked "
+            "while still curated",
+            "due": today,
+            "notes": "\n".join(
+                [
+                    f"Recording {item['isrc']} was liked and curated, then unliked while it "
+                    "stayed curated. Curated membership is kept and it is not re-liked.",
+                    "Playlists: " + ", ".join(item.get("playlists") or []),
+                    f"Prior like origin: {item.get('prior_like_origin')}",
+                    f"Before: {item.get('before_ref')}",
+                    f"After: {item.get('after_ref')}",
+                    "Re-like it in Spotify to keep it, or remove it from the curated "
+                    "playlists to let it go.",
+                ]
+            ),
+        }
+        hub.insert(binding["table"], {"id": row_id, **{col[k]: v for k, v in values.items()}})
+        ids.append(row_id)
+    return ids

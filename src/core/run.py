@@ -26,7 +26,11 @@ def reconcile_run(
     hub=None,
     http: httpx.Client | None = None,
     writes: bool = True,
+    package: dict | None = None,
 ) -> actions.RunLog:
+    """`package` (dry runs only) previews the first reconciliation after that package."""
+    if package is not None and not dry_run:
+        raise ValueError("a package is applied only through the package operation")
     now = now or datetime.now(timezone.utc)
     today = now.date().isoformat()
     saved = archive.get(settings, archive.pending_key(settings))
@@ -35,6 +39,11 @@ def reconcile_run(
         return actions.RunLog(
             dry_run=dry_run,
             errors=["Pending metadata replay recovery must finish through metadata_replay"],
+        )
+    if pending and pending.get("intent") == "package":
+        return actions.RunLog(
+            dry_run=dry_run,
+            errors=["Pending rollout package must finish through the package operation"],
         )
     if pending and dry_run:
         return actions.RunLog(
@@ -88,13 +97,24 @@ def reconcile_run(
             archive.put(settings, source_ref, gzip.compress(json.dumps(live.raw).encode()))
         retained = archive.get(settings, curation.state_key(settings.workspace))
         previous = json.loads(gzip.decompress(retained)) if retained else None
-        members = {
-            (pid, item.isrc)
-            for pid, playlist in live.playlists.items()
-            if pid in m.playlists and m.playlists[pid].kind == "curated"
-            for item in playlist.items or []
-            if item.isrc
-        }
+        observed_raw = live.raw
+        if package is not None:
+            from core import package as package_mod
+
+            problems = package_mod.validate(package, live, {})
+            if problems:
+                return actions.RunLog(dry_run=True, errors=problems)
+            if previous is None:
+                _, previous = curation.advance(None, set(live.liked), _curated(m, live), source_ref)
+            m, live = package_mod.simulate(package, m, live, me, now)
+            previous = package_mod.adjust_curation(
+                previous,
+                package,
+                live,
+                {pid: p.kind for pid, p in m.playlists.items()},
+                {u["isrc"] for u in package["unlikes"]},
+            )
+        members = _curated(m, live)
         if any(playlist.items is None for playlist in live.playlists.values()):
             return actions.RunLog(dry_run=dry_run, errors=["Incomplete curation observation"])
         to_like, next_curation = curation.advance(previous, set(live.liked), members, source_ref)
@@ -174,7 +194,11 @@ def reconcile_run(
             "market": settings.spotify_market,
             "retained_remotely": False,
             "atomic": False,
-            "spotify": live.raw,
+            "me": me,
+            "spotify": observed_raw,
+            "package": None
+            if package is None
+            else {"digest": package_mod.digest(package), "spotify_after": live.raw},
             "revisions": m.revisions,
             "mirror": {
                 "observations": m.observations,
@@ -191,8 +215,19 @@ def reconcile_run(
             "curation_after_if_applied": next_curation,
             "planner_settings": {"inbox_cap": settings.inbox_cap, "undo_days": settings.undo_days},
         }
+    names = {p.id: p.name for p in m.playlists.values()} if not pending else {}
     out.review_items = [
-        {"id": f"curation-unlike:{isrc}", "isrc": isrc, **item}
+        {
+            "id": f"curation-unlike:{isrc}",
+            "isrc": isrc,
+            "title": m.songs[isrc].title if not pending and isrc in m.songs else None,
+            "playlists": sorted(
+                names.get(pid, pid)
+                for pid, i in (next_curation or {}).get("baseline", {}).get("curated", [])
+                if i == isrc
+            ),
+            **item,
+        }
         for isrc, item in (next_curation or {}).get("exceptions", {}).items()
     ]
     log.info(
@@ -201,9 +236,24 @@ def reconcile_run(
         flags=len(out.flags),
         errors=len(out.errors),
     )
-    if not dry_run:
+    if not dry_run and writes:
+        # Observation imports return their flags to the operator for triage instead.
         flags.file(settings, http, out.flags, out.errors, today)
+        if not out.errors:
+            from core.life_flags import deliver_reviews
+
+            deliver_reviews(settings, http, out.review_items, today)
     return out
+
+
+def _curated(m: Mirror, live) -> set[tuple[str, str]]:
+    return {
+        (pid, item.isrc)
+        for pid, playlist in live.playlists.items()
+        if pid in m.playlists and m.playlists[pid].kind == "curated"
+        for item in playlist.items or []
+        if item.isrc
+    }
 
 
 reconcile = reconcile_run  # name used by app.py and tests: run.reconcile(...)

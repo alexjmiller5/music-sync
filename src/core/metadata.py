@@ -11,7 +11,8 @@ from core.hub import HubError
 DISPLAY_FIELDS = ("title", "artists", "album", "album_year", "duration_ms")
 
 
-def require_observed_contract(hub) -> None:
+def require_observed_contract(hub) -> frozenset[str]:
+    """Checks the observed base-field contract; returns the cataloged songs columns."""
     properties = {
         p["col"]: p
         for p in hub.catalog()["properties"]
@@ -22,6 +23,7 @@ def require_observed_contract(hub) -> None:
             raise HubError(
                 f"songs.{col} must exist without a derivation binding; live cutover required"
             )
+    return frozenset(properties)
 
 
 def present(value):

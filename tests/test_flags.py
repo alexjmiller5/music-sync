@@ -93,7 +93,9 @@ def test_long_evidence_is_preserved_in_full(settings, existing):
     flags.file(settings, httpx.Client(transport=httpx.MockTransport(handler)), [new], [], "today")
     chunks = written[0]["properties"]["Notes"]["rich_text"]
     combined = "".join(c["text"]["content"] for c in chunks)
-    assert combined == (old + "\n" if existing else "") + "today\n- " + new
+    prefix = (old + "\n" if existing else "") + "today [music-sync-batch:"
+    assert combined.startswith(prefix) and combined.endswith("]\n- " + new)
+    assert len(combined) == len(prefix) + 16 + len("]\n- " + new)
     assert all(len(c["text"]["content"]) <= 1900 for c in chunks)
 
 
@@ -114,3 +116,38 @@ def test_oversized_flag_receipt_fails_before_overwriting_existing_evidence(setti
             "today",
         )
     assert calls == ["POST"]
+
+
+def test_retry_after_lost_append_does_not_append_twice(settings):
+    notes = {"text": "old"}
+    patches = []
+
+    def handler(req):
+        if req.url.path.endswith("/query"):
+            return httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {
+                            "id": "open",
+                            "properties": {"Notes": {"rich_text": [{"plain_text": notes["text"]}]}},
+                        }
+                    ]
+                },
+            )
+        body = json.loads(req.content)
+        patches.append(body)
+        notes["text"] = "".join(
+            part["text"]["content"] for part in body["properties"]["Notes"]["rich_text"]
+        )
+        if len(patches) == 1:
+            raise httpx.ReadTimeout("response lost", request=req)
+        return httpx.Response(200, json={"id": "open"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(httpx.ReadTimeout):
+        flags.file(settings, client, ["same flag"], [], "2026-10-09")
+    assert flags.file(settings, client, ["same flag"], [], "2026-10-09") == "open"
+    assert len(patches) == 1 and notes["text"].count("same flag") == 1
+    flags.file(settings, client, ["next flag"], [], "2026-10-09")
+    assert len(patches) == 2

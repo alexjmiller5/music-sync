@@ -718,3 +718,65 @@ def test_reconcile_response_exposes_quiet_review_items(settings, monkeypatch):
     assert out["review_items"] == reviews
     assert "curation-unlike:recording" in out["summary"]
     assert not out["flags"]
+
+
+def test_observation_import_and_preview_run_while_reconciliation_is_disabled(settings, monkeypatch):
+    import gzip
+    import json
+
+    from core import actions, config, run
+
+    calls = []
+
+    def fake(s, **kwargs):
+        calls.append(kwargs)
+        return actions.RunLog(dry_run=kwargs["dry_run"], flags=["f"])
+
+    monkeypatch.setattr(config, "Settings", lambda: settings)
+    monkeypatch.setattr("core.archive.get", lambda *args: None)
+    monkeypatch.setattr(run, "reconcile", fake)
+    monkeypatch.delenv("RECONCILE_ENABLED", raising=False)
+    worker = app.worker.get_raw_f()
+    assert worker("observe", {}) == {"applied": {}, "flags": ["f"], "errors": []}
+    receipt = json.loads(gzip.decompress(worker("preview", {"package": {"version": 1}})))
+    assert receipt["dry_run"] is True
+    assert calls == [
+        {"dry_run": False, "writes": False},
+        {"dry_run": True, "package": {"version": 1}},
+    ]
+
+
+def test_package_requires_its_digest_and_clears_pending_after_the_run(settings, monkeypatch):
+    import gzip
+    import json
+
+    from core import config, metadata, package
+
+    store = {}
+    monkeypatch.setattr(config, "Settings", lambda: settings)
+    monkeypatch.setattr("core.archive.get", lambda s, k: store.get(k))
+    monkeypatch.setattr("core.archive.put", lambda s, k, v: store.__setitem__(k, v))
+    monkeypatch.setattr(metadata, "require_observed_contract", lambda hub: None)
+    monkeypatch.setattr("core.spotify_client.SpotifyClient", lambda s: object())
+    seen = []
+
+    def apply(doc, spotify, hub, s, now, state, save):
+        state["backup"] = "raw/b"
+        save()
+        seen.append(json.loads(gzip.decompress(store["music-sync/pending-reconcile.json.gz"])))
+        return {"applied": True, "verified": True}
+
+    monkeypatch.setattr(package, "apply", apply)
+    worker = app.worker.get_raw_f()
+    doc = {"version": 1, "likes": []}
+    assert worker("package", {"package": doc, "confirm": "wrong"})["applied"] is False
+    assert seen == []
+    out = worker("package", {"package": doc, "confirm": package.digest(doc)})
+    assert out == {"applied": True, "verified": True}
+    assert seen[0]["intent"] == "package" and seen[0]["state"]["backup"] == "raw/b"
+    assert json.loads(gzip.decompress(store["music-sync/pending-reconcile.json.gz"])) is None
+    store["music-sync/pending-reconcile.json.gz"] = gzip.compress(
+        json.dumps({"intent": "metadata_replay"}).encode()
+    )
+    blocked = worker("package", {"package": doc, "confirm": package.digest(doc)})
+    assert blocked["applied"] is False and len(seen) == 1

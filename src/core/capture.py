@@ -84,7 +84,7 @@ def capture(
 
     spotify = spotify or SpotifyClient(settings)
     hub = hub or Hub(settings.life_hub_url, settings.life_hub_token)
-    metadata.require_observed_contract(hub)
+    song_columns = metadata.require_observed_contract(hub)
     tr = resolved_track if resolved_track is not None else resolve_track(payload, spotify, settings)
     if not tr:
         return {
@@ -143,7 +143,9 @@ def capture(
         source_ref=source_ref,
         market=settings.spotify_market,
     )
-    event_edge = recognition.retain(settings, payload, now, source_ref, isrc, client_id)
+    event_edge, event = recognition.retain_event(
+        settings, payload, now, source_ref, isrc, client_id
+    )
     now_s = _iso(now)
     if existing is None:
         if record_outcome:
@@ -159,6 +161,18 @@ def capture(
             if a.isrc not in m.songs:
                 row = {"liked": 0, "liked_at": None, "first_seen": now_s, **row}
             song_rows.append(row)
+    # The visible Shazam summary is recomputed from every retained event, so a
+    # retried capture with the same identity never counts twice.
+    # Written only once the catalog carries the summary columns.
+    if set(recognition.PROJECTION) <= song_columns:
+        shazam = recognition.song_projection(settings, hub, isrc, event_edge, event)
+        for row in song_rows:
+            if row["id"] == isrc:
+                row.update(shazam)
+                break
+        else:
+            base = {} if isrc in m.songs else {"liked": 0, "liked_at": None, "first_seen": now_s}
+            song_rows.append({**base, **shazam})
     if song_rows:
         hub.push("songs", song_rows)
     hub.insert_rows("provenance", [event_edge])
