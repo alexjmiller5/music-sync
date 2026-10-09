@@ -301,10 +301,11 @@ def test_timeout_circuit_only_pauses_failing_source_and_reports_deferred():
         service.replies[(id, "mb_tags")] = [failure(id, "mb_tags", "TimeoutError")] * 3
     out = service.run()
     counts = Counter(col for _, col in service.calls)
-    assert counts == {"deezer_genres": 100, "mb_tags": 15, "first_year": 100}
+    # A paused source defers each row's year until that source lands.
+    assert counts == {"deezer_genres": 100, "mb_tags": 15}
     assert out["completed_recordings"] == 0 and len(out["failed"]) == 5
     assert out["stopped_sources"] == ["mb_tags"]
-    assert out["deferred"] == {"mb_tags": 95}
+    assert out["deferred"] == {"mb_tags": 95, "first_year": 100}
 
 
 def test_record_specific_failures_continue_and_success_resets_timeout_streak():
@@ -330,14 +331,11 @@ def test_upstream_cooldown_defers_source_without_short_retries(status, retry_aft
     monkeypatch.setattr(backfill_derive.time, "time", lambda: 1000)
     out = backfill_derive.run(service.hub, "songs", None, sleep=sleeps.append, batch_size=1)
     assert sleeps == []
-    assert Counter(col for _, col in service.calls) == {
-        "deezer_genres": 1,
-        "mb_tags": 3,
-        "first_year": 3,
-    }
+    # The year waits for the deferred source instead of being derived twice.
+    assert Counter(col for _, col in service.calls) == {"deezer_genres": 1, "mb_tags": 3}
     assert out["retry_at"] == {"deezer_genres": 1000 + max(1, retry_after)}
     assert out["stopped_sources"] == ["deezer_genres"]
-    assert out["deferred"] == {"deezer_genres": 2}
+    assert out["deferred"] == {"deezer_genres": 2, "first_year": 3}
     assert out["failed"][0]["attempts"] == 1
     assert out["completed_recordings"] == 0
     service.calls.clear()
@@ -358,8 +356,9 @@ def test_rate_limit_without_valid_delay_still_stops_premature_retries(retry_afte
     service.replies[("S0000", "deezer_genres")] = [error]
     monkeypatch.setattr(backfill_derive.time, "time", lambda: 1000)
     out = service.run("deezer_genres")
-    assert service.calls == [("S0000", "deezer_genres"), ("S0000", "first_year")]
+    assert service.calls == [("S0000", "deezer_genres")]
     assert out["retry_at"] == {"deezer_genres": 1060}
+    assert out["deferred"]["first_year"] == 1
 
 
 def test_empty_success_is_failure_and_cli_exits_nonzero(monkeypatch, capsys):
