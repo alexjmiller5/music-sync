@@ -290,7 +290,7 @@ carries a valid rule.
   `SPOTIFY_REFRESH_TOKEN` (the "AI Agent" developer app; read scopes minted
   2026-09-07; Spotify expires it every 180 days - re-mint with
   `scripts/spotify_auth.py`, and a run that sees `invalid_grant` flags it in
-  Notion and stops), `LIFE_HUB_URL`, `LIFE_HUB_TOKEN` (scope `tables:write`, minted
+  Notion and stops), `SOMA_HUB_URL`, `SOMA_HUB_TOKEN` (scope `tables:write`, minted
   with `life token create music-sync --scopes tables:write`), `NOTION_TOKEN`,
   `NOTION_TASKS_DATA_SOURCE_ID`, `NOTION_PROJECT_PAGE_ID`. `NOTION_PARENT_PAGE_ID`
   is deleted from the item.
