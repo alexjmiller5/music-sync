@@ -110,6 +110,9 @@ runs in tests, locally, or on any future platform.
   Duplicate inbox recordings also hold FIFO trimming and membership replacement;
   capture still retains recognition history and confirms existing presence.
   Playlist-rule references use `in_playlist_ids_any` / `not_in_playlist_ids`;
+  a shared predicate lives in one smart rule and others reuse it with
+  `matches_rule_ids_any` / `not_matches_rule_ids` (cycles, dangling and
+  non-smart references fail for review);
   legacy name references remain readable but ambiguous names fail for review.
 - Checkpoint like attempts before sending. A recovered uncertain attempt needs
   positive live evidence; absent likes require review, never automatic re-like.

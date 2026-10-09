@@ -26,16 +26,32 @@ def row(pid, name, rule, today, names, pinned=1, expires_at=None) -> dict:
     }
 
 
-def _check(rule, mirror: Mirror):
+def _smart_rules(mirror: Mirror) -> dict[str, dict]:
+    return {p.id: p.rule for p in mirror.playlists.values() if p.kind == "smart"}
+
+
+def _check(rule, mirror: Mirror, pid: str | None = None):
     if isinstance(rule, dict) and {"in_playlist_any", "not_in_playlist"} & set(rule):
         raise ConfigError("reference playlists by ID: in_playlist_ids_any / not_in_playlist_ids")
     names = {}
     for p in mirror.playlists.values():
         names[p.name] = None if p.name in names else p.id
+    smart_rules = _smart_rules(mirror)
+    if pid:
+        smart_rules[pid] = rule
     try:
-        rules.to_sql(rule, names, set(mirror.playlists))
+        rules.to_sql(rule, names, set(mirror.playlists), smart_rules, pid)
     except rules.RuleError as exc:
         raise ConfigError(str(exc)) from exc
+
+
+def _referenced_by(pid: str, mirror: Mirror) -> list[str]:
+    keys = ("matches_rule_ids_any", "not_matches_rule_ids")
+    return sorted(
+        other
+        for other, rule in _smart_rules(mirror).items()
+        if other != pid and any(pid in (rule or {}).get(k, []) for k in keys)
+    )
 
 
 def listing(mirror: Mirror) -> list[dict]:
@@ -71,7 +87,7 @@ def configure(body: dict, *, hub, mirror: Mirror, live_names: dict, today: str, 
         if pid not in live_names:
             raise ConfigError("unknown or unowned playlist id")
         if action == "smart":
-            _check(body.get("rule"), mirror)
+            _check(body.get("rule"), mirror, pid)
             out = row(
                 pid,
                 live_names[pid],
@@ -87,6 +103,10 @@ def configure(body: dict, *, hub, mirror: Mirror, live_names: dict, today: str, 
                 raise ConfigError("only a smart playlist can be cleared")
             if existing and existing.kind == "inbox":
                 raise ConfigError("the inbox keeps its kind")
+            if _referenced_by(pid, mirror):
+                raise ConfigError(
+                    f"rules reuse this playlist's rule: {_referenced_by(pid, mirror)}"
+                )
             out = {
                 "id": pid,
                 "name": live_names[pid],

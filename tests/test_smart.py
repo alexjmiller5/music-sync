@@ -98,3 +98,79 @@ def test_classify_and_convert_existing_playlists():
         today=TODAY,
     )
     assert converted["kind"] == "smart" and converted["name"] == "curated list"
+
+
+def mirror_with_shared_genre():
+    m = mirror()
+    m.playlists["RAP"] = Playlist(
+        "RAP",
+        "rap",
+        "smart",
+        {"v": 1, "genre_any": {"deezer": ["Rap/Hip Hop"]}},
+        None,
+        None,
+        1,
+        None,
+    )
+    m.playlists["GOOD"] = Playlist(
+        "GOOD",
+        "good",
+        "smart",
+        {"v": 1, "first_year": {"gte": 2000}, "not_matches_rule_ids": ["RAP"]},
+        None,
+        None,
+        1,
+        None,
+    )
+    return m
+
+
+SHARED_LIVE = {**LIVE, "RAP": "rap", "GOOD": "good"}
+
+
+def test_a_rule_can_reuse_another_smart_playlists_predicate():
+    hub = Hub()
+    out = smart.configure(
+        {
+            "action": "smart",
+            "playlist_id": "C",
+            "rule": {"v": 1, "first_year": {"lt": 2000}, "not_matches_rule_ids": ["RAP"]},
+        },
+        hub=hub,
+        mirror=mirror_with_shared_genre(),
+        live_names=SHARED_LIVE,
+        today=TODAY,
+    )
+    assert "not: rap" in out["description"]
+    # Changing the shared predicate once is one configuration change.
+    tags = {"v": 1, "genre_any": {"deezer": ["Rap/Hip Hop"], "mb_tags_contain": ["rap"]}}
+    out = smart.configure(
+        {"action": "smart", "playlist_id": "RAP", "rule": tags},
+        hub=hub,
+        mirror=mirror_with_shared_genre(),
+        live_names=SHARED_LIVE,
+        today=TODAY,
+    )
+    assert out["rule"] == tags and len(hub.pushed) == 2
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"action": "smart", "playlist_id": "U", "rule": {"v": 1, "matches_rule_ids_any": ["C"]}},
+        {
+            "action": "smart",
+            "playlist_id": "RAP",
+            "rule": {"v": 1, "matches_rule_ids_any": ["GOOD"]},
+        },
+        {"action": "clear", "playlist_id": "RAP"},
+        {"action": "curated", "playlist_id": "RAP"},
+    ],
+)
+def test_shared_predicate_cannot_dangle_or_cycle(body):
+    hub = Hub()
+    with pytest.raises(smart.ConfigError):
+        smart.configure(
+            body, hub=hub, mirror=mirror_with_shared_genre(), live_names=SHARED_LIVE, today=TODAY
+        )
+    assert hub.pushed == []

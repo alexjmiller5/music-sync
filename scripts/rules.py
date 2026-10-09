@@ -7,7 +7,8 @@
     uv run scripts/rules.py clear <playlist_id>                # smart -> curated
 
 Rules are JSON v1 (see src/core/rules.py) and reference other playlists by stable ID
-(`in_playlist_ids_any`, `not_in_playlist_ids`). Runs in the serialized worker with
+(`in_playlist_ids_any`, `not_in_playlist_ids`) and reuse another smart playlist's rule
+(`matches_rule_ids_any`, `not_matches_rule_ids`). Runs in the serialized worker with
 the operator's Modal auth; the worker writes the playlists row itself.
 """
 
