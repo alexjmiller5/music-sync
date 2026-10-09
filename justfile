@@ -42,3 +42,8 @@ clients action arg="" ws="":
 # `set <id>` (KEY=VALUE on stdin), `connect-link <id>` (Connect Spotify invite)
 workspace action *args:
     MODAL_TOKEN_ID=op://4eeyrkqibibn7k4j6rz2fbzvxm/2sfxybjpv3c3ohzxhf5qeken4a/token_id MODAL_TOKEN_SECRET=op://4eeyrkqibibn7k4j6rz2fbzvxm/2sfxybjpv3c3ohzxhf5qeken4a/token_secret op run --no-masking -- uv run scripts/workspace.py {{action}} {{args}}
+
+# Playlist kinds and smart rules: `list`, `create "<name>" '<rule json>'`,
+# `smart <id> '<rule json>'`, `curated <id>`, `clear <id>` (scripts/rules.py)
+rules action *args:
+    MODAL_TOKEN_ID=op://4eeyrkqibibn7k4j6rz2fbzvxm/2sfxybjpv3c3ohzxhf5qeken4a/token_id MODAL_TOKEN_SECRET=op://4eeyrkqibibn7k4j6rz2fbzvxm/2sfxybjpv3c3ohzxhf5qeken4a/token_secret op run --no-masking -- uv run scripts/rules.py {{action}} {{args}}

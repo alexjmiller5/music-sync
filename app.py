@@ -64,6 +64,8 @@ def worker(operation: str, body: dict | None = None):
         return _capture_access(body)
     if operation == "workspace_admin":
         return _workspace_admin(body)
+    if operation in ROLLOUT:
+        return ROLLOUT[operation](body)
     if operation != "reconcile":
         raise ValueError("unknown operation")
     if "metadata_replay" in body:
@@ -321,6 +323,165 @@ def spotify_connect_endpoint(
         return page("Link not valid", str(exc), 400)
     except httpx.HTTPError:
         return page("Spotify did not answer", "Try the link again in a minute.", 502)
+
+
+def _settings(body: dict):
+    from core import workspaces
+    from core.config import Settings
+
+    return workspaces.settings_for(Settings(), body.get("workspace") or "default")
+
+
+def _observe(body: dict):
+    """Observation import (no Spotify writes); allowed while RECONCILE_ENABLED=0."""
+    from core import run
+
+    log = run.reconcile(_settings(body), dry_run=False, writes=False)
+    return {"applied": dict(log.applied), "flags": log.flags, "errors": log.errors}
+
+
+def _preview(body: dict):
+    """Gzipped full dry-run receipt; with `package`, the first run after that package."""
+    import gzip
+    import json
+    from dataclasses import asdict
+
+    from core import run
+
+    log = run.reconcile(_settings(body), dry_run=True, package=body.get("package"))
+    return gzip.compress(json.dumps(asdict(log), ensure_ascii=False, allow_nan=False).encode())
+
+
+def _pending(settings):
+    import gzip
+    import json
+
+    from core import archive
+
+    saved = archive.get(settings, archive.pending_key(settings))
+    return json.loads(gzip.decompress(saved)) if saved else None
+
+
+def _package(body: dict):
+    """Apply one confirmed rollout package; a crash resumes from the retained checkpoint."""
+    import gzip
+    import json
+    from datetime import datetime, timezone
+
+    from core import archive, metadata
+    from core import package as pkg
+    from core.hub import Hub
+    from core.spotify_client import SpotifyClient
+
+    settings = _settings(body)
+    doc = body.get("package")
+    if not isinstance(doc, dict) or body.get("confirm") != pkg.digest(doc):
+        return {"applied": False, "problems": ["confirm must equal the package digest"]}
+    pending = _pending(settings)
+    if pending and (pending.get("intent") != "package" or pending.get("digest") != body["confirm"]):
+        return {"applied": False, "problems": ["another pending recovery must finish first"]}
+    state = pending["state"] if pending else {}
+    key = archive.pending_key(settings)
+
+    def save():
+        retained = {"intent": "package", "digest": body["confirm"], "state": state}
+        archive.put(settings, key, gzip.compress(json.dumps(retained).encode()))
+
+    hub = Hub(settings.life_hub_url, settings.life_hub_token)
+    metadata.require_observed_contract(hub)
+    receipt = pkg.apply(
+        doc, SpotifyClient(settings), hub, settings, datetime.now(timezone.utc), state, save
+    )
+    archive.put(settings, key, gzip.compress(json.dumps(None).encode()))
+    return receipt
+
+
+def _rules(body: dict):
+    from datetime import date
+
+    from fastapi.responses import JSONResponse
+
+    from core import mirror, smart
+    from core.hub import Hub
+    from core.spotify_client import SpotifyClient
+
+    settings = _settings(body)
+    hub = Hub(settings.life_hub_url, settings.life_hub_token)
+    m = mirror.load_mirror(hub)
+    if body.get("action") == "list":
+        return smart.listing(m)
+    if _pending(settings):
+        return JSONResponse({"ok": False, "message": "pending recovery"}, status_code=409)
+    spotify = SpotifyClient(settings)
+    me = spotify.me()["id"]
+    owned = {
+        p["id"]: p["name"]
+        for p in spotify.get_playlists()
+        if (p.get("owner") or {}).get("id") == me
+    }
+    try:
+        return smart.configure(
+            body,
+            hub=hub,
+            mirror=m,
+            live_names=owned,
+            today=date.today().isoformat(),
+            spotify=spotify,
+        )
+    except smart.ConfigError as exc:
+        return JSONResponse({"ok": False, "message": str(exc)}, status_code=422)
+
+
+def _recognitions(body: dict):
+    """Create-only import of past recognitions plus the songs Shazam projection."""
+    from datetime import datetime, timezone
+
+    from core import metadata, recognition
+    from core.hub import Hub
+
+    settings = _settings(body)
+    if _pending(settings):
+        return {"ok": False, "message": "pending recovery"}
+    hub = Hub(settings.life_hub_url, settings.life_hub_token)
+    legacy = hub.pull(
+        "provenance",
+        ["id", "from_ref", "to_ref", "created_at", "deleted_at"],
+        where={"from_kind": "shazam", "to_kind": "songs", "rel": "imported_from"},
+    )
+    events = list(body.get("historical") or []) + recognition.legacy_capture_events(legacy)
+    songs = {r["id"] for r in hub.pull("songs", ["id", "deleted_at"]) if not r.get("deleted_at")}
+    missing = sorted({e["isrc"] for e in events} - songs)
+    if body.get("dry_run", True):
+        return {
+            "dry_run": True,
+            "events": len(events),
+            "legacy": len(events) - len(body.get("historical") or []),
+            "missing_songs": missing,
+        }
+    columns = metadata.require_observed_contract(hub)
+    receipt = recognition.import_history(settings, hub, events, datetime.now(timezone.utc))
+    if not set(recognition.PROJECTION) <= columns:
+        receipt.pop("known")
+        return {**receipt, "projected": 0, "projection": "catalog columns missing"}
+    rows = hub.pull(
+        "provenance",
+        recognition.PROV_COLS,
+        where={"to_kind": "songs", "rel": "evidence_of", "asserted_by": "music-sync"},
+    )
+    projected = [
+        r for r in recognition.projections(settings, rows, receipt.pop("known")) if r["id"] in songs
+    ]
+    hub.push("songs", projected)
+    return {**receipt, "projected": len(projected), "missing_songs": missing}
+
+
+ROLLOUT = {
+    "observe": _observe,
+    "preview": _preview,
+    "package": _package,
+    "rules": _rules,
+    "recognitions": _recognitions,
+}
 
 
 def _metadata_replay(body: dict):

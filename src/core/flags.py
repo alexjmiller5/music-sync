@@ -1,4 +1,11 @@
-"""Batch a run's flags into ONE open Notion Chore task, appending while it stays open."""
+"""Batch a run's flags into ONE open Notion Chore task, appending while it stays open.
+
+Each batch carries a marker derived from its workspace, day and text, so a retry
+after a lost response finds the marker and never appends the same batch twice.
+"""
+
+import hashlib
+import json
 
 import httpx
 
@@ -27,7 +34,9 @@ def file(
     lines = [f"- {f}" for f in flags] + [f"- error: {e}" for e in errors]
     if not lines:
         return None
-    text = f"{today}\n" + "\n".join(lines)
+    identity = json.dumps([settings.workspace, today, flags, errors], separators=(",", ":"))
+    marker = f"[music-sync-batch:{hashlib.sha256(identity.encode()).hexdigest()[:16]}]"
+    text = f"{today} {marker}\n" + "\n".join(lines)
     q = http.post(
         f"{NOTION}/v1/data_sources/{settings.notion_tasks_data_source_id}/query",
         headers=_h(settings),
@@ -49,6 +58,8 @@ def file(
             t.get("plain_text", t.get("text", {}).get("content", ""))
             for t in page["properties"].get("Notes", {}).get("rich_text", [])
         )
+        if marker in old:
+            return page["id"]  # this batch already landed; a retry adds nothing
         body = {"properties": {"Notes": {"rich_text": _rich_text(old + "\n" + text)}}}
         r = http.patch(f"{NOTION}/v1/pages/{page['id']}", headers=_h(settings), json=body)
         r.raise_for_status()

@@ -196,3 +196,30 @@ def test_life_only_settings_do_not_require_retired_notion_credentials(settings):
     )
     configured = Settings(**{**values, "flags_task_config": CONFIG})
     assert configured.notion_token == "" and configured.flags_task_config == CONFIG
+
+
+REVIEW = {
+    "id": "curation-unlike:USAAA2600001",
+    "isrc": "USAAA2600001",
+    "title": "Song",
+    "playlists": ["curated list"],
+    "reason": "unliked_while_curated",
+    "before_ref": "raw/a",
+    "after_ref": "raw/b",
+    "prior_like_origin": "observed",
+}
+
+
+def test_review_exception_becomes_one_quiet_task_row(setup):
+    from core.life_flags import deliver_reviews
+
+    settings, server, http, _ = setup
+    first = deliver_reviews(settings, http, [REVIEW], "2026-10-09")
+    server.rows[first[0]]["state"] = "Doing"  # the owner touched it
+    again = deliver_reviews(settings, http, [REVIEW], "2026-10-10")
+    assert first == again and len(server.rows) == 1
+    row = server.rows[first[0]]
+    assert row["label"].startswith("Music Sync review: Song")
+    assert "curated list" in row["body"] and row["due"] == "2026-10-09"
+    assert row["state"] == "Doing"
+    assert deliver_reviews(settings, http, [], "2026-10-10") == []
