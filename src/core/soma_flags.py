@@ -95,7 +95,7 @@ def _deliver(record, hub, save):
 
 
 def file_life(settings, http, flags, errors, today):
-    endpoint = settings.life_hub_url.rstrip("/")
+    endpoint = settings.soma_hub_url.rstrip("/")
     key = (
         "music-sync/flag-tasks/"
         + hashlib.sha256(settings.workspace.encode()).hexdigest()
@@ -113,7 +113,7 @@ def file_life(settings, http, flags, errors, today):
             gzip.compress(json.dumps(state, ensure_ascii=False, allow_nan=False).encode()),
         )
 
-    hub = Hub(endpoint, settings.life_hub_token, http)
+    hub = Hub(endpoint, settings.soma_hub_token, http)
     result = None
     for record in state["batches"].values():
         if not record["delivered"]:
@@ -181,7 +181,7 @@ def deliver_reviews(settings, http, items, today):
     binding = settings.flags_task_config
     if not binding or not items:
         return []
-    hub = Hub(settings.life_hub_url.rstrip("/"), settings.life_hub_token, http)
+    hub = Hub(settings.soma_hub_url.rstrip("/"), settings.soma_hub_token, http)
     col = binding["columns"]
     ids = []
     for item in items:

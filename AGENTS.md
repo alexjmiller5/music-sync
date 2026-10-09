@@ -1,6 +1,6 @@
 # AGENTS.md
 
-music-sync - keeps a personal music catalog in life-data and materializes
+music-sync - keeps a personal music catalog in soma and materializes
 smart playlists in Spotify from rules over that catalog, deployed on Modal.
 Seeded from Spotify GDPR export zips in `data/raw/` (gitignored personal
 data - NEVER commit anything under `data/`).
@@ -15,9 +15,9 @@ runs in tests, locally, or on any future platform.
 - Spotify uses its own Music Sync developer app and OAuth refresh grant. Never
   reuse a terminal client or another service's client credentials. Development
   Mode quota is shared across the owning developer account, even with separate apps.
-- `flags_task_config` optionally selects Life Data flag tasks. Runtime title,
+- `flags_task_config` optionally selects Soma flag tasks. Runtime title,
   project/default values, columns and open statuses stay in the workspace.
-  `life_flags.py` retains per-workspace notification batches in the existing
+  `soma_flags.py` retains per-workspace notification batches in the existing
   project-owned R2 recovery bucket under `music-sync/flag-tasks/`. Conditional
   notes appends merge only after definitive conflicts; unknown write outcomes
   require retained marker evidence. Never discard an ambiguous batch or replace
@@ -53,10 +53,10 @@ runs in tests, locally, or on any future platform.
   auto-like, rule or expiry changes during review. Pending curation intents
   survive observation imports in the owning app recovery store.
 - Every Spotify mutation flow archives its pre-write pull, including capture
-  and resumed reconciliation. Raw pulls belong to Life Data and are uploaded
+  and resumed reconciliation. Raw pulls belong to Soma and are uploaded
   through `/v1/files/` under `raw/spotify-pull/` and `raw/spotify-capture/`
   using the scoped hub token. This is an
-  approved shared-service contract; no Life Data R2 credentials reach this app.
+  approved shared-service contract; no Soma R2 credentials reach this app.
   Recovery state belongs to this project's `music-sync-state` R2 bucket.
   Capture-client hashes live at `music-sync/capture-clients.json.gz`; durable
   delivery state lives below `music-sync/capture-receipts/`, keyed by client
@@ -103,8 +103,8 @@ runs in tests, locally, or on any future platform.
   First observation never executes the initial like migration. New curation
   auto-like intent persists through imports; unlike-while-curated exceptions
   persist and block later re-likes. Each exception is a `review_item`; with a
-  Life Data flag binding it is delivered once as its own create-only task row
-  (`life_flags.deliver_reviews`, stable ID, no notification). Unknown playlists
+  Soma flag binding it is delivered once as its own create-only task row
+  (`soma_flags.deliver_reviews`, stable ID, no notification). Unknown playlists
   need classification; duplicate/alias choices need review. Never automatically
   select a duplicate keeper outside an owner-confirmed rollout package.
   Duplicate inbox recordings also hold FIFO trimming and membership replacement;
@@ -160,9 +160,9 @@ runs in tests, locally, or on any future platform.
   Playability evidence is per track and market. Missing availability is unknown;
   legacy alias lists alone never authorize a replacement. Capture archives the
   full `resolved_track` with its pre-write inbox items.
-- **life-data is written ONLY by this app.** Agents and the user write
+- **soma is written ONLY by this app.** Agents and the user write
   Spotify directly (the `spotify_player` CLI via the `spotify` skill, or the
-  Spotify app itself) - never life-data. The hourly reconcile is what mirrors
+  Spotify app itself) - never soma. The hourly reconcile is what mirrors
   those Spotify changes into the catalog. Playlist kind/rule/pinned/expiry
   changes go through `just rules` (`core/smart.py` in the worker); there is no
   agent write exception for those columns.
@@ -234,10 +234,10 @@ runs in tests, locally, or on any future platform.
   (`Settings()`), exactly as before. Any other workspace is one entry in the
   `music-sync/workspaces.json.gz` R2 registry (`core/workspaces.py`) that
   overrides the per-user Settings fields (Spotify refresh token, market,
-  life-data hub, Notion flags target, limits) via
+  soma hub, Notion flags target, limits) via
   `workspaces.settings_for(base, id)`; the Spotify developer app and R2 bucket
   are shared app infrastructure. `Settings.workspace` names the active one.
-- Workspace secrets (`spotify_refresh_token`, `life_hub_token`,
+- Workspace secrets (`spotify_refresh_token`, `soma_hub_token`,
   `notion_token`) are Fernet-encrypted at rest with `WORKSPACE_SECRET_KEY`
   (ENV item, Modal secret `music-sync`); other fields stay plain. Saving a
   secret without the key is refused, and any save rewrites the whole registry,
@@ -266,7 +266,7 @@ runs in tests, locally, or on any future platform.
 app.py                       Modal shim: serialized worker, cron and proxy-auth endpoints
 src/core/
   spotify_client.py          Spotify Web API client (post-2026-02 Development Mode endpoint set)
-  hub.py                     life-data hub HTTP client (pull, push, derive)
+  hub.py                     soma hub HTTP client (pull, push, derive)
   mirror.py                  load the mirror (songs, playlists, playlist_songs) from the hub
   metadata.py                pure observed base-field patches and per-field archive evidence
   metadata_replay.py         metadata-only recovery from one retained Spotify archive
@@ -274,7 +274,7 @@ src/core/
   reconcile.py                pure diff: (mirror, live) -> list of actions
   actions.py                 apply actions to Spotify and the hub; run log
   flags.py                   batch flags into one Notion Chore task (idempotent batch marker)
-  life_flags.py              Life Data flag batches and quiet review rows
+  soma_flags.py              Soma flag batches and quiet review rows
   capture.py                  /capture: resolve a Shazam result, add to inbox, record the edge
   curation.py                 liked/curated transitions, auto-like intent, unlike exceptions
   history.py                  occurrence evidence for changed playlist contents
@@ -286,7 +286,7 @@ src/core/
   capture_clients.py          capture-only credentials and idempotent delivery receipts
   config.py                  Settings (env vars only)
   model.py                    dataclasses shared across core
-  archive.py                  raw files via life-data, recovery via project-owned R2
+  archive.py                  raw files via soma, recovery via project-owned R2
 scripts/
   provision.py                R2 field minters + atomic, memory-only Modal token batch
   sync_secrets.py             push .env.tpl -> Modal secret store

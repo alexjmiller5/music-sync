@@ -12,8 +12,8 @@ class Settings(BaseSettings):
     spotify_client_secret: str
     spotify_refresh_token: str
     spotify_market: str = "US"
-    life_hub_url: str
-    life_hub_token: str
+    soma_hub_url: str
+    soma_hub_token: str
     notion_token: str = ""
     notion_tasks_data_source_id: str = ""
     notion_project_page_id: str = ""

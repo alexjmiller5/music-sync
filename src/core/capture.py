@@ -83,7 +83,7 @@ def capture(
     from core.spotify_client import SpotifyClient
 
     spotify = spotify or SpotifyClient(settings)
-    hub = hub or with_read_retries(Hub(settings.life_hub_url, settings.life_hub_token))
+    hub = hub or with_read_retries(Hub(settings.soma_hub_url, settings.soma_hub_token))
     song_columns = metadata.require_observed_contract(hub)
     tr = resolved_track if resolved_track is not None else resolve_track(payload, spotify, settings)
     if not tr:
@@ -102,7 +102,7 @@ def capture(
     )
     inbox = next((p for p in m.playlists.values() if p.kind == "inbox"), None)
     if not inbox:
-        return {"ok": False, "message": "no inbox playlist in life-data", "isrc": isrc}
+        return {"ok": False, "message": "no inbox playlist in soma", "isrc": isrc}
     raw_items = spotify.get_playlist_items(inbox.id, settings.spotify_market)
     observed_items = [mirror_mod.item_from_raw(r) for r in raw_items]
     mirror_mod.validate_recording_aliases([resolved, *observed_items])

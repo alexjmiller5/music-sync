@@ -1,4 +1,4 @@
-"""life-data hub client over the HTTP protocol. Knows a URL and a bearer token, nothing else."""
+"""soma hub client over the HTTP protocol. Knows a URL and a bearer token, nothing else."""
 
 import time
 from collections import defaultdict

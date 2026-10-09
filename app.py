@@ -432,7 +432,7 @@ def _package(body: dict):
         retained = {"intent": "package", "digest": body["confirm"], "state": state}
         archive.put(settings, key, gzip.compress(json.dumps(retained).encode()))
 
-    hub = with_read_retries(Hub(settings.life_hub_url, settings.life_hub_token))
+    hub = with_read_retries(Hub(settings.soma_hub_url, settings.soma_hub_token))
     metadata.require_observed_contract(hub)
     receipt = pkg.apply(
         doc, SpotifyClient(settings), hub, settings, datetime.now(timezone.utc), state, save
@@ -451,7 +451,7 @@ def _rules(body: dict):
     from core.spotify_client import SpotifyClient
 
     settings = _settings(body)
-    hub = with_read_retries(Hub(settings.life_hub_url, settings.life_hub_token))
+    hub = with_read_retries(Hub(settings.soma_hub_url, settings.soma_hub_token))
     m = mirror.load_playlists(hub)
     if body.get("action") == "list":
         return smart.listing(m)
@@ -487,7 +487,7 @@ def _recognitions(body: dict):
     settings = _settings(body)
     if _pending(settings):
         return {"ok": False, "message": "pending recovery"}
-    hub = with_read_retries(Hub(settings.life_hub_url, settings.life_hub_token))
+    hub = with_read_retries(Hub(settings.soma_hub_url, settings.soma_hub_token))
     legacy = hub.pull(
         "provenance",
         ["id", "from_ref", "to_ref", "created_at", "deleted_at"],

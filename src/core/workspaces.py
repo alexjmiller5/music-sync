@@ -5,7 +5,7 @@ acts for.
 (`Settings()`), exactly as before workspaces existed. Any other workspace is a
 record in the app's own R2 state (one registry object) that overrides the
 per-user Settings fields: its Spotify refresh token (from Connect Spotify,
-core/spotify_connect.py), its life-data hub, its Notion flags target, its
+core/spotify_connect.py), its soma hub, its Notion flags target, its
 limits. Secret fields are encrypted at rest with WORKSPACE_SECRET_KEY. The
 app's Spotify developer app and R2 bucket are app infrastructure every
 workspace shares. Adding a person = one record + a Connect Spotify link
@@ -36,8 +36,8 @@ def _task_binding(value):
 USER_FIELDS = {
     "spotify_refresh_token": str,
     "spotify_market": str,
-    "life_hub_url": str,
-    "life_hub_token": str,
+    "soma_hub_url": str,
+    "soma_hub_token": str,
     "notion_token": str,
     "notion_tasks_data_source_id": str,
     "notion_project_page_id": str,
@@ -45,7 +45,7 @@ USER_FIELDS = {
     "undo_days": int,
     "flags_task_config": _task_binding,
 }
-SECRET_FIELDS = {"spotify_refresh_token", "life_hub_token", "notion_token"}
+SECRET_FIELDS = {"spotify_refresh_token", "soma_hub_token", "notion_token"}
 # Not a Settings field: the default workspace keeps the RECONCILE_ENABLED env gate.
 FLAGS = {"reconcile_enabled": lambda v: str(v).lower() in {"1", "true", "yes"}}
 ID = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")

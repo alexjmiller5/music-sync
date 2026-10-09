@@ -211,7 +211,7 @@ REVIEW = {
 
 
 def test_review_exception_becomes_one_quiet_task_row(setup):
-    from core.life_flags import deliver_reviews
+    from core.soma_flags import deliver_reviews
 
     settings, server, http, _ = setup
     first = deliver_reviews(settings, http, [REVIEW], "2026-10-09")

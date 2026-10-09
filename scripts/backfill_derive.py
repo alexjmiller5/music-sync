@@ -4,7 +4,7 @@
 # ///
 """Resume music metadata from hub provenance, batching up to 50 IDs per request.
 
-Requires LIFE_HUB_URL and LIFE_HUB_TOKEN. No Spotify writes or local state.
+Requires SOMA_HUB_URL and SOMA_HUB_TOKEN. No Spotify writes or local state.
 """
 
 import argparse
@@ -551,7 +551,7 @@ def main() -> int:
 
     args = parse_args()
     try:
-        hub = Hub(os.environ["LIFE_HUB_URL"], os.environ["LIFE_HUB_TOKEN"])
+        hub = Hub(os.environ["SOMA_HUB_URL"], os.environ["SOMA_HUB_TOKEN"])
         ids = json.loads(args.ids_file.read_text()) if args.ids_file else None
         if args.ids_file and not isinstance(ids, list):
             raise ValueError("ids-file must contain a nonempty JSON array of unique nonempty IDs")

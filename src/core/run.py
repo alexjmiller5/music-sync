@@ -74,7 +74,7 @@ def reconcile_run(
         )
     http = http or httpx.Client(timeout=60)
     spotify = spotify or SpotifyClient(settings)
-    hub = hub or with_read_retries(Hub(settings.life_hub_url, settings.life_hub_token))
+    hub = hub or with_read_retries(Hub(settings.soma_hub_url, settings.soma_hub_token))
     if not dry_run:
         metadata.require_observed_contract(hub)
     try:
@@ -267,7 +267,7 @@ def reconcile_run(
         # Observation imports return their flags to the operator for triage instead.
         flags.file(settings, http, out.flags, out.errors, today)
         if not out.errors:
-            from core.life_flags import deliver_reviews
+            from core.soma_flags import deliver_reviews
 
             deliver_reviews(settings, http, out.review_items, today)
     return out

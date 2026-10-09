@@ -1,6 +1,6 @@
 # music-sync
 
-Keeps a personal music catalog in life-data and materializes smart playlists
+Keeps a personal music catalog in soma and materializes smart playlists
 in Spotify from rules over that catalog, deployed on
 [Modal](https://modal.com) from the `modal-service` template. Full design:
 `docs/superpowers/specs/2026-09-08-music-sync-redesign-design.md`.
@@ -11,7 +11,7 @@ in Spotify from rules over that catalog, deployed on
 app.py            Modal shim - one serialized worker, hourly trigger and HTTPS endpoints
 src/core/         business logic (plain Python, portable, no Modal imports)
   spotify_client.py  Spotify Web API client (post-2026-02 Development Mode endpoint set)
-  hub.py              life-data hub HTTP client (pull, push, derive)
+  hub.py              soma hub HTTP client (pull, push, derive)
   mirror.py           load the mirror (songs, playlists, playlist_songs) from the hub
   rules.py            rule JSON validation, -> SQL, -> description
   reconcile.py         pure diff: (mirror, live) -> list of actions
@@ -21,14 +21,14 @@ src/core/         business logic (plain Python, portable, no Modal imports)
   capture_clients.py   capture-only credentials and idempotent delivery receipts
   config.py           Settings (env vars only)
   model.py             dataclasses shared across core
-  archive.py           archive raw pulls through the life-data file API
+  archive.py           archive raw pulls through the soma file API
   metadata_replay.py   fill missing metadata from one retained Spotify archive
   curation.py          liked/curated transitions, auto-like intent, unlike exceptions
   history.py           occurrence-specific evidence for changed playlist contents
   recognition.py       retained recognition events and the songs Shazam summary
   smart.py             supported playlist kind/rule configuration (`just rules`)
   package.py           one-time rollout package: build, simulate, apply, verify
-  life_flags.py        Life Data flag task batches and quiet review rows
+  soma_flags.py        Soma flag task batches and quiet review rows
   workspaces.py        per-person settings records; spotify_connect.py invites
 scripts/
   provision.py       mints R2/Modal tokens; resolves R2_ACCESS_KEY_ID after R2_API_TOKEN
@@ -49,7 +49,7 @@ justfile          dev / test / sync-secrets / deploy
 
 ## What it does
 
-Every song lives in life-data with `liked` = whether it's hearted in Spotify.
+Every song lives in soma with `liked` = whether it's hearted in Spotify.
 Playlists come in three kinds:
 
 - **inbox** - exactly one, `new songs`, capped at 100. Songs land here from
@@ -68,7 +68,7 @@ After a complete baseline, a newly curated unliked song is proposed for liking.
 A recording previously observed both liked and curated, then unliked while
 still curated, becomes one persistent review exception and is not silently
 re-liked, including through another curated playlist. Each exception is
-returned as a `review_item` and, when a Life Data flag binding is configured,
+returned as a `review_item` and, when a Soma flag binding is configured,
 delivered once as its own task row (create-only, no notification). Repeated
 runs never create a second row, and a row the owner closes stays closed.
 
@@ -256,7 +256,7 @@ Cochlea saves to its Keychain and verifies. `just clients revoke
 
 Music Sync can act for more than one person without a user database. The
 operator's own setup is the `default` workspace (env). Another person is a
-workspace record holding their life-data hub, Notion target and limits, plus
+workspace record holding their soma hub, Notion target and limits, plus
 the Spotify refresh token they grant themselves through a **Connect Spotify**
 link (`just workspace connect-link <id>`). Their Cochlea devices get
 tokens bound to that workspace (`just clients issue "<device>" <id>`).
@@ -280,7 +280,7 @@ not a script catalog; one-offs go in `scripts/` and run directly.
 | `just clients <action>` | Issue/revoke capture clients |
 | `just workspace <action>` | Workspace records and Connect Spotify links |
 
-**Resumable metadata backfill:** with `LIFE_HUB_URL` and `LIFE_HUB_TOKEN`
+**Resumable metadata backfill:** with `SOMA_HUB_URL` and `SOMA_HUB_TOKEN`
 in the environment, run `uv run scripts/backfill_derive.py`. The same script
 can run as `python -u scripts/backfill_derive.py` in a container with httpx
 and `src/core` available. It calls only the hub's pull/derive interfaces.
@@ -360,7 +360,7 @@ still apply). The live catalog is not asserted to have changed: follow the
 
 **Normal use.** Spotify is the editing interface: like songs, edit curated
 playlists, Shazam with Cochlea. With `RECONCILE_ENABLED=1` the hourly cron
-mirrors those changes into life-data, likes newly curated songs, materializes
+mirrors those changes into soma, likes newly curated songs, materializes
 smart playlists and trims the inbox. Nothing about the catalog is edited by hand.
 
 **Ad-hoc dry run.** `uv run scripts/preview.py --remote --output <private.json>`
@@ -404,7 +404,7 @@ replay or package checkpoint. Never delete the pending object to bypass recovery
 
 **Flags and review.** Run problems (unknown playlists, duplicate occurrences,
 rule errors, missing IDs, errors) are batched into one open task per day of
-identical text: a Life Data task row when `flags_task_config` is set for the
+identical text: a Soma task row when `flags_task_config` is set for the
 workspace (`just workspace set <id>` with `FLAGS_TASK_CONFIG={...}`), otherwise
 the Notion "Music Sync flags" Chore task through the dedicated integration.
 Both are idempotent on retry. Unlike-while-curated review items become their own
@@ -413,7 +413,7 @@ instead of filing them.
 
 **Restore.** Every mutating flow archives the complete pre-write pull under
 `raw/spotify-pull/` (captures under `raw/spotify-capture/`) through the
-life-data file API. To restore a playlist, read the retained pull for the
+soma file API. To restore a playlist, read the retained pull for the
 moment before the change and re-add its URIs with the `spotify` tooling; the
 next reconcile mirrors the result. A rollout package records its pre-write
 backup and post-write readback keys in its receipt, and the renamed
@@ -481,7 +481,7 @@ recognitions create-only with explicitly estimated dates.
 `.env.tpl` holds 1Password `op://` references only, pointing at the
 `Music Sync` vault's `Music Sync ENV` item. Run everything through
 `op run --env-file=.env.tpl -- <cmd>`. The hub token stored there
-(`LIFE_HUB_TOKEN`) is named `music-sync-storage` on the hub, scoped to
+(`SOMA_HUB_TOKEN`) is named `music-sync-storage` on the hub, scoped to
 `tables:read,tables:write` and read/write file grants for `raw/spotify-pull/`
 and `raw/spotify-capture/`. Only this app writes the mirrored music catalog;
 agents and the user write Spotify directly (see AGENTS.md).
@@ -605,7 +605,7 @@ or advance the mirror to bypass it.
 
 Recovery checkpoints, capture-client credential hashes and delivery receipts
 use the project-owned `music-sync-state` R2 bucket.
-Retained raw pulls and captures use the life-data `/v1/files/` API with
+Retained raw pulls and captures use the soma `/v1/files/` API with
 scoped grants for `raw/spotify-pull/` and `raw/spotify-capture/`.
 
 Recovery storage uses boto3 against `https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com`.
@@ -632,17 +632,17 @@ in `.env.tpl` instead. Mint the refresh token with
 `SPOTIFY_CLIENT_SECRET` from the environment. Consume its `refresh_token` JSON
 field directly into the credential store or process environment.
 
-## Life Data flag tasks
+## Soma flag tasks
 
-`FLAGS_TASK_CONFIG` optionally selects a Life Data destination for flag tasks.
+`FLAGS_TASK_CONFIG` optionally selects a Soma destination for flag tasks.
 The same JSON object can be set as `flags_task_config` through the workspace
 operator interface; JSON `null` restores the existing Notion destination. The
 binding contains the catalog table, semantic column mapping, title, creation
-defaults and open-status labels. Life Data mode does not require Notion credentials.
+defaults and open-status labels. Soma mode does not require Notion credentials.
 
 The existing serialized worker owns flag receipts under
 `music-sync/flag-tasks/` in Music Sync's recovery bucket. It uses the workspace's
-scoped Life Data client, not backing storage credentials. Flag/error text and the
+scoped Soma client, not backing storage credentials. Flag/error text and the
 day identify a notification batch, so repeated identical reports that day append
 once. A unique open task with the configured title and project is adopted;
 multiple candidates fail visibly. Closed tasks are preserved and a later new
@@ -657,7 +657,7 @@ recovered even when the next reconcile produces no flags. Text is not truncated
 to Notion's property limit. Observation and dry-run callers do not invoke the
 writer.
 
-Binding shape for the Life Data `tasks` table:
+Binding shape for the Soma `tasks` table:
 
 ```json
 {"table": "tasks", "title": "Music Sync flags",
