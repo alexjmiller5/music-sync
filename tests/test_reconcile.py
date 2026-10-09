@@ -265,7 +265,7 @@ def base():
     songs = {"A": song("A"), "B": song("B"), "C": song("C", liked=0)}
     playlists = {
         "IN": pl("IN", "new songs", "inbox"),
-        "CU": pl("CU", "feel good", "curated"),
+        "CU": pl("CU", "mood list", "curated"),
         "SM": pl("SM", "pop", "smart", {"v": 1, "deezer_genres_any": ["Pop"]}),
     }
     memberships = {
@@ -280,7 +280,7 @@ def test_added_to_curated_while_unliked_gets_liked_and_edge():
     m = base()
     live = Live(
         {
-            "CU": live_pl("CU", "feel good", [item("A"), item("C")]),
+            "CU": live_pl("CU", "mood list", [item("A"), item("C")]),
             "SM": live_pl("SM", "pop", [item("A"), item("B")]),
             "IN": live_pl("IN", "new songs", []),
         },
@@ -303,7 +303,7 @@ def test_unheart_preserves_curated_and_smart_rule_removes():
     m = base()
     live = Live(
         {
-            "CU": live_pl("CU", "feel good", [item("A")]),
+            "CU": live_pl("CU", "mood list", [item("A")]),
             "SM": live_pl("SM", "pop", [item("A"), item("B")]),
             "IN": live_pl("IN", "new songs", [item("A")]),
         },
@@ -322,7 +322,7 @@ def test_unheart_does_not_mutate_skipped_playlists():
     m = base()
     live = Live(
         {
-            "CU": live_pl("CU", "feel good", None),
+            "CU": live_pl("CU", "mood list", None),
             "SM": live_pl("SM", "pop", None),
             "IN": live_pl("IN", "new songs", None),
         },
@@ -342,7 +342,7 @@ def test_smart_materializes_when_curated_and_inbox_skipped():
     m.memberships.pop(("SM", "A"))
     live = Live(
         {
-            "CU": live_pl("CU", "feel good", None),
+            "CU": live_pl("CU", "mood list", None),
             "SM": live_pl("SM", "pop", [item("B")]),
             "IN": live_pl("IN", "new songs", None),
         },
@@ -359,7 +359,7 @@ def test_rule_error_flags_instead_of_raising_other_smart_playlists_still_materia
     m.playlists["BAD"] = pl("BAD", "bad rule", "smart", {"v": 1, "in_playlist_any": ["gone"]})
     live = Live(
         {
-            "CU": live_pl("CU", "feel good", [item("A")]),
+            "CU": live_pl("CU", "mood list", [item("A")]),
             "SM": live_pl("SM", "pop", [item("A"), item("B")]),
             "IN": live_pl("IN", "new songs", []),
         },
@@ -382,7 +382,7 @@ def test_relike_never_restores_curated_regardless_tombstone_age():
     )
     live = Live(
         {
-            "CU": live_pl("CU", "feel good", []),
+            "CU": live_pl("CU", "mood list", []),
             "SM": live_pl("SM", "pop", [item("B")]),
             "IN": live_pl("IN", "new songs", []),
         },
@@ -408,7 +408,7 @@ def test_inbox_fifo_and_exemption():
     live = Live(
         {
             "IN": live_pl("IN", "new songs", items),
-            "CU": live_pl("CU", "feel good", [item("A")]),
+            "CU": live_pl("CU", "mood list", [item("A")]),
             "SM": live_pl("SM", "pop", [item("A"), item("B")]),
         },
         {"A": item("A"), "B": item("B")},
@@ -430,7 +430,7 @@ def test_smart_materialization_and_description():
             "SM": live_pl(
                 "SM", "pop", [item("A"), item("B")], desc="smart · genre: Pop · synced 2026-09-01"
             ),
-            "CU": live_pl("CU", "feel good", [item("A")]),
+            "CU": live_pl("CU", "mood list", [item("A")]),
             "IN": live_pl("IN", "new songs", []),
         },
         {"A": item("A"), "B": item("B"), "D": item("D")},
@@ -457,7 +457,7 @@ def test_unplayable_requires_review():
     live = Live(
         {
             "CU": live_pl(
-                "CU", "feel good", [item("A", playable=False), item("B", playable=False)]
+                "CU", "mood list", [item("A", playable=False), item("B", playable=False)]
             ),
             "SM": live_pl("SM", "pop", []),
             "IN": live_pl("IN", "new songs", []),
@@ -477,7 +477,7 @@ def test_duplicate_isrc_requires_keeper_review():
         {
             "CU": live_pl(
                 "CU",
-                "feel good",
+                "mood list",
                 [
                     item("A", "tA", added="2026-08-02T00:00:00.000Z"),
                     item("A", "tA9", added="2026-08-01T00:00:00.000Z"),
@@ -501,7 +501,7 @@ def test_duplicate_same_uri_is_preserved_for_review():
         {
             "CU": live_pl(
                 "CU",
-                "feel good",
+                "mood list",
                 [
                     item("A", "tA", added="2026-08-02T00:00:00.000Z"),
                     item("A", "tA", added="2026-08-01T00:00:00.000Z"),
@@ -528,7 +528,7 @@ def test_ephemeral_expiry_and_skipped_playlists():
     live = Live(
         {
             "SM": live_pl("SM", "pop", None),
-            "CU": live_pl("CU", "feel good", None),
+            "CU": live_pl("CU", "mood list", None),
             "IN": live_pl("IN", "new songs", None),
         },
         {"A": item("A"), "B": item("B")},
@@ -546,7 +546,7 @@ def test_no_isrc_items_are_one_flag_not_rows():
     m = base()
     live = Live(
         {
-            "CU": live_pl("CU", "feel good", [item(None)]),
+            "CU": live_pl("CU", "mood list", [item(None)]),
             "SM": live_pl("SM", "pop", []),
             "IN": live_pl("IN", "new songs", []),
         },
@@ -570,7 +570,7 @@ def test_inbox_duplicates_are_reviewed_without_relink_or_dedupe():
     live = Live(
         {
             "IN": live_pl("IN", "new songs", items),
-            "CU": live_pl("CU", "feel good", []),
+            "CU": live_pl("CU", "mood list", []),
             "SM": live_pl("SM", "pop", []),
         },
         {"A": item("A")},
@@ -586,7 +586,7 @@ def test_new_unliked_curated_song_has_one_edge_created_row_1():
     m = base()
     live = Live(
         {
-            "CU": live_pl("CU", "feel good", [item("A"), item("E")]),
+            "CU": live_pl("CU", "mood list", [item("A"), item("E")]),
             "SM": live_pl("SM", "pop", [item("A"), item("B")]),
             "IN": live_pl("IN", "new songs", []),
         },
@@ -604,7 +604,7 @@ def test_apply_order():
     m.songs["B"].deezer_genres = ["Rock"]
     live = Live(
         {
-            "CU": live_pl("CU", "feel good", [item("A"), item("C")]),
+            "CU": live_pl("CU", "mood list", [item("A"), item("C")]),
             "SM": live_pl("SM", "pop", [item("A"), item("B")]),
             "IN": live_pl("IN", "new songs", []),
         },
@@ -614,3 +614,20 @@ def test_apply_order():
     order = [a.kind for a in reconcile.plan(m, live, NOW)]
     rank = {k: i for i, k in enumerate(reconcile.ORDER)}
     assert order == sorted(order, key=lambda k: rank[k])
+
+
+def test_replacement_alias_keeps_the_earliest_membership_date():
+    m = Mirror(
+        {"A": song("A")},
+        {"CU": pl("CU", "curated", "curated")},
+        {("CU", "A"): Membership("CU", "A", "old-alias", "2018-06-12T02:13:23.000Z")},
+        [],
+        set(),
+    )
+    replaced = item("A", track_id="new-alias", added="2026-10-09T12:00:00Z")
+    acts = reconcile.plan(
+        m, Live({"CU": live_pl("CU", "curated", [replaced])}, {"A": replaced}, {}), NOW
+    )
+    row = next(a.row for a in kinds(acts, "upsert_membership") if a.playlist_id == "CU")
+    assert row["spotify_track_id"] == "new-alias"
+    assert row["added_at"] == "2018-06-12T02:13:23.000Z"
