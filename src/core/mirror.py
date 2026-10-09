@@ -1,7 +1,10 @@
 """Load the life-data mirror and pull live Spotify state into plain dataclasses."""
 
+import gzip
+import hashlib
 import json
 import re
+import time
 from collections import defaultdict
 
 from core.model import ISRC_RE, Live, LiveItem, LivePlaylist, Membership, Mirror, Playlist, Song
@@ -48,6 +51,37 @@ PROV_COLS = [
 ]
 
 
+CACHE_VERSION = 1
+FULL_REFRESH_SECONDS = 24 * 3600
+
+
+def new_cache(now: float | None = None) -> dict:
+    return {
+        "version": CACHE_VERSION,
+        "refreshed_at": time.time() if now is None else now,
+        "slices": {},
+    }
+
+
+def cache_key(workspace: str) -> str:
+    return "music-sync/mirror-cache/" + hashlib.sha256(workspace.encode()).hexdigest() + ".json.gz"
+
+
+def load_cache(settings) -> dict:
+    """The incremental mirror cache from the recovery bucket, or a fresh one."""
+    from core import archive
+
+    raw = archive.get(settings, cache_key(settings.workspace))
+    cache = json.loads(gzip.decompress(raw)) if raw else None
+    return cache if cache and cache.get("version") == CACHE_VERSION else new_cache()
+
+
+def save_cache(settings, cache: dict) -> None:
+    from core import archive
+
+    archive.put(settings, cache_key(settings.workspace), gzip.compress(json.dumps(cache).encode()))
+
+
 def _j(v, default):
     if v in (None, ""):
         return default
@@ -74,11 +108,34 @@ def load_playlists(hub) -> Mirror:
     return Mirror({}, playlists, {}, [], set())
 
 
-def load_mirror(hub) -> Mirror:
+def load_mirror(hub, cache: dict | None = None, now: float | None = None) -> Mirror:
+    """Full pulls, or with `cache` only rows the hub stamped since the last load.
+
+    The hub stamps `hub_at` on every accepted write and `since` is inclusive, so a
+    delta merged by ID reproduces the full read; soft deletes arrive as rows. A
+    cache older than a day is rebuilt from scratch (purges never appear in deltas).
+    """
     revisions = {}
+    now = time.time() if now is None else now
+    if cache is not None and now - cache.get("refreshed_at", 0) > FULL_REFRESH_SECONDS:
+        cache.clear()
+        cache.update(new_cache(now))
 
     def pull(table, columns, **kwargs):
-        rows = hub.pull(table, list(dict.fromkeys([*columns, "updated_at", "hub_at"])), **kwargs)
+        cols = list(dict.fromkeys([*columns, "updated_at", "hub_at"]))
+        if cache is None:
+            rows = hub.pull(table, cols, **kwargs)
+        else:
+            key = json.dumps([table, cols, kwargs.get("where")], sort_keys=True)
+            slot = cache["slices"].setdefault(key, {"cursor": "", "rows": {}})
+            delta = hub.pull(table, cols, since=slot["cursor"], **kwargs)
+            for row in delta:
+                slot["rows"][row["id"]] = row
+            stamps = [
+                r["hub_at"] for r in delta if isinstance(r.get("hub_at"), str) and r["hub_at"]
+            ]
+            slot["cursor"] = max([slot["cursor"], *stamps])
+            rows = list(slot["rows"].values())
         revisions.setdefault(table, {}).update(
             {row["id"]: {key: row.get(key) for key in ("updated_at", "hub_at")} for row in rows}
         )

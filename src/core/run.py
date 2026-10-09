@@ -92,7 +92,8 @@ def reconcile_run(
         plan = [Action(**a) for a in pending["planned"]]
         next_curation = pending.get("curation_state")
     else:
-        m = mirror.load_mirror(hub)
+        cache = mirror.load_cache(settings)
+        m = mirror.load_mirror(hub, cache=cache)
         live = mirror.pull_live(spotify, settings.spotify_market, me, m, full=True)
         source_ref = archive.key_for(now)
         if not dry_run:
@@ -239,6 +240,8 @@ def reconcile_run(
         flags=len(out.flags),
         errors=len(out.errors),
     )
+    if not dry_run and not pending:
+        mirror.save_cache(settings, cache)  # the next run then reads only hub changes
     if not dry_run and writes:
         # Observation imports return their flags to the operator for triage instead.
         flags.file(settings, http, out.flags, out.errors, today)

@@ -566,7 +566,7 @@ def apply(package, spotify, hub, settings, now, state, save) -> dict:
     """Serialized-worker execution. `state` is the retained checkpoint; `save` persists it."""
     market = settings.spotify_market
     me = spotify.me()["id"]
-    m = mirror_mod.load_mirror(hub)
+    m = mirror_mod.load_mirror(hub, cache=mirror_mod.load_cache(settings))
     live = mirror_mod.pull_live(spotify, market, me, m, full=True)
     if not state.get("backup"):
         key = archive.key_for(now)

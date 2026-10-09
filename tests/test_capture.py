@@ -314,6 +314,8 @@ def test_capture_first_write_keeps_resolved_and_expiring_metadata(settings, mock
     before = deepcopy(sp.inbox_items)
 
     def archive(settings, key, data):
+        if key.startswith("music-sync/mirror-cache/"):
+            return  # the end-of-capture mirror cache, not capture evidence
         assert sp.calls == [] and hub.pushed == []
         saved[key] = json.loads(gzip.decompress(data))
 
