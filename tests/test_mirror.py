@@ -319,3 +319,11 @@ def test_stale_cache_falls_back_to_a_full_pull():
     hub.pulls.clear()
     mirror.load_mirror(hub, cache=cache, now=mirror.FULL_REFRESH_SECONDS + 1)
     assert all(since == "" for _, since in hub.pulls)
+
+
+def test_cache_is_checkpointed_after_each_slice():
+    hub, cache, saved = StampedHub(stamped_tables()), mirror.new_cache(now=0), []
+    mirror.load_mirror(
+        hub, cache=cache, now=0, checkpoint=lambda: saved.append(len(cache["slices"]))
+    )
+    assert saved == list(range(1, len(saved) + 1)) and len(saved) >= 4

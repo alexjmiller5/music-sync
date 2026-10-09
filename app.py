@@ -54,8 +54,8 @@ def _run(dry_run: bool, workspace: str = "default") -> dict:
     }
 
 
-WORKER_TIMEOUT = 1500
-APPLY_BUDGET = 1200  # seconds of a call after which apply stops cleanly and stays pending
+WORKER_TIMEOUT = 3600
+APPLY_BUDGET = 3000  # seconds of a call after which apply stops cleanly and stays pending
 
 
 def _budget() -> float:
@@ -102,24 +102,24 @@ def worker(operation: str, body: dict | None = None):
     return _run(dry_run=dry_run)
 
 
-@app.function(image=image, schedule=modal.Cron("0 * * * *"), timeout=1500)
+@app.function(image=image, schedule=modal.Cron("0 * * * *"), timeout=WORKER_TIMEOUT)
 def reconcile_cron():
     return worker.remote("reconcile", {"all_workspaces": True})
 
 
-@app.function(image=image, timeout=1500)
+@app.function(image=image, timeout=WORKER_TIMEOUT)
 @modal.fastapi_endpoint(method="POST", requires_proxy_auth=True)
 def reconcile(body: dict | None = None):
     return worker.remote("reconcile", body)
 
 
-@app.function(image=image, timeout=1500)
+@app.function(image=image, timeout=WORKER_TIMEOUT)
 @modal.fastapi_endpoint(method="POST", requires_proxy_auth=True)
 def capture(body: dict):
     return worker.remote("capture", body)
 
 
-@app.function(image=image, secrets=secrets, timeout=1500)
+@app.function(image=image, secrets=secrets, timeout=WORKER_TIMEOUT)
 @modal.fastapi_endpoint(method="POST", label="capture-consumer")
 def capture_consumer(body: dict, authorization: Annotated[str | None, Header()] = None):
     from fastapi.responses import JSONResponse
@@ -158,7 +158,7 @@ def capture_enroll():
     return HTMLResponse(ENROLL_PAGE, headers={"Cache-Control": "no-store"})
 
 
-@app.function(image=image, timeout=1500)
+@app.function(image=image, timeout=WORKER_TIMEOUT)
 @modal.fastapi_endpoint(method="POST", label="capture-access", requires_proxy_auth=True)
 def capture_access(body: dict):
     return worker.remote("capture_access", body)

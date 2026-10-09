@@ -187,6 +187,12 @@ runs in tests, locally, or on any future platform.
   `shazam_dates_estimated`) is recomputed from those originals, so a retried
   capture never counts twice. Exact times come only from `recognized_at`;
   playlist add dates and receipt times are estimates.
+- The worker loads the mirror incrementally: each slice's rows and `hub_at`
+  cursor live under `music-sync/mirror-cache/` in the recovery bucket, deltas use
+  the hub's inclusive `since`, the cache is checkpointed after each slice and
+  rebuilt weekly. Dry runs never write it. Worker calls get 3,600 s; apply stops
+  cleanly 3,000 s into a call and stays pending. Worker hub clients retry
+  transient page-read failures twice.
 - Observation imports (`writes=False`) run in the worker (`observe`), return
   their flags instead of filing them and are allowed while reconciliation is
   disabled. Membership rows keep the earliest `added_at` when a replacement

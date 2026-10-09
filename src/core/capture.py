@@ -97,7 +97,9 @@ def capture(
     if not isrc:
         return {"ok": False, "message": f"{title} by {artist} has no ISRC on Spotify", "isrc": None}
     cache = mirror_mod.load_cache(settings)
-    m = mirror_mod.load_mirror(hub, cache=cache)
+    m = mirror_mod.load_mirror(
+        hub, cache=cache, checkpoint=lambda: mirror_mod.save_cache(settings, cache)
+    )
     inbox = next((p for p in m.playlists.values() if p.kind == "inbox"), None)
     if not inbox:
         return {"ok": False, "message": "no inbox playlist in life-data", "isrc": isrc}

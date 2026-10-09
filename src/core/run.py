@@ -93,7 +93,11 @@ def reconcile_run(
         next_curation = pending.get("curation_state")
     else:
         cache = mirror.load_cache(settings)
-        m = mirror.load_mirror(hub, cache=cache)
+        m = mirror.load_mirror(
+            hub,
+            cache=cache,
+            checkpoint=None if dry_run else lambda: mirror.save_cache(settings, cache),
+        )
         live = mirror.pull_live(spotify, settings.spotify_market, me, m, full=True)
         source_ref = archive.key_for(now)
         if not dry_run:
