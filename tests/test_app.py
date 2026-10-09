@@ -781,6 +781,32 @@ def test_package_requires_its_digest_and_clears_pending_after_the_run(settings, 
     assert blocked["applied"] is False and len(seen) == 1
 
 
+def test_rate_limited_package_keeps_its_checkpoint_for_the_resumed_run(settings, monkeypatch):
+    import gzip
+    import json
+
+    from core import config, metadata, package
+
+    store = {}
+    monkeypatch.setattr(config, "Settings", lambda: settings)
+    monkeypatch.setattr("core.archive.get", lambda s, k: store.get(k))
+    monkeypatch.setattr("core.archive.put", lambda s, k, v: store.__setitem__(k, v))
+    monkeypatch.setattr(metadata, "require_observed_contract", lambda hub: None)
+    monkeypatch.setattr("core.spotify_client.SpotifyClient", lambda s: object())
+
+    def apply(doc, spotify, hub, s, now, state, save):
+        state["backup"] = "raw/b"
+        save()
+        return {"applied": False, "rate_limited": {"retry_after": "70000"}, "remaining": {}}
+
+    monkeypatch.setattr(package, "apply", apply)
+    doc = {"version": 1, "likes": []}
+    out = app.worker.get_raw_f()("package", {"package": doc, "confirm": package.digest(doc)})
+    assert out["rate_limited"]["retry_after"] == "70000"
+    kept = json.loads(gzip.decompress(store["music-sync/pending-reconcile.json.gz"]))
+    assert kept["intent"] == "package" and kept["state"]["backup"] == "raw/b"
+
+
 def test_stage_failure_before_a_run_log_is_reported_and_flagged(settings, monkeypatch):
     from core import config, run
     from core.hub import HubError
