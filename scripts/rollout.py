@@ -78,6 +78,9 @@ def main(argv=None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     observe = sub.add_parser("observe")
     observe.add_argument("--output", type=Path, required=True)
+    observe.add_argument(
+        "--replan", action="store_true", help="replace a pending observation-only import"
+    )
     b = sub.add_parser("build")
     for name in ("receipt", "decisions", "spec", "output"):
         b.add_argument(f"--{name}", type=Path, required=True)
@@ -92,7 +95,7 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "observe":
-        result = worker().remote("observe", {})
+        result = worker().remote("observe", {"replan": True} if args.replan else {})
     elif args.command == "build":
         result = build(args)
         summary = {
