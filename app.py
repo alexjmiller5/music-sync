@@ -353,10 +353,30 @@ def _settings(body: dict):
 
 
 def _observe(body: dict):
-    """Observation import (no Spotify writes); allowed while RECONCILE_ENABLED=0."""
-    from core import run
+    """Observation import (no Spotify writes); allowed while RECONCILE_ENABLED=0.
 
-    log = run.reconcile(_settings(body), dry_run=False, writes=False, deadline=_budget())
+    `replan: true` discards a pending observation-only import so it is planned again
+    from current state; it never discards a mutation, replay or package checkpoint.
+    """
+    import gzip
+    import json
+
+    from core import archive, run
+
+    settings = _settings(body)
+    if body.get("replan") is True:
+        pending = _pending(settings)
+        if pending and (pending.get("intent") or pending.get("writes") is not False):
+            return {
+                "applied": {},
+                "flags": [],
+                "errors": ["pending recovery is not an observation-only import"],
+            }
+        if pending:
+            archive.put(
+                settings, archive.pending_key(settings), gzip.compress(json.dumps(None).encode())
+            )
+    log = run.reconcile(settings, dry_run=False, writes=False, deadline=_budget())
     return {"applied": dict(log.applied), "flags": log.flags, "errors": log.errors}
 
 

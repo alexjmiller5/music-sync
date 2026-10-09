@@ -583,6 +583,14 @@ def observe(
                 )
             )
         acts.append(Action("upsert_song", isrc=isrc, row=row))
-    return metadata.merge_actions(
-        acts, metadata.observation_actions(mirror, live, now, source_ref=source_ref, market=market)
-    )
+    # Songs seen only in unclassified playlists are not imported yet, so their
+    # metadata waits too; a sparse patch for a missing song is rejected.
+    catalogued = set(seen) | set(mirror.songs)
+    observed = [
+        a
+        for a in metadata.observation_actions(
+            mirror, live, now, source_ref=source_ref, market=market
+        )
+        if a.isrc is None or a.isrc in catalogued
+    ]
+    return metadata.merge_actions(acts, observed)

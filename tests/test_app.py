@@ -799,3 +799,33 @@ def test_stage_failure_before_a_run_log_is_reported_and_flagged(settings, monkey
     assert filed == [out["errors"]] and "private" not in str(out)
     assert app.worker.get_raw_f()("reconcile", {"dry_run": True})["errors"]
     assert len(filed) == 1  # dry runs never file
+
+
+@pytest.mark.parametrize(
+    "pending,allowed",
+    [
+        ({"writes": False, "operations": [1]}, True),
+        ({"writes": True, "operations": [1]}, False),
+        ({"intent": "package", "digest": "d"}, False),
+        ({"intent": "metadata_replay", "writes": False}, False),
+    ],
+)
+def test_replan_discards_only_an_observation_only_import(settings, monkeypatch, pending, allowed):
+    import gzip
+    import json
+
+    from core import actions, config, run
+
+    key = "music-sync/pending-reconcile.json.gz"
+    store = {key: gzip.compress(json.dumps(pending).encode())}
+    monkeypatch.setattr(config, "Settings", lambda: settings)
+    monkeypatch.setattr("core.archive.get", lambda s, k: store.get(k))
+    monkeypatch.setattr("core.archive.put", lambda s, k, v: store.__setitem__(k, v))
+    calls = []
+    monkeypatch.setattr(run, "reconcile", lambda s, **kw: calls.append(kw) or actions.RunLog())
+    out = app.worker.get_raw_f()("observe", {"replan": True})
+    if allowed:
+        assert json.loads(gzip.decompress(store[key])) is None and calls
+    else:
+        assert out["errors"] and not calls
+        assert json.loads(gzip.decompress(store[key])) == pending

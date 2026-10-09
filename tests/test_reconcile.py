@@ -661,3 +661,20 @@ def test_missing_or_duplicate_inbox_is_flagged():
     texts = [a.text for a in kinds(acts, "flag")]
     assert any("N: inbox playlist missing from Spotify" in t for t in texts)
     assert any("2 inbox playlists" in t for t in texts)
+
+
+def test_observation_import_patches_only_recordings_it_catalogs():
+    m = Mirror({}, {"CU": pl("CU", "curated list", "curated")}, {}, [], set())
+    known = item("A")
+    unclassified = LiveItem("B", "tB", "spotify:track:tB", T, True, False, "Only there", ["x"])
+    live = Live(
+        {
+            "CU": live_pl("CU", "curated list", [known]),
+            "NEW": live_pl("NEW", "unclassified", [unclassified]),
+        },
+        {},
+        {},
+    )
+    acts = reconcile.plan(m, live, NOW, observation_only=True, source_ref="raw/x", market="US")
+    assert {a.isrc for a in acts if a.kind in ("upsert_song", "edge")} == {"A"}
+    assert any("classification" in (a.text or "") for a in kinds(acts, "flag"))
