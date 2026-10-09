@@ -1,11 +1,13 @@
 """life-data hub client over the HTTP protocol. Knows a URL and a bearer token, nothing else."""
 
+import time
 from collections import defaultdict
 from datetime import datetime, timezone
 
 import httpx
 
 PUSH_CHUNK = 500
+READ_RETRY_DELAYS = (2, 5)  # transient hub/D1 failures on idempotent page reads
 DERIVE_CHUNK = 50
 USER_AGENT = "music-sync/0.1 (+https://github.com/alexjmiller5/music-sync)"
 
@@ -22,8 +24,17 @@ class RevisionConflict(HubError):
     pass
 
 
+def with_read_retries(hub):
+    """The serialized worker's clients retry transient failures on idempotent page reads."""
+    hub.read_retries = READ_RETRY_DELAYS
+    return hub
+
+
 class Hub:
-    def __init__(self, base_url: str, token: str, http: httpx.Client | None = None):
+    def __init__(
+        self, base_url: str, token: str, http: httpx.Client | None = None, read_retries=()
+    ):
+        self.read_retries = tuple(read_retries)
         self.base = base_url.rstrip("/")
         self._http = http or httpx.Client(timeout=120)
         self._headers = {"Authorization": f"Bearer {token}", "User-Agent": USER_AGENT}
@@ -52,7 +63,7 @@ class Hub:
             body["where"] = where
         rows, seen = [], set()
         while True:
-            page = self._post("/v1/rows/pull", body)
+            page = self._read_page(body)
             if not isinstance(page.get("rows"), list) or "next_cursor" not in page:
                 raise HubError("incomplete scan receipt", category="pagination_receipt")
             rows.extend(page["rows"])
@@ -63,6 +74,17 @@ class Hub:
                 raise HubError("invalid scan cursor", category="pagination_cursor")
             seen.add(cursor)
             body["after"] = cursor
+
+    def _read_page(self, body):
+        for delay in (*self.read_retries, None):
+            try:
+                return self._post("/v1/rows/pull", body)
+            except HubError as exc:
+                status = exc.diagnostic.get("status")
+                transient = exc.diagnostic["category"] == "transport" or (status or 0) >= 500
+                if delay is None or not transient or isinstance(exc, RevisionConflict):
+                    raise
+                time.sleep(delay)
 
     def insert(self, table, row):
         receipt = self._post(

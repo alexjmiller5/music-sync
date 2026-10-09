@@ -54,6 +54,26 @@ def _j(v, default):
     return json.loads(v) if isinstance(v, str) else v
 
 
+def load_playlists(hub) -> Mirror:
+    """Playlists only: enough for kind/rule configuration, without songs or provenance."""
+    rows = hub.pull("playlists", [*PLAYLIST_COLS, "updated_at", "hub_at"])
+    playlists = {
+        r["id"]: Playlist(
+            r["id"],
+            r["name"],
+            r["kind"],
+            _j(r["rule"], None),
+            r["description"],
+            r["snapshot_id"],
+            int(r["pinned"] or 0),
+            r["expires_at"],
+        )
+        for r in rows
+        if not r.get("deleted_at")
+    }
+    return Mirror({}, playlists, {}, [], set())
+
+
 def load_mirror(hub) -> Mirror:
     revisions = {}
 

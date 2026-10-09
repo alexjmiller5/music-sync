@@ -79,11 +79,11 @@ def capture(
             "message": "Pending recovery; retry after the original operation completes",
             "isrc": None,
         }
-    from core.hub import Hub
+    from core.hub import Hub, with_read_retries
     from core.spotify_client import SpotifyClient
 
     spotify = spotify or SpotifyClient(settings)
-    hub = hub or Hub(settings.life_hub_url, settings.life_hub_token)
+    hub = hub or with_read_retries(Hub(settings.life_hub_url, settings.life_hub_token))
     song_columns = metadata.require_observed_contract(hub)
     tr = resolved_track if resolved_track is not None else resolve_track(payload, spotify, settings)
     if not tr:

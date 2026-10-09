@@ -11,7 +11,7 @@ import structlog
 from core import actions, archive, curation, flags, history, mirror, metadata
 from core import reconcile as reconcile_mod
 from core.config import Settings
-from core.hub import Hub
+from core.hub import Hub, with_read_retries
 from core.model import Action, Mirror
 from core.spotify_client import SpotifyAuthError, SpotifyClient
 
@@ -67,7 +67,7 @@ def reconcile_run(
         )
     http = http or httpx.Client(timeout=60)
     spotify = spotify or SpotifyClient(settings)
-    hub = hub or Hub(settings.life_hub_url, settings.life_hub_token)
+    hub = hub or with_read_retries(Hub(settings.life_hub_url, settings.life_hub_token))
     if not dry_run:
         metadata.require_observed_contract(hub)
     try:

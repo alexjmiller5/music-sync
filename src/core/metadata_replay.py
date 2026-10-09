@@ -10,7 +10,7 @@ from typing import NotRequired, TypedDict
 from pydantic import TypeAdapter
 
 from core import actions, archive, metadata, mirror
-from core.hub import Hub
+from core.hub import Hub, with_read_retries
 from core.model import Action, Live
 
 
@@ -192,7 +192,7 @@ def run(settings, archive_key: str, observed_at: str, *, dry_run: bool = True, h
     identity = {"intent": "metadata_replay", "archive_key": archive_key, "observed_at": stamp}
     if pending and any(pending.get(k) != v for k, v in identity.items()):
         raise RuntimeError("Pending recovery must finish with its original operation and source")
-    hub = hub or Hub(settings.life_hub_url, settings.life_hub_token)
+    hub = hub or with_read_retries(Hub(settings.life_hub_url, settings.life_hub_token))
     if not dry_run:
         metadata.require_observed_contract(hub)
     if pending:
@@ -200,7 +200,7 @@ def run(settings, archive_key: str, observed_at: str, *, dry_run: bool = True, h
         outcomes = pending["outcomes"]
     else:
         live = _read_live(settings, archive_key)
-        hub = hub or Hub(settings.life_hub_url, settings.life_hub_token)
+        hub = hub or with_read_retries(Hub(settings.life_hub_url, settings.life_hub_token))
         plan, outcomes = _plan(
             mirror.load_mirror(hub),
             live,
@@ -226,7 +226,7 @@ def run(settings, archive_key: str, observed_at: str, *, dry_run: bool = True, h
         )
 
     if plan:
-        hub = hub or Hub(settings.life_hub_url, settings.life_hub_token)
+        hub = hub or with_read_retries(Hub(settings.life_hub_url, settings.life_hub_token))
         log = actions.apply(
             plan,
             None,

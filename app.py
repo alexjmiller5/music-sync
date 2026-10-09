@@ -410,7 +410,7 @@ def _package(body: dict):
 
     from core import archive, metadata
     from core import package as pkg
-    from core.hub import Hub
+    from core.hub import Hub, with_read_retries
     from core.spotify_client import SpotifyClient
 
     settings = _settings(body)
@@ -427,7 +427,7 @@ def _package(body: dict):
         retained = {"intent": "package", "digest": body["confirm"], "state": state}
         archive.put(settings, key, gzip.compress(json.dumps(retained).encode()))
 
-    hub = Hub(settings.life_hub_url, settings.life_hub_token)
+    hub = with_read_retries(Hub(settings.life_hub_url, settings.life_hub_token))
     metadata.require_observed_contract(hub)
     receipt = pkg.apply(
         doc, SpotifyClient(settings), hub, settings, datetime.now(timezone.utc), state, save
@@ -442,12 +442,12 @@ def _rules(body: dict):
     from fastapi.responses import JSONResponse
 
     from core import mirror, smart
-    from core.hub import Hub
+    from core.hub import Hub, with_read_retries
     from core.spotify_client import SpotifyClient
 
     settings = _settings(body)
-    hub = Hub(settings.life_hub_url, settings.life_hub_token)
-    m = mirror.load_mirror(hub)
+    hub = with_read_retries(Hub(settings.life_hub_url, settings.life_hub_token))
+    m = mirror.load_playlists(hub)
     if body.get("action") == "list":
         return smart.listing(m)
     if _pending(settings):
@@ -477,12 +477,12 @@ def _recognitions(body: dict):
     from datetime import datetime, timezone
 
     from core import metadata, recognition
-    from core.hub import Hub
+    from core.hub import Hub, with_read_retries
 
     settings = _settings(body)
     if _pending(settings):
         return {"ok": False, "message": "pending recovery"}
-    hub = Hub(settings.life_hub_url, settings.life_hub_token)
+    hub = with_read_retries(Hub(settings.life_hub_url, settings.life_hub_token))
     legacy = hub.pull(
         "provenance",
         ["id", "from_ref", "to_ref", "created_at", "deleted_at"],
