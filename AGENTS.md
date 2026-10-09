@@ -185,7 +185,11 @@ runs in tests, locally, or on any future platform.
   precomputed so a resumed run knows where it stopped. Renamed originals are
   untouched rollback copies. Package likes join the curation baseline as the
   app's own; its normalization unlikes leave the liked baseline without
-  creating review exceptions.
+  creating review exceptions, however they were executed. Every Spotify write
+  is checkpointed (renames, creations, edit ops, like/unlike chunks); a rate
+  limit longer than the client waits stops the run with the exact `remaining`
+  actions and keeps the checkpoint, so another client can finish them and a
+  rerun of the same package adopts that work without repeating it.
 - Recognition events (captures and imported history) each have a retained
   original and one create-only provenance row. The songs Shazam summary
   (`shazamed`, `shazam_count`, `shazam_first_at`, `shazam_last_at`,
