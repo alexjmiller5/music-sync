@@ -740,10 +740,9 @@ def test_observation_import_and_preview_run_while_reconciliation_is_disabled(set
     assert worker("observe", {}) == {"applied": {}, "flags": ["f"], "errors": []}
     receipt = json.loads(gzip.decompress(worker("preview", {"package": {"version": 1}})))
     assert receipt["dry_run"] is True
-    assert calls == [
-        {"dry_run": False, "writes": False},
-        {"dry_run": True, "package": {"version": 1}},
-    ]
+    assert calls[1] == {"dry_run": True, "package": {"version": 1}}
+    assert calls[0]["writes"] is False and calls[0]["dry_run"] is False
+    assert calls[0]["deadline"] > 0  # observation imports stop cleanly within budget
 
 
 def test_package_requires_its_digest_and_clears_pending_after_the_run(settings, monkeypatch):
@@ -780,3 +779,23 @@ def test_package_requires_its_digest_and_clears_pending_after_the_run(settings, 
     )
     blocked = worker("package", {"package": doc, "confirm": package.digest(doc)})
     assert blocked["applied"] is False and len(seen) == 1
+
+
+def test_stage_failure_before_a_run_log_is_reported_and_flagged(settings, monkeypatch):
+    from core import config, run
+    from core.hub import HubError
+
+    def boom(*args, **kwargs):
+        raise HubError("hub HTTP 503: private body")
+
+    filed = []
+    monkeypatch.setattr(config, "Settings", lambda: settings)
+    monkeypatch.setattr("core.archive.get", lambda *args: None)
+    monkeypatch.setattr(run, "reconcile", boom)
+    monkeypatch.setattr(app, "_flag_quietly", lambda s, f, e: filed.append(e))
+    monkeypatch.setenv("RECONCILE_ENABLED", "1")
+    out = app.worker.get_raw_f()("reconcile", {"dry_run": False})
+    assert out == {"errors": ["reconcile stopped before applying anything: HubError"]}
+    assert filed == [out["errors"]] and "private" not in str(out)
+    assert app.worker.get_raw_f()("reconcile", {"dry_run": True})["errors"]
+    assert len(filed) == 1  # dry runs never file

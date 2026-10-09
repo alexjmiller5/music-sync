@@ -1,11 +1,17 @@
 """Apply a plan in ordered batches, stopping at the first failed checkpoint."""
 
 import json
+import time
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 
+import structlog
+
 from core.model import Action
+
+log = structlog.get_logger()
+CHUNK = 500  # hub rows per checkpointed operation
 
 HUB_TABLE = {
     "upsert_song": "songs",
@@ -102,7 +108,10 @@ def apply(
     checkpoint=None,
     pending: list[dict] | None = None,
     market: str | None = None,
+    deadline: float | None = None,
 ) -> RunLog:
+    """`deadline` (time.monotonic) stops cleanly between operations; the rest stays
+    pending so rerunning the same operation resumes it."""
     out = RunLog(dry_run=dry_run, planned=[asdict(a) for a in actions])
     out.flags = [a.text for a in actions if a.kind == "flag"]
     out.skipped = [a.kind for a in actions if not writes and a.kind in SPOTIFY_WRITE_KINDS]
@@ -117,6 +126,24 @@ def apply(
         else dict(op)
         for op in ops
     ]
+    # Bounded hub chunks give a resumed run fine-grained progress; counts land with
+    # the last chunk of each original batch.
+    chunked = []
+    for op in ops:
+        if op["kind"] == "hub" and len(op["rows"]) > CHUNK:
+            parts = range(0, len(op["rows"]), CHUNK)
+            for i in parts:
+                last = i + CHUNK >= len(op["rows"])
+                chunked.append(
+                    {
+                        **op,
+                        "rows": op["rows"][i : i + CHUNK],
+                        "counts": op["counts"] if last else {},
+                    }
+                )
+        else:
+            chunked.append(op)
+    ops = chunked
     operation = "checkpoint"
     try:
         if checkpoint:
@@ -124,6 +151,13 @@ def apply(
         for index, op in enumerate(ops):
             kind, pid = op["kind"], op.get("playlist_id")
             operation = f"{kind} {pid or op.get('table', '')}".strip()
+            if deadline is not None and time.monotonic() > deadline:
+                out.errors.append(
+                    f"time budget reached: {len(ops) - index} operations remain pending; "
+                    "rerun the same operation to resume"
+                )
+                return out
+            started = time.monotonic()
             if kind == "hub_insert":
                 hub.insert_rows(op["table"], op["rows"])
                 out.applied["insert_edge"] += len(op["rows"])
@@ -169,6 +203,13 @@ def apply(
                 elif kind == "delete_playlist":
                     spotify.unfollow_playlist(pid)
                 out.applied[kind] += op["count"]
+            log.info(
+                "apply_op",
+                op=operation,
+                size=len(op.get("rows") or op.get("uris") or []),
+                seconds=round(time.monotonic() - started, 2),
+                remaining=len(ops) - index - 1,
+            )
             if checkpoint:
                 checkpoint(ops[index + 1 :])
     except Exception as e:

@@ -427,6 +427,14 @@ def test_capture_raw_archive_precedes_add_and_trim(settings, archive_store, mock
     from core import archive
 
     sp, hub = Spotify([raw(B, "b")], liked=False), Store(kind="inbox", member=False)
+    hub.tables["playlist_songs"][f"P:{B}"] = {
+        "id": f"P:{B}",
+        "playlist_id": "P",
+        "isrc": B,
+        "spotify_track_id": "b",
+        "added_at": T,
+        "deleted_at": None,
+    }
     settings.inbox_cap = 1
     before = copy.deepcopy(sp.items)
     original = archive.put

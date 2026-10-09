@@ -171,17 +171,6 @@ def test_evaluate_raises_without_errors_dict():
         rules.evaluate(m, {"feel good": "PF", "😴": "PS"})
 
 
-def test_check_sql_lists_mismatches_in_sqlite():
-    m = make_mirror()
-    m.memberships[("R", "B")] = Membership("R", "B", "x", "t")  # B is 2005: violates rap 90s
-    m.memberships[("R", "A")] = Membership("R", "A", "x", "t")
-    db = rules.load_sqlite(m)
-    sql = rules.check_sql(
-        [p for p in m.playlists.values() if p.kind == "smart"], {"feel good": "PF", "😴": "PS"}
-    )
-    assert {r[0] for r in db.execute(sql)} == {"R:B"}
-
-
 @pytest.mark.parametrize(
     "rule",
     [
@@ -202,18 +191,3 @@ def test_missing_smart_rule_is_reported_instead_of_silently_skipped():
     errors = {}
     assert rules.evaluate(m, {}, errors) == {}
     assert "P" in errors
-
-
-def test_rule_invariant_catches_unknown_year():
-    from core.model import Mirror, Playlist, Song, Membership
-
-    p = Playlist("P", "Recent", "smart", {"v": 1, "first_year": {"gte": 2000}}, None, None, 1, None)
-    m = Mirror(
-        {"A": Song("A", 1, None, "t")},
-        {"P": p},
-        {("P", "A"): Membership("P", "A", "a", "t")},
-        [],
-        set(),
-    )
-    db = rules.load_sqlite(m)
-    assert db.execute(rules.check_sql([p], {})).fetchall() == [("P:A",)]

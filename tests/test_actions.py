@@ -219,3 +219,34 @@ def test_uncertain_like_retry_can_finish_from_positive_observation():
     pending = [{**actions._batches(plan, True)[0], "attempted": True}]
     out = actions.apply(plan, sp, hub, False, pending=pending, market="US")
     assert not out.errors and sp.calls == []
+
+
+def test_large_hub_batches_checkpoint_in_bounded_chunks():
+    rows = [
+        Action("upsert_song", isrc=f"S{i}", row={"id": f"S{i}", "liked": 1}) for i in range(1201)
+    ]
+    hub, saved = FakeHub(), []
+    out = actions.apply(
+        rows, FakeSpotify(), hub, False, checkpoint=lambda ops: saved.append(len(ops))
+    )
+    assert [len(r) for _, r in hub.pushed] == [500, 500, 201]
+    assert saved == [3, 2, 1, 0] and out.applied["upsert_song"] == 1201 and not out.errors
+
+
+def test_time_budget_stops_between_operations_and_keeps_the_rest_pending():
+    import time
+
+    rows = [
+        Action("upsert_song", isrc=f"S{i}", row={"id": f"S{i}", "liked": 1}) for i in range(1001)
+    ]
+    hub, saved = FakeHub(), []
+    out = actions.apply(
+        rows,
+        FakeSpotify(),
+        hub,
+        False,
+        checkpoint=lambda ops: saved.append([len(o["rows"]) for o in ops]),
+        deadline=time.monotonic() - 1,
+    )
+    assert hub.pushed == [] and saved == [[500, 500, 1]]
+    assert out.errors and "time budget" in out.errors[0]

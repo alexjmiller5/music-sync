@@ -223,10 +223,13 @@ def test_metadata_retry_keeps_original_archive_reference_and_observation_time(
         save(settings, key, data)
 
     mocker.patch("core.archive.put", side_effect=fail_raw)
-    with pytest.raises(RuntimeError, match="archive offline"):
-        run.reconcile(settings, spotify=sp, hub=hub, now=second, writes=writes)
-    assert objects[run.archive.PENDING_KEY] == pending_bytes
-    mocker.patch("core.archive.put", save)
+    if writes:
+        # A resumed run that may still mutate Spotify archives a fresh pull first.
+        with pytest.raises(RuntimeError, match="archive offline"):
+            run.reconcile(settings, spotify=sp, hub=hub, now=second, writes=writes)
+        assert objects[run.archive.PENDING_KEY] == pending_bytes
+        mocker.patch("core.archive.put", save)
+    # An observation-only resume never touches Spotify, so it needs no new pull.
     assert not run.reconcile(settings, spotify=sp, hub=hub, now=second, writes=writes).errors
     assert all(hub.tables["provenance"][r["id"]] == r for r in direct)
     assert json.loads(gzip.decompress(objects[run.archive.PENDING_KEY])) is None

@@ -27,6 +27,7 @@ def reconcile_run(
     http: httpx.Client | None = None,
     writes: bool = True,
     package: dict | None = None,
+    deadline: float | None = None,
 ) -> actions.RunLog:
     """`package` (dry runs only) previews the first reconciliation after that package."""
     if package is not None and not dry_run:
@@ -80,7 +81,8 @@ def reconcile_run(
             flags.file(settings, http, [], out.errors, today)
         return out
     if pending:
-        if not dry_run:
+        # Only a resumed run that can still mutate Spotify needs a fresh pre-write pull.
+        if not dry_run and pending["writes"]:
             live = mirror.pull_live(
                 spotify, settings.spotify_market, me, Mirror({}, {}, {}, [], set()), full=True
             )
@@ -187,6 +189,7 @@ def reconcile_run(
         checkpoint=checkpoint,
         pending=pending["operations"] if pending else None,
         market=settings.spotify_market,
+        deadline=deadline,
     )
     if dry_run and not pending:
         out.snapshot = {

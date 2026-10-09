@@ -33,7 +33,17 @@ def _run(dry_run: bool, workspace: str = "default") -> dict:
     settings = workspaces.settings_for(Settings(), workspace)
     if not dry_run and not workspaces.reconcile_enabled(settings):
         return {"skipped": True}
-    log = run.reconcile(settings, dry_run=dry_run)
+    try:
+        log = run.reconcile(settings, dry_run=dry_run, deadline=_budget())
+    except Exception as exc:
+        # A stage failure before a run log exists (catalog contract, mirror load,
+        # Spotify pull, archive) still reaches the flag destination. Only the
+        # category is reported: exception text can carry response data.
+        errors = [f"reconcile stopped before applying anything: {type(exc).__name__}"]
+        structlog.get_logger().error("reconcile_failed", error_type=type(exc).__name__)
+        if not dry_run:
+            _flag_quietly(settings, [], errors)
+        return {"errors": errors}
     return {
         "summary": log.summary(),
         "applied": dict(log.applied),
@@ -44,6 +54,16 @@ def _run(dry_run: bool, workspace: str = "default") -> dict:
     }
 
 
+WORKER_TIMEOUT = 1500
+APPLY_BUDGET = 1200  # seconds of a call after which apply stops cleanly and stays pending
+
+
+def _budget() -> float:
+    import time
+
+    return time.monotonic() + APPLY_BUDGET
+
+
 def _workspace_ids() -> list[str]:
     from core import workspaces
     from core.config import Settings
@@ -51,7 +71,7 @@ def _workspace_ids() -> list[str]:
     return workspaces.ids(Settings())
 
 
-@app.function(image=image, secrets=secrets, max_containers=1, timeout=1500)
+@app.function(image=image, secrets=secrets, max_containers=1, timeout=WORKER_TIMEOUT)
 @modal.concurrent(max_inputs=1)
 def worker(operation: str, body: dict | None = None):
     """One queue for the entire read/archive/plan/apply cycle across all callers."""
@@ -336,7 +356,7 @@ def _observe(body: dict):
     """Observation import (no Spotify writes); allowed while RECONCILE_ENABLED=0."""
     from core import run
 
-    log = run.reconcile(_settings(body), dry_run=False, writes=False)
+    log = run.reconcile(_settings(body), dry_run=False, writes=False, deadline=_budget())
     return {"applied": dict(log.applied), "flags": log.flags, "errors": log.errors}
 
 
