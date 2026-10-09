@@ -490,9 +490,12 @@ recognitions create-only with explicitly estimated dates.
 `.env.tpl` holds 1Password `op://` references only, pointing at the
 `Music Sync` vault's `Music Sync ENV` item. Run everything through
 `op run --env-file=.env.tpl -- <cmd>`. The hub token stored there
-(`SOMA_HUB_TOKEN`) is named `music-sync-storage` on the hub, scoped to
-`tables:read,tables:write` and read/write file grants for `raw/spotify-pull/`
-and `raw/spotify-capture/`. Only this app writes the mirrored music catalog;
+(`SOMA_HUB_TOKEN`) is this server's own enrollment with a Soma profile
+granting broad `tables:read` and `tables:write` (the catalog read, derive
+requests and `provenance` writes need them) plus read/write file grants for
+`raw/spotify-pull/` and `raw/spotify-capture/`: `soma login --profile <id>
+--start pending.json`, the owner approves the printed link, then
+`soma login --claim pending.json --wait`. Only this app writes the mirrored music catalog;
 agents and the user write Spotify directly (see AGENTS.md).
 
 Reconciliation is gated by `RECONCILE_ENABLED=1` in the `music-sync` Modal
