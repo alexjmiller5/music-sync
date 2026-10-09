@@ -30,6 +30,15 @@ def _iso(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
 
 
+def _earliest(known: str | None, observed: str) -> str:
+    if not known:
+        return observed
+    try:
+        return min(known, observed, key=datetime.fromisoformat)
+    except ValueError:
+        return observed
+
+
 def _strip_synced(desc: str | None) -> str:
     return (desc or "").split(" · synced ")[0]
 
@@ -430,7 +439,8 @@ def plan(
                             "playlist_id": pid,
                             "isrc": isrc,
                             "spotify_track_id": it.track_id,
-                            "added_at": it.added_at,
+                            # A replacement alias keeps the recording's earliest add date.
+                            "added_at": _earliest(m.added_at if m else None, it.added_at),
                             "deleted_at": None,
                         },
                     )
