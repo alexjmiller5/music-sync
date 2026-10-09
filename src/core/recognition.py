@@ -9,11 +9,13 @@ and server receipt times are labeled estimates.
 
 import gzip
 import json
+import re
 from datetime import datetime, timezone
 from hashlib import sha256
 from uuid import uuid4
 
 from core import archive
+from core.model import ISRC_RE
 
 PROJECTION = (
     "shazamed",
@@ -169,6 +171,10 @@ def import_history(settings, hub, events, now):
     known, edges = {}, []
     stamp = now.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     for item in events:
+        isrc = (item["isrc"] or "").strip().upper()
+        if not re.fullmatch(ISRC_RE, isrc):
+            raise ValueError(f"invalid ISRC in recognition history: {item['evidence_id']}")
+        item = {**item, "isrc": isrc}
         digest = sha256(json.dumps([item["evidence_id"], item["isrc"]]).encode()).hexdigest()
         key = f"{HISTORY_PREFIX}{digest}.json.gz"
         event = {

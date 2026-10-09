@@ -490,7 +490,7 @@ def _recognitions(body: dict):
     )
     events = list(body.get("historical") or []) + recognition.legacy_capture_events(legacy)
     songs = {r["id"] for r in hub.pull("songs", ["id", "deleted_at"]) if not r.get("deleted_at")}
-    missing = sorted({e["isrc"] for e in events} - songs)
+    missing = sorted({(e["isrc"] or "").strip().upper() for e in events} - songs)
     if body.get("dry_run", True):
         return {
             "dry_run": True,

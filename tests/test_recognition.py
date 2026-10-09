@@ -146,3 +146,12 @@ def test_capture_without_summary_columns_still_records_the_event(settings, objec
     )
     assert out["ok"] and len(hub.tables["provenance"]) == 1
     assert all("shazamed" not in row for row in songs_pushed(hub))
+
+
+def test_history_import_normalizes_isrc_case_and_rejects_invalid(settings, objects):
+    hub = StoringHub(INBOX)
+    events = history(1, isrc="usaaa2600001")
+    recognition.import_history(settings, hub, events, NOW)
+    assert hub.tables["provenance"][0]["to_ref"] == "USAAA2600001"
+    with pytest.raises(ValueError, match="ISRC"):
+        recognition.import_history(settings, hub, history(1, isrc="not-an-isrc"), NOW)
