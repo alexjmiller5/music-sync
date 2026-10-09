@@ -298,6 +298,15 @@ def run(
                 out["skipped"] += 1
                 done[row_id].add(source)
                 continue
+            if source == "first_year" and any(
+                up in out["stopped_sources"] and up not in done[row_id]
+                for up in groups
+                if up != "first_year"
+            ):
+                # An upstream source is cooling down for this row; its year is derived
+                # once, after that source lands, instead of now and again later.
+                out["deferred"]["first_year"] = out["deferred"].get("first_year", 0) + 1
+                continue
             if source in out["stopped_sources"]:
                 out["deferred"][source] = out["deferred"].get(source, 0) + 1
                 continue
