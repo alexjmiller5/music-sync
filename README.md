@@ -23,10 +23,24 @@ src/core/         business logic (plain Python, portable, no Modal imports)
   model.py             dataclasses shared across core
   archive.py           archive raw pulls through the life-data file API
   metadata_replay.py   fill missing metadata from one retained Spotify archive
+  curation.py          liked/curated transitions, auto-like intent, unlike exceptions
+  history.py           occurrence-specific evidence for changed playlist contents
+  recognition.py       retained recognition events and the songs Shazam summary
+  smart.py             supported playlist kind/rule configuration (`just rules`)
+  package.py           one-time rollout package: build, simulate, apply, verify
+  life_flags.py        Life Data flag task batches and quiet review rows
+  workspaces.py        per-person settings records; spotify_connect.py invites
 scripts/
   provision.py       mints R2/Modal tokens; resolves R2_ACCESS_KEY_ID after R2_API_TOKEN
   sync_secrets.py     push .env.tpl -> Modal secret store
   spotify_auth.py     mint/re-mint the Spotify refresh token
+  preview.py          read-only full dry-run receipt (locally or `--remote`)
+  rollout.py          observation import, rollout package build/apply, recognition import
+  rules.py            playlist kind/rule configuration (`just rules`)
+  capture_clients.py  issue/revoke capture clients (`just clients`)
+  workspace.py        workspace records (`just workspace`)
+  backfill_derive.py  enrichment backfill through the hub's derivation API
+  followed_artists.py read-only followed-artist receipt
 tests/            pytest
 data/raw/         Spotify GDPR export zips (gitignored - personal data, NEVER commit)
 .env.tpl          secrets manifest (1Password op:// refs, committed)
@@ -53,13 +67,21 @@ from a curated playlist, and re-liking never restores a removed curated item.
 After a complete baseline, a newly curated unliked song is proposed for liking.
 A recording previously observed both liked and curated, then unliked while
 still curated, becomes one persistent review exception and is not silently
-re-liked, including through another curated playlist. These exceptions are
-returned as `review_items`; they do not generate notifications or automatically
-activate a Tasks destination.
+re-liked, including through another curated playlist. Each exception is
+returned as a `review_item` and, when a Life Data flag binding is configured,
+delivered once as its own task row (create-only, no notification). Repeated
+runs never create a second row, and a row the owner closes stays closed.
 
 The first complete observation does not execute a migration of existing
-curated-but-unliked songs. That migration needs an explicit reviewed selection.
-Unknown playlists need classification before they can authorize auto-likes.
+curated-but-unliked songs; that one-time migration is a reviewed rollout
+package (`scripts/rollout.py`). Unknown playlists need classification
+(`just rules curated <id>`) before they can authorize auto-likes.
+
+Songs carry a visible Shazam summary (`shazamed`, `shazam_count`,
+`shazam_first_at`, `shazam_last_at`, `shazam_dates_estimated`) recomputed from
+every retained recognition event. A repeat recognition is another event, never
+another playlist entry; historical playlist add dates and capture receipt times
+are labeled estimates.
 Duplicate occurrences stay unchanged for keeper/metadata review; smart-rule
 changes for a playlist with duplicate conflicts are held rather than partially
 removing one alias.
@@ -253,7 +275,10 @@ not a script catalog; one-offs go in `scripts/` and run directly.
 | `just test` / `just check` / `just fmt` | pytest / ruff read-only / ruff fix |
 | `just logs` | Stream deployed-app logs |
 | `just sync-secrets` | Push `.env.tpl` -> Modal secret store |
-| `just deploy` | test + sync-secrets + `modal deploy` |
+| `just deploy` | test + sync-secrets + `modal deploy` (CI does this on push) |
+| `just rules <action>` | Playlist kinds and smart rules (see Operating) |
+| `just clients <action>` | Issue/revoke capture clients |
+| `just workspace <action>` | Workspace records and Connect Spotify links |
 
 **Resumable metadata backfill:** with `LIFE_HUB_URL` and `LIFE_HUB_TOKEN`
 in the environment, run `uv run scripts/backfill_derive.py`. The same script
@@ -330,6 +355,81 @@ require all seven base properties to exist without derivation bindings. Read-onl
 previews remain available before cutover (existing pending recovery interlocks
 still apply). The live catalog is not asserted to have changed: follow the
 [staged rollout](docs/observed-metadata-rollout.md) under separate approval.
+
+## Operating
+
+**Normal use.** Spotify is the editing interface: like songs, edit curated
+playlists, Shazam with Cochlea. With `RECONCILE_ENABLED=1` the hourly cron
+mirrors those changes into life-data, likes newly curated songs, materializes
+smart playlists and trims the inbox. Nothing about the catalog is edited by hand.
+
+**Ad-hoc dry run.** `uv run scripts/preview.py --remote --output <private.json>`
+runs a full read-only reconciliation in the deployed worker (operator Modal
+auth: the `MODAL_TOKEN_ID`/`MODAL_TOKEN_SECRET` pair used by `just workspace`)
+and writes a mode-0600 receipt. Without `--remote` it runs locally under
+`op run --env-file=.env.tpl`. **Ad-hoc real run:** `POST /reconcile` with
+`{"dry_run": false}` and the Modal proxy-auth headers; it still requires
+`RECONCILE_ENABLED=1`.
+
+**Pause and resume.** Set `RECONCILE_ENABLED` in the `Music Sync ENV` item to
+`0` (pause) or `1` (resume), then `just sync-secrets` (CI also syncs on every
+deploy). Verify with a `{"dry_run": false}` request: paused returns
+`{"skipped": true}`. Capture keeps working while paused.
+
+**Smart rules (the supported configuration path).** `just rules list` shows
+every playlist's kind and rule. `just rules create "<name>" '<rule json>'`
+creates a new private smart playlist; `just rules smart <id> '<rule json>'`
+converts an owned playlist; `just rules curated <id>` classifies a new
+playlist; `just rules clear <id>` turns a smart playlist back into a curated
+one. Rules are JSON v1 over liked songs (`first_year`, `deezer_genres_any`,
+`mb_tags_any`, `in_playlist_ids_any`, `not_in_playlist_ids`, `captured_by`,
+`liked_after`) and reference playlists by stable ID. The worker validates the
+rule against the current catalog and writes the playlists row itself; agents
+no longer write `playlists.rule`, `kind`, `pinned` or `expires_at` directly.
+
+**Pending recovery.** A failed run leaves its remaining batches in
+`music-sync/pending-reconcile.json.gz` (see Preservation and recovery). Rerun
+the same operation: reconcile resumes its batches, metadata replay its
+archive, and a rollout package resumes from its checkpoint when applied again
+with the same digest. Capture and new baselines wait until it finishes. Never
+delete the pending object to bypass recovery.
+
+**Flags and review.** Run problems (unknown playlists, duplicate occurrences,
+rule errors, missing IDs, errors) are batched into one open task per day of
+identical text: a Life Data task row when `flags_task_config` is set for the
+workspace (`just workspace set <id>` with `FLAGS_TASK_CONFIG={...}`), otherwise
+the Notion "Music Sync flags" Chore task through the dedicated integration.
+Both are idempotent on retry. Unlike-while-curated review items become their own
+quiet task rows (above). Observation imports return their flags to the operator
+instead of filing them.
+
+**Restore.** Every mutating flow archives the complete pre-write pull under
+`raw/spotify-pull/` (captures under `raw/spotify-capture/`) through the
+life-data file API. To restore a playlist, read the retained pull for the
+moment before the change and re-add its URIs with the `spotify` tooling; the
+next reconcile mirrors the result. A rollout package records its pre-write
+backup and post-write readback keys in its receipt, and the renamed
+`<name> (pre-sync)` playlists are untouched rollback copies of the originals.
+
+**Credential renewal.** Spotify refresh tokens expire after 180 days: re-mint
+with `op run --env-file=.env.tpl -- uv run scripts/spotify_auth.py` (default
+workspace) or send a new `just workspace connect-link <id>`. The hub token
+(`music-sync-storage`), the dedicated Notion integration secret and the R2 token
+are fields of `Music Sync ENV`; rotate the credential at its owner, update the
+field, then `just sync-secrets`. The Modal CI token is re-minted by
+`op-project-bootstrap` (`scripts/provision.py`).
+
+**One-time rollout package.** `scripts/rollout.py observe` imports a complete
+observation without Spotify writes. `build` turns a preview receipt, the owner's
+decision manifest and a private spec (smart rules, classifications, selected
+aliases) into an exact package: playlist renames, smart playlist creation,
+occurrence edits, one-time likes and like normalization. `preview.py --package`
+shows the first reconciliation after it. `apply --confirm <digest>` runs it in
+the worker: every precondition is checked against a fresh complete pull before
+the first write, progress is checkpointed, and Spotify is read back to verify.
+Package likes count as Music Sync's own; its normalization unlikes are not owner
+unlikes and create no review exceptions. `recognitions` imports past Shazam
+recognitions create-only with explicitly estimated dates.
 
 ## Manual setup (the only steps that can't be codified)
 
@@ -414,7 +514,8 @@ scope produces an incomplete receipt; it never substitutes credentials or starts
 enrollment. The receipt preserves full artist objects and collection times;
 Spotify does not provide the dates when these follows began.
 
-Run the owning operator command with its usual configuration:
+Run the owning operator command with its usual configuration (or `--remote`
+through the deployed worker, optionally `--package <package.json>`):
 
 ```sh
 uv run scripts/preview.py --output /private/state/music-preview.json
@@ -448,8 +549,8 @@ Cron, manual reconcile and capture synchronously dispatch to the same Modal
 `worker`, configured with `max_containers=1` and
 `@modal.concurrent(max_inputs=1)`. The entire read/archive/plan/apply cycle
 runs there. FastAPI is a production dependency, including its real error
-responses in the `--no-dev` image. Local migration imports must be run while
-normal reconciliation is disabled and capture traffic is paused.
+responses in the `--no-dev` image. Observation imports, rollout packages,
+recognition imports and rule changes run in that same worker.
 
 `run.reconcile(..., writes=False)` is an observation-only import: full owned
 playlist pulls, actual liked values and complete observed membership rows.
@@ -545,8 +646,18 @@ resolved by the retained marker; a newer row without that proof is reported as
 ambiguous, never blindly appended again. New task IDs and their first payload are
 stable across retries, including completed/deleted targets. Pending batches are
 recovered even when the next reconcile produces no flags. Text is not truncated
-to Notion's property limit. Observation/dry-run callers keep their existing gate
-and do not invoke the writer.
+to Notion's property limit. Observation and dry-run callers do not invoke the
+writer.
 
-The adapter is inactive until the runtime binding and narrow table scopes are
-configured. Deploying it does not switch Tasks authority or enable reconciliation.
+Binding shape for the Life Data `tasks` table:
+
+```json
+{"table": "tasks", "title": "Music Sync flags",
+ "columns": {"title": "title", "status": "status", "notes": "notes", "due": "due_date",
+             "priority": "priority", "tags": "tags"},
+ "defaults": {"status": "To Do", "priority": "High", "tags": ["Chore"]},
+ "open_statuses": ["To Do", "In Progress"]}
+```
+
+Review exceptions use the same binding, one create-only row per exception with
+a stable ID. Neither path schedules a reminder or notification.

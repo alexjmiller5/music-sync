@@ -102,9 +102,11 @@ runs in tests, locally, or on any future platform.
   `music-sync/curation/`; commit its baseline only after all apply batches finish.
   First observation never executes the initial like migration. New curation
   auto-like intent persists through imports; unlike-while-curated exceptions
-  persist and block later re-likes. Return quiet `review_items` without activating
-  a task destination. Unknown playlists need classification; duplicate/alias
-  choices need review. Never automatically select a duplicate keeper.
+  persist and block later re-likes. Each exception is a `review_item`; with a
+  Life Data flag binding it is delivered once as its own create-only task row
+  (`life_flags.deliver_reviews`, stable ID, no notification). Unknown playlists
+  need classification; duplicate/alias choices need review. Never automatically
+  select a duplicate keeper outside an owner-confirmed rollout package.
   Duplicate inbox recordings also hold FIFO trimming and membership replacement;
   capture still retains recognition history and confirms existing presence.
   Playlist-rule references use `in_playlist_ids_any` / `not_in_playlist_ids`;
@@ -161,7 +163,34 @@ runs in tests, locally, or on any future platform.
 - **life-data is written ONLY by this app.** Agents and the user write
   Spotify directly (the `spotify_player` CLI via the `spotify` skill, or the
   Spotify app itself) - never life-data. The hourly reconcile is what mirrors
-  those Spotify changes into the catalog.
+  those Spotify changes into the catalog. Playlist kind/rule/pinned/expiry
+  changes go through `just rules` (`core/smart.py` in the worker); there is no
+  agent write exception for those columns.
+- Smart rules reference playlists by stable ID and are validated against the
+  current catalog before the worker writes the row; the hub's
+  `playlists-rule-iff-smart` invariant is the only installed catalog rule for
+  them. No static rule snapshot is installed in the catalog.
+- The one-time rollout package (`core/package.py`, `scripts/rollout.py`) is
+  built from a preview receipt, the owner's decision manifest and a private spec
+  kept outside git. Apply needs `confirm` = the package digest, validates every
+  precondition against a fresh complete pull before the first write, checkpoints
+  under the pending key with `intent=package`, and verifies by readback.
+  Spotify deletes playlist items by URI only: a repeated URI is deleted and the
+  kept occurrence re-inserted at its final index; every intermediate state is
+  precomputed so a resumed run knows where it stopped. Renamed originals are
+  untouched rollback copies. Package likes join the curation baseline as the
+  app's own; its normalization unlikes leave the liked baseline without
+  creating review exceptions.
+- Recognition events (captures and imported history) each have a retained
+  original and one create-only provenance row. The songs Shazam summary
+  (`shazamed`, `shazam_count`, `shazam_first_at`, `shazam_last_at`,
+  `shazam_dates_estimated`) is recomputed from those originals, so a retried
+  capture never counts twice. Exact times come only from `recognized_at`;
+  playlist add dates and receipt times are estimates.
+- Observation imports (`writes=False`) run in the worker (`observe`), return
+  their flags instead of filing them and are allowed while reconciliation is
+  disabled. Membership rows keep the earliest `added_at` when a replacement
+  alias changes the track ID.
 - Metadata backfill uses the hub's derivation API and reuses provenance.
   Only Deezer, MusicBrainz and first_year are enrichment targets; album_year
   remains an observed input. Completion requires actual current rows and source
@@ -238,8 +267,14 @@ src/core/
   rules.py                   rule JSON validation, -> SQL, -> description
   reconcile.py                pure diff: (mirror, live) -> list of actions
   actions.py                 apply actions to Spotify and the hub; run log
-  flags.py                   batch flags into one Notion Chore task
+  flags.py                   batch flags into one Notion Chore task (idempotent batch marker)
+  life_flags.py              Life Data flag batches and quiet review rows
   capture.py                  /capture: resolve a Shazam result, add to inbox, record the edge
+  curation.py                 liked/curated transitions, auto-like intent, unlike exceptions
+  history.py                  occurrence evidence for changed playlist contents
+  recognition.py              recognition events and the songs Shazam summary
+  smart.py                    supported playlist kind/rule configuration
+  package.py                  one-time rollout package: build, simulate, apply, verify
   workspaces.py               per-person Settings overrides in the R2 registry
   spotify_connect.py          Connect Spotify invites + OAuth code exchange
   capture_clients.py          capture-only credentials and idempotent delivery receipts
@@ -251,7 +286,12 @@ scripts/
   sync_secrets.py             push .env.tpl -> Modal secret store
   spotify_auth.py             mint/re-mint the default workspace's Spotify refresh token (local loopback)
   workspace.py                operator CLI for workspaces (`just workspace ...`)
-  create_50s_playlist.py      one-off playlist creation
+  rules.py                    playlist kind/rule configuration (`just rules ...`)
+  preview.py                  read-only dry-run receipt (local or `--remote`, optional `--package`)
+  rollout.py                  observe / package build+apply / recognition import (receipts stay private)
+  capture_clients.py          capture client issue/revoke (`just clients ...`)
+  backfill_derive.py          enrichment backfill through the hub derivation API
+  followed_artists.py         read-only followed-artist receipt
 tests/                        pytest
 ```
 
@@ -273,7 +313,9 @@ not a script catalog; one-offs go in `scripts/` and run directly.
 | `just test` / `just check` / `just fmt` | pytest / ruff read-only / ruff fix |
 | `just logs` | Stream deployed-app logs |
 | `just sync-secrets` | Push `.env.tpl` → Modal secret store |
-| `just deploy` | test + sync-secrets + `modal deploy` |
+| `just deploy` | test + sync-secrets + `modal deploy` (CI deploys on push to main) |
+| `just rules <action>` | Playlist kinds and smart rules through the worker |
+| `just clients` / `just workspace` | Capture clients / workspace records |
 
 ## TDD
 
