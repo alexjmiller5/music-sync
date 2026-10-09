@@ -195,6 +195,39 @@ def test_capture_adds_new_song_with_shazam_edge(settings):
     )
 
 
+def test_capture_outside_the_worker_never_touches_the_shared_mirror_cache(settings, mocker):
+    # The serialized worker owns the incremental cache; a concurrent writer could
+    # leave its cursor ahead of its rows. Queue delivery reads the catalog fresh.
+    from core import mirror
+
+    cache_io = []
+    mocker.patch(
+        "core.archive.get",
+        side_effect=lambda s, key: (
+            cache_io.append(("get", key)) if key.startswith("music-sync/mirror-cache/") else None
+        ),
+    )
+    mocker.patch(
+        "core.archive.put",
+        side_effect=lambda s, key, data: (
+            cache_io.append(("put", key)) if key.startswith("music-sync/mirror-cache/") else None
+        ),
+    )
+    sp, hub = FakeSpotify([track("1", "Money Trees", "Kendrick Lamar")]), FakeHub(INBOX)
+    payload = {
+        "title": "Money Trees",
+        "artist": "Kendrick Lamar",
+        "apple_music_id": "12",
+        "shazam_url": "https://s",
+    }
+    out = capture.capture(payload, sp, hub, settings, NOW, use_cache=False)
+    assert out["ok"] is True and cache_io == []
+    capture.capture(payload, sp, hub, settings, NOW)
+    assert ("put", mirror.cache_key(settings.workspace)) in cache_io, (
+        "the worker path still checkpoints"
+    )
+
+
 def test_capture_already_in_inbox(settings):
     hub = FakeHub(
         INBOX,

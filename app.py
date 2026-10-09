@@ -56,7 +56,8 @@ def _run(dry_run: bool, workspace: str = "default") -> dict:
 
 WORKER_TIMEOUT = 3600
 APPLY_BUDGET = 3000  # seconds of a call after which apply stops cleanly and stays pending
-NO_MATCH_RETRY_AFTER = 86400  # seconds a client waits after a definitive no-match capture
+DRAIN_TIMEOUT = 900
+DRAIN_BUDGET = 600  # seconds of a drain call after which remaining captures wait for the next one
 
 
 def _budget() -> float:
@@ -79,8 +80,6 @@ def worker(operation: str, body: dict | None = None):
     body = body or {}
     if operation == "capture":
         return _capture(body)
-    if operation == "consumer_capture":
-        return _consumer_capture(body)
     if operation == "capture_access":
         return _capture_access(body)
     if operation == "workspace_admin":
@@ -105,6 +104,8 @@ def worker(operation: str, body: dict | None = None):
 
 @app.function(image=image, schedule=modal.Cron("0 * * * *"), timeout=WORKER_TIMEOUT)
 def reconcile_cron():
+    # Hourly backstop for captures waiting on a Retry-After or their daily recheck.
+    _spawn_drain()
     return worker.remote("reconcile", {"all_workspaces": True})
 
 
@@ -120,32 +121,149 @@ def capture(body: dict):
     return worker.remote("capture", body)
 
 
-@app.function(image=image, secrets=secrets, timeout=WORKER_TIMEOUT)
-@modal.fastapi_endpoint(method="POST", label="capture-consumer")
-def capture_consumer(body: dict, authorization: Annotated[str | None, Header()] = None):
+@app.function(image=image, secrets=secrets, timeout=60)
+@modal.asgi_app(label="capture-consumer")
+def capture_consumer():
+    """Accept-and-queue intake: POST / stores a capture and answers 202 at once;
+    GET /<capture_id> reports what the drain has done with it."""
+    return _capture_api()
+
+
+@app.function(image=image, secrets=secrets, max_containers=1, timeout=DRAIN_TIMEOUT)
+@modal.concurrent(max_inputs=1)
+def capture_drain():
+    """Delivers accepted captures to Spotify, outside the serialized worker."""
+    import time
+    from datetime import datetime, timezone
+
+    from core import capture_clients
+    from core.config import Settings
+
+    return capture_clients.drain(
+        Settings(),
+        _deliver_queued,
+        datetime.now(timezone.utc),
+        deadline=time.monotonic() + DRAIN_BUDGET,
+    )
+
+
+def _spawn_drain() -> None:
+    try:
+        capture_drain.spawn()
+    except Exception as exc:  # the next request, status read or cron retries it
+        structlog.get_logger().error("capture_drain_spawn_failed", error_type=type(exc).__name__)
+
+
+def _capture_api():
+    from datetime import datetime, timezone
+    from math import ceil
+    from uuid import UUID
+
+    from fastapi import BackgroundTasks, FastAPI
     from fastapi.responses import JSONResponse
 
     from core import capture_clients
     from core.config import Settings
 
-    scheme, separator, token = (authorization or "").partition(" ")
-    if scheme.lower() != "bearer" or not separator or not token:
+    api = FastAPI()
+
+    def client_for(authorization: str | None):
+        scheme, separator, token = (authorization or "").partition(" ")
+        if scheme.lower() != "bearer" or not separator or not token:
+            raise capture_clients.Unauthorized
+        return capture_clients.authenticate(Settings(), token)
+
+    def unauthorized():
         return JSONResponse(
             {"ok": False, "message": "unauthorized"},
             status_code=401,
             headers={"WWW-Authenticate": "Bearer"},
         )
-    try:
-        client_id = capture_clients.authenticate(Settings(), token)
-    except capture_clients.Unauthorized:
-        return JSONResponse(
-            {"ok": False, "message": "unauthorized"},
-            status_code=401,
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    except Exception:
-        return JSONResponse({"ok": False, "message": "capture unavailable"}, status_code=503)
-    return worker.remote("consumer_capture", {"client_id": client_id, "capture": body})
+
+    def retry_after(view: dict, now: datetime) -> dict:
+        if not view["retry_at"]:
+            return {}
+        due = datetime.fromisoformat(view["retry_at"].replace("Z", "+00:00"))
+        return {"Retry-After": str(max(0, ceil((due - now).total_seconds())))}
+
+    def due(view: dict, now: datetime) -> bool:
+        return view["status"] in ("queued", "not_added") and not retry_after(view, now).get(
+            "Retry-After", "0"
+        ).strip("0")
+
+    @api.post("/")
+    def accept(
+        body: dict,
+        background: BackgroundTasks,
+        authorization: Annotated[str | None, Header()] = None,
+    ):
+        try:
+            client_id = client_for(authorization)
+        except capture_clients.Unauthorized:
+            return unauthorized()
+        except Exception:
+            return JSONResponse({"ok": False, "message": "capture unavailable"}, status_code=503)
+        now = datetime.now(timezone.utc)
+        try:
+            view = capture_clients.accept(Settings(), client_id, body, now)
+        except capture_clients.InvalidRequest as exc:
+            return JSONResponse({"ok": False, "message": str(exc)}, status_code=422)
+        except capture_clients.Conflict as exc:
+            return JSONResponse({"ok": False, "message": str(exc)}, status_code=409)
+        except Exception as exc:
+            # Never render exception locals: settings and request credentials may be present.
+            structlog.get_logger().error("capture_accept_failed", error_type=type(exc).__name__)
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "message": "capture unavailable",
+                    "capture_id": body.get("capture_id"),
+                    "spotify_outcome": "not_added",
+                },
+                status_code=503,
+            )
+        headers = retry_after(view, now)
+        if view["status"] == "added":
+            # The receipt Cochlea 0.5.0 already treats as delivered.
+            return JSONResponse({"ok": True, **view})
+        if view["status"] == "not_added":
+            message = f"Could not find {view['title']} by {view['artist']} on Spotify"
+            return JSONResponse(
+                {"ok": False, **view, "message": message}, status_code=422, headers=headers
+            )
+        if view["status"] == "rejected":
+            return JSONResponse({"ok": False, **view}, status_code=403)
+        if due(view, now):
+            background.add_task(_spawn_drain)
+        return JSONResponse({"ok": True, **view}, status_code=202, headers=headers)
+
+    @api.get("/{capture_id}")
+    def status(
+        capture_id: str,
+        background: BackgroundTasks,
+        authorization: Annotated[str | None, Header()] = None,
+    ):
+        try:
+            client_id = client_for(authorization)
+        except capture_clients.Unauthorized:
+            return unauthorized()
+        except Exception:
+            return JSONResponse({"ok": False, "message": "capture unavailable"}, status_code=503)
+        try:
+            capture_id = str(UUID(capture_id))
+        except ValueError:
+            return JSONResponse({"ok": False, "message": "unknown capture"}, status_code=404)
+        try:
+            view = capture_clients.status(Settings(), client_id, capture_id)
+        except Exception:
+            return JSONResponse({"ok": False, "message": "capture unavailable"}, status_code=503)
+        if view is None:
+            return JSONResponse({"ok": False, "message": "unknown capture"}, status_code=404)
+        if due(view, datetime.now(timezone.utc)):
+            background.add_task(_spawn_drain)
+        return view
+
+    return api
 
 
 @app.function(image=image)
@@ -199,83 +317,28 @@ def _capture_access(body: dict):
         return JSONResponse({"ok": False, "message": "capture access unavailable"}, status_code=503)
 
 
-def _consumer_capture(body: dict):
-    from fastapi.responses import JSONResponse
+def _deliver_queued(client_id: str, payload: dict, received_at: str):
+    """The drain's step: the synchronous select/add/catalog delivery of one capture."""
+    from datetime import datetime
 
-    from core import capture_clients
+    from core import capture as cap
+    from core import capture_clients, workspaces
     from core.config import Settings
 
-    try:
-        from core import capture as cap
-        from core import workspaces
-
-        base = Settings()
-        capture_clients.require_active(base, body["client_id"])
-        # The client's workspace decides whose Spotify, hub and Notion this touches.
-        settings = workspaces.settings_for(
-            base, capture_clients.client_workspace(base, body["client_id"])
-        )
-        result = capture_clients.deliver(
-            settings,
-            body["client_id"],
-            body["capture"],
-            lambda payload: cap.resolve_track(payload, None, settings),
-            lambda payload, selected, record: _capture(
-                payload, selected, settings, record, client_id=body["client_id"]
-            ),
-        )
-        if result.get("ok") is not True:
-            # No exact match before any Spotify attempt is definitive for now; a retry
-            # can only succeed once Spotify's catalog changes, so retry daily, not every 30 s.
-            definitive = (
-                result.get("reason") == "no_match" and result["spotify_outcome"] == "not_added"
-            )
-            headers = {"Retry-After": str(NO_MATCH_RETRY_AFTER)} if definitive else None
-            return JSONResponse(result, status_code=422, headers=headers)
-        return result
-    except capture_clients.DeliveryFailure as exc:
-        cause = exc.__cause__
-        headers = {}
-        message = "capture unavailable"
-        if isinstance(cause, httpx.HTTPStatusError) and cause.response.status_code == 429:
-            headers["Retry-After"] = cause.response.headers.get("Retry-After", "300")
-            message = "Spotify is rate limiting; retry later"
-        # Never render exception locals: settings and request credentials may be present.
-        structlog.get_logger().error("consumer_capture_failed", error_type=type(cause).__name__)
-        return JSONResponse(
-            {
-                "ok": False,
-                "message": message,
-                "capture_id": exc.capture_id,
-                "spotify_outcome": exc.outcome,
-            },
-            status_code=503,
-            headers=headers,
-        )
-    except capture_clients.Unauthorized:
-        return JSONResponse(
-            {"ok": False, "message": "unauthorized"},
-            status_code=401,
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    except capture_clients.InvalidRequest as exc:
-        return JSONResponse({"ok": False, "message": str(exc)}, status_code=422)
-    except capture_clients.Conflict as exc:
-        return JSONResponse({"ok": False, "message": str(exc)}, status_code=409)
-    except httpx.HTTPStatusError as exc:
-        if exc.response.status_code == 429:
-            # Spotify's retry budget is spent; tell clients how long to stay away
-            # so their retries stop feeding the rate limit.
-            return JSONResponse(
-                {"ok": False, "message": "Spotify is rate limiting; retry later"},
-                status_code=503,
-                headers={"Retry-After": exc.response.headers.get("Retry-After", "300")},
-            )
-        return JSONResponse({"ok": False, "message": "capture unavailable"}, status_code=503)
-    except Exception:
-        # The client only sees a safe 503; the cause must be visible in the app logs.
-        structlog.get_logger().error("consumer_capture_failed")
-        return JSONResponse({"ok": False, "message": "capture unavailable"}, status_code=503)
+    base = Settings()
+    capture_clients.require_active(base, client_id)
+    # The client's workspace decides whose Spotify, hub and Notion this touches.
+    settings = workspaces.settings_for(base, capture_clients.client_workspace(base, client_id))
+    received = datetime.fromisoformat(received_at.replace("Z", "+00:00"))
+    return capture_clients.deliver(
+        settings,
+        client_id,
+        payload,
+        lambda body: cap.resolve_track(body, None, settings),
+        lambda body, selected, record: _capture(
+            body, selected, settings, record, client_id=client_id, now=received, mirror_cache=False
+        ),
+    )
 
 
 def _workspace_admin(body: dict):
@@ -588,6 +651,8 @@ def _capture(
     settings=None,
     record_outcome=None,
     client_id: str | None = None,
+    now=None,
+    mirror_cache: bool = True,
 ):
     from datetime import datetime, timezone
 
@@ -604,10 +669,11 @@ def _capture(
             None,
             None,
             s,
-            datetime.now(timezone.utc),
+            now or datetime.now(timezone.utc),
             resolved_track=resolved_track,
             record_outcome=record_outcome,
             client_id=client_id,
+            use_cache=mirror_cache,
         )
     except SpotifyAuthError as e:
         _flag_quietly(

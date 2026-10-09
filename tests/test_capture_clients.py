@@ -1,5 +1,6 @@
 import gzip
 import json
+from datetime import datetime, timezone
 
 import pytest
 
@@ -25,7 +26,219 @@ def objects(monkeypatch):
     monkeypatch.setattr(
         capture_clients.archive, "put", lambda settings, key, value: stored.__setitem__(key, value)
     )
+    monkeypatch.setattr(
+        capture_clients.archive,
+        "keys",
+        lambda settings, prefix: sorted(key for key in stored if key.startswith(prefix)),
+    )
+    monkeypatch.setattr(
+        capture_clients.archive, "delete", lambda settings, key: stored.pop(key, None)
+    )
     return stored
+
+
+NOW = datetime(2026, 10, 9, 22, 0, tzinfo=timezone.utc)
+
+
+def receipt(objects, client="client-id", capture=CAPTURE_ID):
+    return json.loads(
+        gzip.decompress(objects[f"{capture_clients.RECEIPTS_PREFIX}/{client}/{capture}.json.gz"])
+    )
+
+
+def queued(objects):
+    return [key for key in objects if key.startswith(capture_clients.QUEUE_PREFIX + "/")]
+
+
+def spotify_429(retry_after="120"):
+    import httpx
+
+    response = httpx.Response(
+        429,
+        headers={"Retry-After": retry_after},
+        request=httpx.Request("GET", "https://api.spotify.com/v1/search"),
+    )
+    return httpx.HTTPStatusError("429", request=response.request, response=response)
+
+
+def test_accept_stores_the_capture_and_queues_it_without_touching_spotify(settings, objects):
+    view = capture_clients.accept(settings, "client-id", PAYLOAD, NOW)
+
+    assert view == {
+        "capture_id": CAPTURE_ID,
+        "status": "queued",
+        "spotify_outcome": "not_added",
+        "isrc": None,
+        "title": "Song",
+        "artist": "Artist",
+        "retry_at": None,
+        "reason": None,
+    }
+    state = receipt(objects)
+    assert state["payload"] == PAYLOAD and state["status"] == "queued"
+    assert state["received_at"] == "2026-10-09T22:00:00.000Z"
+    assert queued(objects) == [f"{capture_clients.QUEUE_PREFIX}/client-id/{CAPTURE_ID}.json.gz"]
+    assert capture_clients.status(settings, "client-id", CAPTURE_ID) == view
+    assert capture_clients.status(settings, "other-client", CAPTURE_ID) is None
+
+
+def test_accept_is_idempotent_and_refuses_a_changed_payload(settings, objects):
+    first = capture_clients.accept(settings, "client-id", PAYLOAD, NOW)
+    repeat = capture_clients.accept(settings, "client-id", PAYLOAD, NOW.replace(hour=23))
+
+    assert repeat == first
+    assert receipt(objects)["received_at"] == "2026-10-09T22:00:00.000Z", (
+        "a retry keeps the first receipt time"
+    )
+    with pytest.raises(capture_clients.Conflict):
+        capture_clients.accept(settings, "client-id", {**PAYLOAD, "title": "Other"}, NOW)
+    with pytest.raises(capture_clients.InvalidRequest):
+        capture_clients.accept(settings, "client-id", {**PAYLOAD, "capture_id": "bad"}, NOW)
+
+
+def test_drain_delivers_queued_captures_in_arrival_order_and_records_the_outcome(settings, objects):
+    later = "a4af8b79-a4c9-4b7a-a616-553021037845"
+    capture_clients.accept(
+        settings, "client-id", {**PAYLOAD, "capture_id": later}, NOW.replace(minute=5)
+    )
+    capture_clients.accept(settings, "client-id", PAYLOAD, NOW)
+    order = []
+
+    def step(client_id, payload, received_at):
+        order.append((payload["capture_id"], received_at))
+        return capture_clients.deliver(
+            settings,
+            client_id,
+            payload,
+            lambda p: SELECTED,
+            lambda p, selected, record: {"ok": True, "message": "added", "isrc": "USAAA2600001"},
+        )
+
+    summary = capture_clients.drain(settings, step, NOW.replace(minute=10))
+
+    assert order == [(CAPTURE_ID, "2026-10-09T22:00:00.000Z"), (later, "2026-10-09T22:05:00.000Z")]
+    assert summary["added"] == 2 and queued(objects) == []
+    view = capture_clients.status(settings, "client-id", CAPTURE_ID)
+    assert view["status"] == "added" and view["spotify_outcome"] == "added"
+    assert view["isrc"] == "USAAA2600001" and view["title"] == "Song"
+    assert receipt(objects)["payload"] == PAYLOAD, (
+        "the delivered receipt keeps the original capture"
+    )
+    assert (
+        capture_clients.drain(settings, lambda *a: pytest.fail("delivered twice"), NOW)["processed"]
+        == 0
+    )
+
+
+def test_no_exact_match_is_rechecked_daily_not_every_drain(settings, objects):
+    capture_clients.accept(settings, "client-id", PAYLOAD, NOW)
+    searches = []
+
+    def step(client_id, payload, received_at):
+        return capture_clients.deliver(
+            settings,
+            client_id,
+            payload,
+            lambda p: searches.append(1),
+            lambda *a: pytest.fail("no selection reached Spotify"),
+        )
+
+    capture_clients.drain(settings, step, NOW)
+    view = capture_clients.status(settings, "client-id", CAPTURE_ID)
+    assert view["status"] == "not_added" and view["reason"] == "no_match"
+    assert view["spotify_outcome"] == "not_added"
+    assert view["retry_at"] == "2026-10-10T22:00:00.000Z"
+    capture_clients.drain(settings, step, NOW.replace(hour=23))
+    assert searches == [1], "rechecked once a day"
+    capture_clients.drain(settings, step, datetime(2026, 10, 10, 22, 1, tzinfo=timezone.utc))
+    assert searches == [1, 1]
+
+
+def test_spotify_rate_limit_defers_the_whole_queue_until_retry_after(settings, objects):
+    capture_clients.accept(settings, "client-id", PAYLOAD, NOW)
+    capture_clients.accept(
+        settings,
+        "client-id",
+        {**PAYLOAD, "capture_id": "a4af8b79-a4c9-4b7a-a616-553021037845"},
+        NOW,
+    )
+    attempts = []
+
+    def throttled(client_id, payload, received_at):
+        attempts.append(payload["capture_id"])
+
+        def select(p):
+            raise spotify_429("120")
+
+        return capture_clients.deliver(settings, client_id, payload, select, lambda *a: None)
+
+    capture_clients.drain(settings, throttled, NOW)
+    assert len(attempts) == 1, "a throttled Spotify stops the drain"
+    view = capture_clients.status(settings, "client-id", attempts[0])
+    assert view["status"] == "queued" and view["retry_at"] == "2026-10-09T22:02:00.000Z"
+    assert view["spotify_outcome"] == "not_added"
+    capture_clients.drain(settings, throttled, NOW.replace(minute=1))
+    assert len(attempts) == 1, "nothing calls Spotify before its Retry-After"
+    capture_clients.drain(settings, throttled, NOW.replace(minute=3))
+    assert len(attempts) == 2
+
+
+def test_failures_back_off_and_an_add_already_made_is_reported_added(settings, objects):
+    capture_clients.accept(settings, "client-id", PAYLOAD, NOW)
+
+    def add_then_catalog_fails(client_id, payload, received_at):
+        def perform(p, selected, record):
+            record("unknown")
+            record("added")
+            raise RuntimeError("catalog unavailable")
+
+        return capture_clients.deliver(settings, client_id, payload, lambda p: SELECTED, perform)
+
+    capture_clients.drain(settings, add_then_catalog_fails, NOW)
+    view = capture_clients.status(settings, "client-id", CAPTURE_ID)
+    assert view["status"] == "added" and view["spotify_outcome"] == "added"
+    assert view["retry_at"] is None
+    assert receipt(objects)["retry_at"] == "2026-10-09T22:01:00.000Z", (
+        "catalog maintenance retries after a minute"
+    )
+    assert queued(objects), "the capture stays queued until its catalog writes finish"
+    capture_clients.drain(settings, add_then_catalog_fails, NOW.replace(minute=2))
+    assert receipt(objects)["retry_at"] == "2026-10-09T22:04:00.000Z", "then backs off"
+
+
+def test_revoked_client_capture_is_rejected_and_leaves_the_queue(settings, objects):
+    capture_clients.accept(settings, "client-id", PAYLOAD, NOW)
+
+    def revoked(client_id, payload, received_at):
+        raise capture_clients.Unauthorized
+
+    capture_clients.drain(settings, revoked, NOW)
+    assert capture_clients.status(settings, "client-id", CAPTURE_ID)["status"] == "rejected"
+    assert queued(objects) == []
+
+
+def test_receipt_from_before_queueing_is_queued_with_its_selection_and_outcome(settings, objects):
+    key = f"{capture_clients.RECEIPTS_PREFIX}/client-id/{CAPTURE_ID}.json.gz"
+    objects[key] = gzip.compress(
+        json.dumps(
+            {
+                "capture_id": CAPTURE_ID,
+                "payload_hash": capture_clients._payload_hash(PAYLOAD),
+                "selected_track": SELECTED,
+                "spotify_outcome": "unknown",
+            }
+        ).encode()
+    )
+
+    view = capture_clients.accept(settings, "client-id", PAYLOAD, NOW)
+
+    assert view["status"] == "queued" and view["spotify_outcome"] == "unknown"
+    state = receipt(objects)
+    assert state["selected_track"] == SELECTED and state["payload"] == PAYLOAD
+    assert queued(objects)
+    done = {"capture_id": CAPTURE_ID, "payload_hash": state["payload_hash"], "isrc": "USAAA2600001"}
+    objects[key] = gzip.compress(json.dumps(done).encode())
+    assert capture_clients.accept(settings, "client-id", PAYLOAD, NOW)["status"] == "added"
 
 
 def test_issued_tokens_are_independent_hashed_and_independently_revocable(settings, objects):

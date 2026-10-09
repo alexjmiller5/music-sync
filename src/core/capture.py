@@ -67,7 +67,10 @@ def capture(
     resolved_track: dict | None = None,
     record_outcome=None,
     client_id: str | None = None,
+    use_cache: bool = True,
 ) -> dict:
+    """`use_cache=False` (queue delivery outside the worker) reads the catalog fresh
+    and leaves the worker's incremental mirror cache alone."""
     title, artist = (payload.get("title") or "").strip(), (payload.get("artist") or "").strip()
     if not title or not artist:
         return {"ok": False, "message": "title and artist required", "isrc": None}
@@ -96,9 +99,11 @@ def capture(
     isrc = resolved.isrc
     if not isrc:
         return {"ok": False, "message": f"{title} by {artist} has no ISRC on Spotify", "isrc": None}
-    cache = mirror_mod.load_cache(settings)
+    cache = mirror_mod.load_cache(settings) if use_cache else None
     m = mirror_mod.load_mirror(
-        hub, cache=cache, checkpoint=lambda: mirror_mod.save_cache(settings, cache)
+        hub,
+        cache=cache,
+        checkpoint=(lambda: mirror_mod.save_cache(settings, cache)) if use_cache else None,
     )
     inbox = next((p for p in m.playlists.values() if p.kind == "inbox"), None)
     if not inbox:
@@ -234,6 +239,7 @@ def capture(
         hub.push(
             "playlist_songs", [{"id": f"{inbox.id}:{i.isrc}", "deleted_at": now_s} for i in extra]
         )
-    mirror_mod.save_cache(settings, cache)
+    if use_cache:
+        mirror_mod.save_cache(settings, cache)
     message = "is already in" if existing else "added to"
     return {"ok": True, "message": f"{title} by {artist} {message} new songs", "isrc": isrc}
