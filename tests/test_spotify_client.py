@@ -206,11 +206,57 @@ def test_add_and_remove_items_json_bodies(settings, mocker):
 
     c = make(handler, settings, mocker)
     c.add_items("P", ["spotify:track:1"])
-    c.remove_items("P", ["spotify:track:2"])
+    assert c.add_items("P", ["spotify:track:3"], position=4) == "s"
+    assert c.remove_items("P", ["spotify:track:2"]) == "s"
+    # Removal is by URI: every occurrence of a URI leaves the playlist.
     assert calls == [
         ("POST", "/v1/playlists/P/items", {"uris": ["spotify:track:1"]}),
-        ("DELETE", "/v1/playlists/P/items", {"uris": ["spotify:track:2"]}),
+        ("POST", "/v1/playlists/P/items", {"uris": ["spotify:track:3"], "position": 4}),
+        ("DELETE", "/v1/playlists/P/items", {"items": [{"uri": "spotify:track:2"}]}),
     ]
+
+
+def test_positioned_add_keeps_order_across_chunks(settings, mocker):
+    calls = []
+
+    def handler(req):
+        if req.url.host == "accounts.spotify.com":
+            return token_resp()
+        calls.append(json.loads(req.content))
+        return httpx.Response(201, json={"snapshot_id": "s"})
+
+    uris = [f"spotify:track:{i}" for i in range(150)]
+    make(handler, settings, mocker).add_items("P", uris, position=7)
+    assert [c["position"] for c in calls] == [7, 107]
+    assert [u for c in calls for u in c["uris"]] == uris
+
+
+def test_create_rename_and_unlike(settings, mocker):
+    calls = []
+
+    def handler(req):
+        if req.url.host == "accounts.spotify.com":
+            return token_resp()
+        body = json.loads(req.content) if req.content else None
+        calls.append((req.method, req.url.path, dict(req.url.params), body))
+        if req.method == "POST":
+            return httpx.Response(201, json={"id": "NEW", "snapshot_id": "s0"})
+        return httpx.Response(200)
+
+    c = make(handler, settings, mocker)
+    created = c.create_playlist("older", "smart", public=False)
+    c.rename_playlist("P", "older (pre-sync)")
+    c.unlike([f"spotify:track:{i}" for i in range(41)])
+    assert created["id"] == "NEW"
+    assert calls[0] == (
+        "POST",
+        "/v1/me/playlists",
+        {},
+        {"name": "older", "public": False, "description": "smart"},
+    )
+    assert calls[1] == ("PUT", "/v1/playlists/P", {}, {"name": "older (pre-sync)"})
+    assert [(m, p) for m, p, _, _ in calls[2:]] == [("DELETE", "/v1/me/library")] * 2
+    assert len(calls[2][2]["uris"].split(",")) == 40
 
 
 def test_set_description_truncates_to_300(settings, mocker):
@@ -226,17 +272,18 @@ def test_set_description_truncates_to_300(settings, mocker):
     assert calls == [("PUT", "/v1/playlists/P", {"description": "x" * 300})]
 
 
-def test_unfollow_playlist_deletes_followers(settings, mocker):
+def test_unfollow_playlist_removes_it_from_the_library(settings, mocker):
     calls = []
 
     def handler(req):
         if req.url.host == "accounts.spotify.com":
             return token_resp()
-        calls.append((req.method, req.url.path))
+        calls.append((req.method, req.url.path, req.url.params.get("uris")))
         return httpx.Response(200)
 
     make(handler, settings, mocker).unfollow_playlist("P")
-    assert calls == [("DELETE", "/v1/playlists/P/followers")]
+    # The followers endpoint was removed in February 2026.
+    assert calls == [("DELETE", "/v1/me/library", "spotify:playlist:P")]
 
 
 def test_search_isrc_and_track_limit_10(settings, mocker):

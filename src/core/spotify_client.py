@@ -179,28 +179,56 @@ class SpotifyClient:
         return self._search(f"track:{title} artist:{artist}", market)
 
     # writes
-    def add_items(self, playlist_id: str, uris: list[str]) -> None:
+    def add_items(
+        self, playlist_id: str, uris: list[str], position: int | None = None
+    ) -> str | None:
+        snapshot = None
         for i in range(0, len(uris), 100):
-            self._request(
-                "POST", f"{API}/v1/playlists/{playlist_id}/items", json={"uris": uris[i : i + 100]}
-            )
+            body = {"uris": uris[i : i + 100]}
+            if position is not None:
+                body["position"] = position + i
+            snapshot = self._request(
+                "POST", f"{API}/v1/playlists/{playlist_id}/items", json=body
+            ).get("snapshot_id")
+        return snapshot
 
-    def remove_items(self, playlist_id: str, uris: list[str]) -> None:
+    def remove_items(self, playlist_id: str, uris: list[str]) -> str | None:
+        """Removes EVERY occurrence of each URI; Spotify no longer accepts positions."""
+        snapshot = None
         for i in range(0, len(uris), 100):
-            self._request(
+            snapshot = self._request(
                 "DELETE",
                 f"{API}/v1/playlists/{playlist_id}/items",
-                json={"uris": uris[i : i + 100]},
-            )
+                json={"items": [{"uri": uri} for uri in uris[i : i + 100]]},
+            ).get("snapshot_id")
+        return snapshot
+
+    def create_playlist(self, name: str, description: str, public: bool = False) -> dict:
+        return self._request(
+            "POST",
+            f"{API}/v1/me/playlists",
+            json={"name": name, "public": public, "description": description[:300]},
+        )
+
+    def rename_playlist(self, playlist_id: str, name: str) -> None:
+        self._request("PUT", f"{API}/v1/playlists/{playlist_id}", json={"name": name})
 
     def set_description(self, playlist_id: str, text: str) -> None:
         self._request("PUT", f"{API}/v1/playlists/{playlist_id}", json={"description": text[:300]})
 
     def unfollow_playlist(self, playlist_id: str) -> None:
-        self._request("DELETE", f"{API}/v1/playlists/{playlist_id}/followers")
+        self._request(
+            "DELETE", f"{API}/v1/me/library", params={"uris": f"spotify:playlist:{playlist_id}"}
+        )
 
     def like(self, uris: list[str]) -> None:
         for i in range(0, len(uris), 40):
             self._request(
                 "PUT", f"{API}/v1/me/library", params={"uris": ",".join(uris[i : i + 40])}
+            )
+
+    def unlike(self, uris: list[str]) -> None:
+        for i in range(0, len(uris), 40):
+            self._request(
+                "DELETE", f"{API}/v1/me/library", params={"uris": ",".join(uris[i : i + 40])}
             )
