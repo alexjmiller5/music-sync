@@ -71,7 +71,9 @@ runs in tests, locally, or on any future platform.
   after acknowledgement. Retain known outcomes through catalog failures;
   legacy incomplete receipts are unknown. HTTP errors alone never prove an
   add failed. Clients retry the identical capture ID/payload and honor
-  Retry-After; confirmed adds remain silent even when catalog maintenance
+  Retry-After (a definitive `no_match` before any attempt answers 422 with a
+  one-day Retry-After, so a missing recording never polls Spotify every 30 s);
+  confirmed adds remain silent even when catalog maintenance
   needs retry. Never log exception locals containing settings or credentials.
   R2 pending intent lives at
   `music-sync/pending-reconcile.json.gz`, outside raw-backup lifecycle rules.

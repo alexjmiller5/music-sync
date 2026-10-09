@@ -56,6 +56,7 @@ def _run(dry_run: bool, workspace: str = "default") -> dict:
 
 WORKER_TIMEOUT = 3600
 APPLY_BUDGET = 3000  # seconds of a call after which apply stops cleanly and stays pending
+NO_MATCH_RETRY_AFTER = 86400  # seconds a client waits after a definitive no-match capture
 
 
 def _budget() -> float:
@@ -224,7 +225,13 @@ def _consumer_capture(body: dict):
             ),
         )
         if result.get("ok") is not True:
-            return JSONResponse(result, status_code=422)
+            # No exact match before any Spotify attempt is definitive for now; a retry
+            # can only succeed once Spotify's catalog changes, so retry daily, not every 30 s.
+            definitive = (
+                result.get("reason") == "no_match" and result["spotify_outcome"] == "not_added"
+            )
+            headers = {"Retry-After": str(NO_MATCH_RETRY_AFTER)} if definitive else None
+            return JSONResponse(result, status_code=422, headers=headers)
         return result
     except capture_clients.DeliveryFailure as exc:
         cause = exc.__cause__

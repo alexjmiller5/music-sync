@@ -197,6 +197,7 @@ def deliver(settings: Settings, client_id: str, payload: dict, select, perform) 
                     "ok": False,
                     "capture_id": capture_id,
                     "spotify_outcome": outcome,
+                    "reason": "no_match",
                     "message": f"Could not find {payload['title']} by {payload['artist']} on Spotify",
                     "isrc": None,
                 }

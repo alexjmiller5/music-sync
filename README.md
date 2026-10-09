@@ -205,6 +205,9 @@ replays its completed receipt without selecting a different recording. The
 optional ISRC participates in payload identity. Reusing the UUID with a changed
 payload returns `409`. Missing, invalid or revoked credentials return `401`;
 malformed requests return `422`; storage or capture availability failures return `503`.
+A capture with no exact Spotify match before any add attempt returns `422` with
+`reason: no_match`, `spotify_outcome: not_added` and `Retry-After: 86400`: only a
+Spotify catalog change can make it succeed, so clients retry daily, not every 30 s.
 Only a response with HTTP 200, `ok: true`, the matching `capture_id` and a
 nonempty `isrc` is a delivery acknowledgement.
 
