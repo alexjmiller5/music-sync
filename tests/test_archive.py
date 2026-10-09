@@ -152,3 +152,33 @@ def test_raw_upload_failure_stops_flow(settings, monkeypatch, status):
     monkeypatch.setattr(httpx, "request", client.request)
     with pytest.raises(httpx.HTTPStatusError):
         archive.put(settings, "raw/spotify-pull/a.json.gz", b"x")
+
+
+def test_keys_lists_every_page_and_delete_removes_one_key(settings, s3):
+    prefix = "music-sync/capture-queue/"
+    with Stubber(s3) as stub:
+        stub.add_response(
+            "list_objects_v2",
+            {
+                "Contents": [{"Key": prefix + "a/1.json.gz"}],
+                "IsTruncated": True,
+                "NextContinuationToken": "t",
+            },
+            {"Bucket": "bucket", "Prefix": prefix},
+        )
+        stub.add_response(
+            "list_objects_v2",
+            {"Contents": [{"Key": prefix + "b/2.json.gz"}], "IsTruncated": False},
+            {"Bucket": "bucket", "Prefix": prefix, "ContinuationToken": "t"},
+        )
+        stub.add_response("delete_object", {}, {"Bucket": "bucket", "Key": prefix + "a/1.json.gz"})
+        assert archive.keys(settings, prefix) == [prefix + "a/1.json.gz", prefix + "b/2.json.gz"]
+        archive.delete(settings, prefix + "a/1.json.gz")
+        stub.assert_no_pending_responses()
+
+
+def test_raw_archives_are_never_listed_or_deleted(settings):
+    with pytest.raises(ValueError):
+        archive.keys(settings, "raw/spotify-capture/")
+    with pytest.raises(ValueError):
+        archive.delete(settings, "raw/spotify-capture/x.json.gz")

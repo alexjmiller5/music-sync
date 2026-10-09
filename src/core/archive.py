@@ -47,6 +47,26 @@ def put(settings: Settings, key: str, data: bytes, s3: BaseClient | None = None)
         )
 
 
+def keys(settings: Settings, prefix: str, s3: BaseClient | None = None) -> list[str]:
+    """Every recovery-bucket key under `prefix` (raw/ archives are Soma's and not listed)."""
+    if prefix.startswith("raw/"):
+        raise ValueError("raw archives are not listed")
+    found = []
+    with nullcontext(s3) if s3 is not None else closing(_client(settings)) as client:
+        for page in client.get_paginator("list_objects_v2").paginate(
+            Bucket=settings.r2_bucket, Prefix=prefix
+        ):
+            found.extend(item["Key"] for item in page.get("Contents", []))
+    return found
+
+
+def delete(settings: Settings, key: str, s3: BaseClient | None = None) -> None:
+    if key.startswith("raw/"):
+        raise ValueError("raw archives are retained")
+    with nullcontext(s3) if s3 is not None else closing(_client(settings)) as client:
+        client.delete_object(Bucket=settings.r2_bucket, Key=key)
+
+
 # Outside raw/ so raw-backup lifecycle expiration cannot discard retry evidence.
 PENDING_KEY = "music-sync/pending-reconcile.json.gz"
 

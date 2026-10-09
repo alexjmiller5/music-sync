@@ -32,8 +32,8 @@ runs in tests, locally, or on any future platform.
   auth (`Modal-Key` + `Modal-Secret`). The consumer capture endpoint is public
   at the Modal edge and requires an app-issued capture-only Bearer token. Only
   its SHA-256 hash is retained; each client can be revoked independently. The
-  worker rechecks active status after queueing so a completed revoke blocks
-  later queued work.
+  capture drain rechecks active status before delivering, so a revoke blocks
+  queued work (`status: rejected`).
 - `just clients issue "<device>"` (scripts/capture_clients.py, operator Modal
   auth) issues a client and prints an enrollment link to the static
   `capture-enroll` page, which hands the fragment-borne URL and token to
@@ -48,6 +48,20 @@ runs in tests, locally, or on any future platform.
   `max_containers=1` and `@modal.concurrent(max_inputs=1)`. Keep the full
   read/archive/plan/apply cycle inside it; endpoint container caps alone do
   not serialize different functions. FastAPI is a production dependency.
+  The one exception is consumer capture (accept-and-queue, like Synapse's
+  receiver): the `capture-consumer` ASGI app validates auth and payload, stores
+  the capture in its receipt plus an empty marker under `music-sync/capture-queue/`
+  and answers 202 without Spotify or hub I/O; `GET /<capture_id>` reports its
+  status. `capture_drain` (its own function, one container, one input; started
+  after each accepted capture, by status reads that find one due and hourly by
+  the reconcile cron) delivers markers oldest first through the old synchronous
+  `deliver` step, outside the worker. It reads the catalog fresh and never writes
+  the worker's mirror cache (a concurrent writer could leave its cursor ahead of
+  its rows), waits while pending intent exists, gates the whole queue on Spotify's
+  429 Retry-After (`music-sync/capture-spotify-gate.json.gz`), rechecks a
+  `no_match` daily and backs other failures off from 1 minute to 1 hour (honoring
+  any Retry-After). A capture can land while a reconcile is still reading; the
+  next reconcile observes that membership.
 - `writes=False` selects observation-only planning before enforcement. Import
   actual liked values and full memberships; never persist hypothetical FIFO,
   auto-like, rule or expiry changes during review. Pending curation intents
@@ -69,10 +83,11 @@ runs in tests, locally, or on any future platform.
   attempt may have taken effect; `added` means an acknowledged add or observed
   inbox membership. Persist `unknown` before Spotify and `added` immediately
   after acknowledgement. Retain known outcomes through catalog failures;
-  legacy incomplete receipts are unknown. HTTP errors alone never prove an
-  add failed. Clients retry the identical capture ID/payload and honor
-  Retry-After (a definitive `no_match` before any attempt answers 422 with a
-  one-day Retry-After, so a missing recording never polls Spotify every 30 s);
+  legacy incomplete receipts are unknown (and queue as such on their next
+  POST). HTTP errors alone never prove an add failed. A repeated POST of the
+  same capture answers its current state: 202 while queued (Retry-After when a
+  retry time is known), the delivered receipt (200, `ok`, `isrc`, `spotify_outcome:
+  added`) once added, 422 `no_match` with Retry-After until the daily recheck;
   confirmed adds remain silent even when catalog maintenance
   needs retry. Never log exception locals containing settings or credentials.
   R2 pending intent lives at

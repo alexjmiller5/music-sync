@@ -190,26 +190,42 @@ UUID retains one recognition event and its original request independently of
 playlist membership. Retry the same UUID and payload; a real new recognition
 uses a new UUID. Repeated recognition does not duplicate an existing inbox item.
 
-Only a selected Spotify track with a valid ISRC, track ID and URI is stored
-with the payload identity before Spotify or hub side effects. An incomplete
-candidate is not stored, so the same capture UUID can resolve it on a later
-retry. A successful capture is acknowledged only after that state is replaced
-by a durable receipt in Music Sync's R2:
+The endpoint stores the capture durably and answers `202` at once, without
+touching Spotify:
 
 ```json
-{"ok":true,"capture_id":"3d2ed84e-9413-4a4a-a7e1-c596201bf84d","isrc":"USAAA2600001","spotify_outcome":"added"}
+{"ok":true,"capture_id":"3d2ed84e-9413-4a4a-a7e1-c596201bf84d","status":"queued","spotify_outcome":"not_added","isrc":null,"title":"...","artist":"...","retry_at":null,"reason":null}
 ```
 
-Repeating the same client, capture UUID and payload resumes the stored track or
-replays its completed receipt without selecting a different recording. The
-optional ISRC participates in payload identity. Reusing the UUID with a changed
-payload returns `409`. Missing, invalid or revoked credentials return `401`;
-malformed requests return `422`; storage or capture availability failures return `503`.
-A capture with no exact Spotify match before any add attempt returns `422` with
-`reason: no_match`, `spotify_outcome: not_added` and `Retry-After: 86400`: only a
-Spotify catalog change can make it succeed, so clients retry daily, not every 30 s.
-Only a response with HTTP 200, `ok: true`, the matching `capture_id` and a
-nonempty `isrc` is a delivery acknowledgement.
+A separate drain function delivers queued captures oldest first: it selects the
+recording, adds it to the inbox and writes the catalog exactly as a synchronous
+capture did. Only a selected Spotify track with a valid ISRC, track ID and URI is
+pinned to the capture before side effects; an incomplete candidate is not, so a
+later attempt can resolve it. Read the result with
+**`GET capture-consumer endpoint/<capture_id>`** and the same Bearer token
+(another client's capture is `404`):
+
+```json
+{"capture_id":"3d2ed84e-9413-4a4a-a7e1-c596201bf84d","status":"added","spotify_outcome":"added","isrc":"USAAA2600001","title":"...","artist":"...","retry_at":null,"reason":null}
+```
+
+`status` is `queued` (waiting; `retry_at` says until when if known), `added`,
+`not_added` with `reason: no_match` (no exact Spotify recording yet; rechecked
+daily, `retry_at` is the next check) or `rejected` (the client was revoked before
+delivery). Repeating the same client, capture UUID and payload never queues it
+twice: it answers `202` while queued (with `Retry-After` when a retry time is
+known), the delivered receipt
+`{"ok":true,"capture_id":"...","isrc":"USAAA2600001","spotify_outcome":"added"}`
+with `200` once added, and `422` with `reason: no_match` and `Retry-After` while
+the song is not on Spotify. The optional ISRC participates in payload identity.
+Reusing the UUID with a changed payload returns `409`. Missing, invalid or
+revoked credentials return `401`; malformed requests return `422`; a storage
+failure before the capture is stored returns `503`.
+
+The drain honors Spotify's `Retry-After` for the whole queue (a `429` stops it and
+nothing calls Spotify until then), backs other failures off from one minute to an
+hour, waits while a reconcile recovery is pending, and runs after every accepted
+capture, on status reads that find a capture due, and hourly with the reconcile cron.
 
 Validated deliveries also report a `spotify_outcome` bound to the same
 `capture_id`, independently of completion of catalog maintenance:
@@ -221,9 +237,8 @@ Validated deliveries also report a `spotify_outcome` bound to the same
 | `unknown` | An attempted add lacks acknowledgement, or an older incomplete receipt has no outcome evidence. | Retain retry state without claiming the song was not added. |
 
 An HTTP error, timeout, missing outcome, or mismatched capture ID alone never
-proves `not_added`. Retry the identical capture ID and payload, honoring
-`Retry-After`. `ok: false` with `spotify_outcome: added` means catalog work
-still needs retry, not that Spotify rejected the song. Keep already observed
+proves `not_added`. `status: added` is reported as soon as Spotify acknowledges
+the add, even while catalog work still needs retry. Keep already observed
 `added` evidence on the client even if a later transport failure is ambiguous.
 The service stores `unknown` before sending an add and `added` immediately
 after acknowledgement or confirmed inbox membership. A receipt-write failure
