@@ -388,10 +388,14 @@ def build(live, mirror: Mirror, decisions: dict, spec: dict, *, observed_at: str
             )
         },
     }
+    planned = {f"planned:{s['name']}" for s in spec["smart"]}
     for s in spec["smart"]:
         rules.validate(s["rule"])
         if s.get("replaces") and s["replaces"] not in live.playlists:
             raise PackageError("smart destination replaces an unknown playlist")
+        for ref in _rule_refs(s["rule"]):
+            if ref.startswith("planned:") and ref not in planned:
+                raise PackageError(f"{s['name']}: {ref} is not a smart destination of the package")
     report = {
         "held": held,
         "stale": stale,
@@ -513,6 +517,23 @@ def adjust_curation(
 
 # --- validation and apply ---------------------------------------------------------
 
+REF_KEYS = ("matches_rule_ids_any", "not_matches_rule_ids")
+
+
+def _rule_refs(rule: dict) -> list[str]:
+    return [ref for k in REF_KEYS for ref in rule.get(k, [])]
+
+
+def _resolve_planned(rule: dict, created: dict) -> dict:
+    """`planned:<name>` references another smart destination by its created ID."""
+    out = dict(rule)
+    for k in REF_KEYS:
+        if k in out:
+            out[k] = [
+                created[r.split(":", 1)[1]] if r.startswith("planned:") else r for r in out[k]
+            ]
+    return out
+
 
 def _uris(items) -> list[str]:
     return [it.uri for it in items]
@@ -618,15 +639,18 @@ def apply(package, spotify, hub, settings, now, state, save) -> dict:
             body = spotify.create_playlist(name, text, public=False)
             created[name] = body["id"]
             save()
+    names.update({pid: name for name, pid in created.items()})
+    for smart in package["smart"]:  # rules may reuse another new playlist's predicate
+        rule = _resolve_planned(smart["rule"], created)
         hub.push(
             "playlists",
             [
                 {
-                    "id": created[name],
-                    "name": name,
+                    "id": created[smart["name"]],
+                    "name": smart["name"],
                     "kind": "smart",
-                    "rule": smart["rule"],
-                    "description": rules.describe(smart["rule"], today, names),
+                    "rule": rule,
+                    "description": rules.describe(rule, today, names),
                     "pinned": 1,
                     "expires_at": None,
                     "deleted_at": None,

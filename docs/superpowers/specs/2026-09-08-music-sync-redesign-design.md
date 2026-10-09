@@ -224,9 +224,12 @@ appends to that task rather than creating another.
   "v": 1,
   "deezer_genres_any": ["Rap/Hip Hop"],
   "mb_tags_any": ["house", "deep house"],
+  "genre_any": {"deezer": ["Rap/Hip Hop"], "mb_tags_contain": ["rap", "hip hop"]},
   "first_year": {"gte": 1990, "lt": 2000},
   "in_playlist_ids_any": ["<curated playlist id>"],
   "not_in_playlist_ids": ["<playlist id>"],
+  "matches_rule_ids_any": ["<smart playlist id>"],
+  "not_matches_rule_ids": ["<smart playlist id>"],
   "captured_by": "shazam",
   "liked_after": "2025-01-01"
 }
@@ -237,7 +240,16 @@ key. `first_year` accepts `lt`, `gte`, `between: [a, b]`. Playlist references
 are stable Spotify playlist IDs, so renames never break a rule; an unknown ID
 is a flag. Legacy `in_playlist_any` / `not_in_playlist` name keys remain
 readable for old rows (an ambiguous name is held for review) but the
-configuration path (`just rules`) accepts IDs only. The pool (liked=1) is always implied. Validation is a catalog invariant
+configuration path (`just rules`) accepts IDs only. `genre_any` matches a
+Deezer genre exactly or, when `mb_tags_contain` is present, any MusicBrainz tag
+containing one of its substrings (case-insensitive); unknown genres never
+match. `matches_rule_ids_any` / `not_matches_rule_ids` inline another smart
+playlist's rule, so one predicate is defined once and reused (a genre playlist
+plus year playlists that exclude it); changing that rule changes every rule
+that reuses it. Unknown, non-smart and cyclic references stop the rule for
+review, and `just rules clear` / `curated` refuse a playlist other rules
+reuse. A rollout package references its own new playlists as
+`planned:<name>`, resolved to the created IDs before the rows are written. The pool (liked=1) is always implied. Validation is a catalog invariant
 on `playlists.rule`: `json_valid`, `v = 1`, no keys outside this set, correct
 value types. Unknown keys fail validation rather than being ignored.
 
@@ -245,7 +257,7 @@ value types. Unknown keys fail validation rather than being ignored.
 
 `smart · genre: Rap/Hip Hop · year < 2000 · synced 2026-09-08`. Segments in
 key order above, omitted when absent; `in:` and `not in:` for playlist
-predicates; `shazamed` for captured\_by. Truncated to 300 characters. The cron
+predicates, `matches:` and `not:` for reused rules; `shazamed` for captured\_by. Truncated to 300 characters. The cron
 rewrites it every run and does not read it back.
 
 ### 6.3 Rule → SQL

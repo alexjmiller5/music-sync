@@ -519,3 +519,63 @@ def test_dry_run_can_plan_from_a_retained_observation_without_spotify(settings, 
         run.reconcile(
             settings, dry_run=False, spotify=NoSpotify(), hub=object(), observation_key=key
         )
+
+
+# --- smart destinations sharing one predicate -----------------------------------------
+
+
+def shared_spec():
+    s = spec()
+    s["smart"] = [
+        {
+            "name": "older",
+            "rule": {"v": 1, "first_year": {"lt": 2000}, "not_matches_rule_ids": ["planned:rap"]},
+            "replaces": G,
+        },
+        {
+            "name": "newer",
+            "rule": {"v": 1, "first_year": {"gte": 2000}, "not_matches_rule_ids": ["planned:rap"]},
+        },
+        {"name": "rap", "rule": {"v": 1, "genre_any": {"deezer": ["Rap/Hip Hop"]}}},
+    ]
+    return s
+
+
+def test_new_smart_playlists_reuse_one_predicate_through_planned_ids(settings, mocker, store):
+    m = mirror_rows()
+    m.songs["GBORI0000001"].deezer_genres = ["Rap/Hip Hop"]
+    live = live_from_raw(raw_observation(), ME, m)
+    p = package.build(live, m, decisions(), shared_spec(), observed_at=NOW.isoformat())["package"]
+    m2, live2 = package.simulate(p, m, live, ME, NOW)
+    plan = reconcile.plan(m2, live2, NOW, today="2026-10-09")
+    adds = {(a.playlist_id, a.isrc) for a in plan if a.kind == "add_item"}
+    assert ("planned:rap", "GBORI0000001") in adds
+    assert ("planned:older", "GBORI0000001") not in adds
+    assert not [a for a in plan if a.kind == "flag" and "rule error" in str(a.reason)]
+
+    spotify = FakeSpotify(raw_observation(), p["tracks"])
+    hub = FakeHub(m)
+    mocker.patch("core.package.mirror_mod.load_mirror", return_value=m)
+    receipt = package.apply(p, spotify, hub, settings, NOW, {}, lambda: None)
+    assert receipt["verified"], receipt
+    smart_rows = {
+        r["name"]: r
+        for t, rows in hub.pushed
+        if t == "playlists"
+        for r in rows
+        if r.get("kind") == "smart"
+    }
+    rap_id = receipt["created"]["rap"]
+    assert smart_rows["older"]["rule"]["not_matches_rule_ids"] == [rap_id]
+    assert smart_rows["newer"]["rule"]["not_matches_rule_ids"] == [rap_id]
+    assert "not: rap" in smart_rows["newer"]["description"]
+    assert p["smart"][0]["rule"]["not_matches_rule_ids"] == ["planned:rap"]  # package unchanged
+
+
+def test_planned_reference_must_name_a_smart_destination_of_the_package():
+    m = mirror_rows()
+    live = live_from_raw(raw_observation(), ME, m)
+    s = shared_spec()
+    s["smart"].pop()
+    with pytest.raises(package.PackageError, match="planned:rap"):
+        package.build(live, m, decisions(), s, observed_at=NOW.isoformat())

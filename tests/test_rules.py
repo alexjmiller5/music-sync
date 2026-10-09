@@ -191,3 +191,103 @@ def test_missing_smart_rule_is_reported_instead_of_silently_skipped():
     errors = {}
     assert rules.evaluate(m, {}, errors) == {}
     assert "P" in errors
+
+
+# --- one genre predicate shared by several smart playlists ---------------------------
+
+GENRE = {"v": 1, "genre_any": {"deezer": ["Rap/Hip Hop"]}}
+WITH_TAGS = {
+    "v": 1,
+    "genre_any": {"deezer": ["Rap/Hip Hop"], "mb_tags_contain": ["rap", "hip hop"]},
+}
+
+
+def buckets(genre_rule):
+    songs = {
+        "R90": song("R90", year=1995, genres=["Rap/Hip Hop"]),
+        "R05": song("R05", year=2005, genres=["Pop", "Rap/Hip Hop"]),
+        "P90": song("P90", year=1990, genres=["Rock"]),
+        "P10": song("P10", year=2010, genres=["Pop"]),
+        "U01": song("U01", year=2001),  # unknown genre is not the genre
+        "T03": song("T03", year=2003, genres=["Pop"], tags=["Pop Rap"]),
+        "T98": song("T98", year=1998, tags=["east coast hip hop"]),
+        "OFF": song("OFF", liked=0, year=2004, genres=["Rap/Hip Hop"]),
+        "NOY": song("NOY", genres=["Rap/Hip Hop"]),
+    }
+
+    def smart(pid, rule):
+        return Playlist(pid, pid.lower(), "smart", rule, None, None, 1, None)
+
+    playlists = {
+        "RAP": smart("RAP", genre_rule),
+        "GOOD": smart(
+            "GOOD", {"v": 1, "first_year": {"gte": 2000}, "not_matches_rule_ids": ["RAP"]}
+        ),
+        "GAL": smart("GAL", {"v": 1, "first_year": {"lt": 2000}, "not_matches_rule_ids": ["RAP"]}),
+    }
+    return Mirror(songs, playlists, {}, [], set())
+
+
+def test_one_genre_predicate_drives_all_three_rules():
+    out = rules.evaluate(buckets(GENRE), {})
+    assert out == {
+        "RAP": {"R90", "R05", "NOY"},
+        "GOOD": {"P10", "U01", "T03"},
+        "GAL": {"P90", "T98"},
+    }
+
+
+def test_musicbrainz_tag_option_changes_only_the_shared_predicate():
+    out = rules.evaluate(buckets(WITH_TAGS), {})
+    assert out == {
+        "RAP": {"R90", "R05", "NOY", "T03", "T98"},
+        "GOOD": {"P10", "U01"},
+        "GAL": {"P90"},
+    }
+
+
+def test_shared_predicate_reference_errors():
+    m = buckets(GENRE)
+    m.playlists["GOOD"].rule = {"v": 1, "not_matches_rule_ids": ["NOPE"]}
+    m.playlists["GAL"].rule = {"v": 1, "matches_rule_ids_any": ["GAL"]}
+    m.playlists["CUR"] = Playlist("CUR", "cur", "curated", None, None, None, 1, None)
+    m.playlists["X"] = Playlist(
+        "X", "x", "smart", {"v": 1, "matches_rule_ids_any": ["CUR"]}, None, None, 1, None
+    )
+    errors = {}
+    out = rules.evaluate(m, {}, errors)
+    assert set(out) == {"RAP"}
+    assert "unknown playlist ID" in errors["GOOD"]
+    assert "cycle" in errors["GAL"]
+    assert "not a smart playlist" in errors["X"]
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"v": 1, "genre_any": {}},
+        {"v": 1, "genre_any": ["Rap/Hip Hop"]},
+        {"v": 1, "genre_any": {"deezer": []}},
+        {"v": 1, "genre_any": {"deezer": ["x"], "spotify": ["y"]}},
+        {"v": 1, "genre_any": {"mb_tags_contain": [""]}},
+        {"v": 1, "not_matches_rule_ids": []},
+        {"v": 1, "matches_rule_ids_any": "RAP"},
+    ],
+)
+def test_shared_predicate_validation(bad):
+    with pytest.raises(rules.RuleError):
+        rules.validate(bad)
+
+
+def test_describe_shared_predicate():
+    assert rules.describe(GENRE, "d") == "smart · genre: Rap/Hip Hop · synced d"
+    assert (
+        rules.describe(WITH_TAGS, "d")
+        == "smart · genre: Rap/Hip Hop or tags containing rap, hip hop · synced d"
+    )
+    good = {"v": 1, "first_year": {"gte": 2000}, "not_matches_rule_ids": ["RAP"]}
+    assert rules.describe(good, "d", {"RAP": "rap"}) == "smart · not: rap · year >= 2000 · synced d"
+    assert (
+        rules.describe({"v": 1, "matches_rule_ids_any": ["RAP"]}, "d")
+        == "smart · matches: RAP · synced d"
+    )

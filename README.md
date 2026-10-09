@@ -384,8 +384,14 @@ creates a new private smart playlist; `just rules smart <id> '<rule json>'`
 converts an owned playlist; `just rules curated <id>` classifies a new
 playlist; `just rules clear <id>` turns a smart playlist back into a curated
 one. Rules are JSON v1 over liked songs (`first_year`, `deezer_genres_any`,
-`mb_tags_any`, `in_playlist_ids_any`, `not_in_playlist_ids`, `captured_by`,
-`liked_after`) and reference playlists by stable ID. The worker validates the
+`mb_tags_any`, `genre_any`, `in_playlist_ids_any`, `not_in_playlist_ids`,
+`matches_rule_ids_any`, `not_matches_rule_ids`, `captured_by`, `liked_after`)
+and reference playlists by stable ID. A predicate shared by several playlists
+lives in one smart playlist's rule and the others reuse it, for example a
+genre playlist `{"v": 1, "genre_any": {"deezer": ["Rap/Hip Hop"]}}` and year
+playlists with `"not_matches_rule_ids": ["<genre playlist id>"]`; widening
+the genre (say `"mb_tags_contain": ["rap", "hip hop"]`) is one `just rules
+smart` change. The worker validates the
 rule against the current catalog and writes the playlists row itself; agents
 no longer write `playlists.rule`, `kind`, `pinned` or `expires_at` directly.
 
