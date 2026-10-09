@@ -15,3 +15,5 @@ R2_BUCKET=op://Music Sync/Music Sync ENV/R2_BUCKET
 R2_API_TOKEN=op://Music Sync/Music Sync ENV/R2_API_TOKEN
 R2_ACCESS_KEY_ID=op://Music Sync/Music Sync ENV/R2_ACCESS_KEY_ID
 RECONCILE_ENABLED=op://Music Sync/Music Sync ENV/RECONCILE_ENABLED
+# Fernet key that encrypts workspace secrets at rest (core/workspaces.py).
+WORKSPACE_SECRET_KEY=op://Music Sync/Music Sync ENV/WORKSPACE_SECRET_KEY
