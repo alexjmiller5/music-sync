@@ -33,7 +33,13 @@ SCOPES = [
 
 def test_parse_args_from_flags():
     args = auth.parse_args(["--client-id", "cid", "--client-secret", "csec"])
-    assert (args.client_id, args.client_secret, args.port) == ("cid", "csec", 8080)
+    assert (args.client_id, args.client_secret, args.port) == ("cid", "csec", 43821)
+
+
+def test_default_callback_port_avoids_the_local_connect_listener():
+    # 8080 is the local 1Password Connect API; the registered redirect URI uses 43821.
+    assert auth.DEFAULT_PORT == 43821
+    assert auth._redirect_uri(auth.DEFAULT_PORT) == "http://127.0.0.1:43821/callback"
 
 
 def test_parse_args_from_env(monkeypatch):

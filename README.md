@@ -449,7 +449,7 @@ recognitions create-only with explicitly estimated dates.
 
 1. **Spotify developer app** - create a dedicated "Music Sync" app at
    [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard),
-   redirect URI `http://127.0.0.1:8080/callback`. Post-2026-02 apps in
+   redirect URI `http://127.0.0.1:43821/callback`. Post-2026-02 apps in
    Development Mode get a reduced endpoint set (see spec section 7.1); save
    the client id/secret into the `Music Sync ENV` 1Password item.
 2. **Spotify auth** - mint its own refresh token. The helper emits only a JSON
@@ -461,7 +461,7 @@ recognitions create-only with explicitly estimated dates.
    Spotify expires this refresh token every 180 days. A run that sees
    `invalid_grant` flags it in Notion and stops; re-mint with the command
    above. Use `--no-browser` for a remote browser and forward its loopback
-   port 8080 to the machine running this command.
+   port 43821 to the machine running this command (8080 is the local Connect API).
 
    App credentials are never shared with Derivations or a terminal client.
    Spotify Development Mode apps still share their developer account quota

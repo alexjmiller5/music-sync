@@ -5,11 +5,11 @@
 """One-time Spotify auth: mint a refresh token via authorization-code + PKCE.
 
 Run AFTER creating the Spotify developer app (https://developer.spotify.com/dashboard)
-with redirect URI http://127.0.0.1:8080/callback:
+with redirect URI http://127.0.0.1:43821/callback:
 
     SPOTIFY_CLIENT_ID=... SPOTIFY_CLIENT_SECRET=... uv run scripts/spotify_auth.py
 
-Opens the browser, captures the callback on 127.0.0.1:8080, exchanges the code,
+Opens the browser, captures the callback on 127.0.0.1:43821, exchanges the code,
 then emits a JSON object containing refresh_token on stdout for a credential-store
 consumer. Diagnostics and the consent URL go to stderr. Nothing is written to disk.
 Use --no-browser to open the consent URL in a browser on another machine;
@@ -36,13 +36,14 @@ SCOPES = (
     "playlist-modify-private playlist-modify-public "
     "user-library-read user-library-modify user-follow-read"
 )
+DEFAULT_PORT = 43821  # fixed: it is the registered redirect URI; 8080 is often taken (Connect)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--client-id", default=os.environ.get("SPOTIFY_CLIENT_ID"))
     parser.add_argument("--client-secret", default=os.environ.get("SPOTIFY_CLIENT_SECRET"))
-    parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args(argv)
     if not args.client_id or not args.client_secret:
