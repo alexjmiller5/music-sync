@@ -167,7 +167,6 @@ def validate_recording_aliases(items: list[LiveItem]) -> None:
 
 def pull_live(spotify, market: str, me_id: str, mirror: Mirror, full: bool = False) -> Live:
     raw = {"playlists": [], "items": {}, "liked": []}
-    playlists = {}
     for p in spotify.get_playlists():
         raw["playlists"].append(p)
         if (p.get("owner") or {}).get("id") != me_id:
@@ -176,29 +175,35 @@ def pull_live(spotify, market: str, me_id: str, mirror: Mirror, full: bool = Fal
         # smart playlists get rewritten by rule materialization without moving their snapshot
         # (a heart/un-heart elsewhere never bumps them), so always re-fetch those
         if (
-            not full
-            and known
-            and known.kind != "smart"
-            and known.snapshot_id
-            and known.snapshot_id == p.get("snapshot_id")
+            full
+            or not known
+            or known.kind == "smart"
+            or not known.snapshot_id
+            or known.snapshot_id != p.get("snapshot_id")
         ):
-            items = None
-        else:
-            body = spotify.get_playlist_items(p["id"], market)
-            raw["items"][p["id"]] = body
-            items = [item_from_raw(i) for i in body]
+            raw["items"][p["id"]] = spotify.get_playlist_items(p["id"], market)
+    raw["liked"] = spotify.get_liked(market)
+    return live_from_raw(raw, me_id, mirror)
+
+
+def live_from_raw(raw: dict, me_id: str, mirror: Mirror) -> Live:
+    """Interpret one retained observation; owned playlists without items were skipped."""
+    playlists = {}
+    for p in raw["playlists"]:
+        if (p.get("owner") or {}).get("id") != me_id:
+            continue
+        body = raw["items"].get(p["id"])
+        items = None if body is None else [item_from_raw(i) for i in body]
         playlists[p["id"]] = LivePlaylist(
             p["id"], p["name"], p.get("description"), p.get("snapshot_id"), items
         )
-    liked_raw = spotify.get_liked(market)
-    raw["liked"] = liked_raw
     liked = {}
     observations = []
     known_aliases = defaultdict(set)
     for song in mirror.songs.values():
         for track_id in song.spotify_ids:
             known_aliases[track_id].add(song.id)
-    for i in liked_raw:
+    for i in raw["liked"]:
         it = item_from_raw(i)
         known = known_aliases.get(it.track_id, set()) | known_aliases.get(it.linked_from_id, set())
         if known and known != {it.isrc}:
