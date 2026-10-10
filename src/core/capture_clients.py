@@ -278,7 +278,11 @@ def accept(settings: Settings, client_id: str, payload: dict, now: datetime) -> 
         if not hmac.compare_digest(state["payload_hash"], digest):
             raise Conflict("capture_id was already used with a different payload")
         if "payload" in state or "isrc" in state:
-            return view(state)
+            current = view(state)
+            if current["status"] in ("queued", "not_added") and "isrc" not in state:
+                # Idempotent: restores the queue entry if its first write failed.
+                archive.put(settings, _queue_key(client_id, capture_id), gzip.compress(b"{}"))
+            return current
     # New, or a receipt from synchronous delivery: keep its selection and outcome
     # (an incomplete one of those cannot prove whether Spotify was attempted).
     if state is not None:
