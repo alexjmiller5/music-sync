@@ -195,37 +195,42 @@ def test_capture_adds_new_song_with_shazam_edge(settings):
     )
 
 
-def test_capture_outside_the_worker_never_touches_the_shared_mirror_cache(settings, mocker):
+def test_capture_outside_the_worker_resumes_the_mirror_cache_but_never_writes_it(settings, mocker):
     # The serialized worker owns the incremental cache; a concurrent writer could
-    # leave its cursor ahead of its rows. Queue delivery reads the catalog fresh.
+    # leave its cursor ahead of its rows. Queue delivery starts from it, so it
+    # pulls only what arrived since, and never writes it back.
     from core import mirror
 
-    cache_io = []
-    mocker.patch(
-        "core.archive.get",
-        side_effect=lambda s, key: (
-            cache_io.append(("get", key)) if key.startswith("music-sync/mirror-cache/") else None
-        ),
-    )
+    store, puts = {}, []
+    mocker.patch("core.archive.get", side_effect=lambda s, key: store.get(key))
     mocker.patch(
         "core.archive.put",
-        side_effect=lambda s, key, data: (
-            cache_io.append(("put", key)) if key.startswith("music-sync/mirror-cache/") else None
-        ),
+        side_effect=lambda s, key, data: (puts.append(key), store.__setitem__(key, data)),
     )
-    sp, hub = FakeSpotify([track("1", "Money Trees", "Kendrick Lamar")]), FakeHub(INBOX)
+    stamped = "2026-10-01T00:00:00.000Z"
+    sp, hub = (
+        FakeSpotify([track("1", "Money Trees", "Kendrick Lamar")]),
+        FakeHub([{**INBOX[0], "hub_at": stamped}]),
+    )
+    sinces, pull = [], hub.pull
+    hub.pull = lambda table, columns, since="", where=None: (
+        sinces.append((table, since)),
+        pull(table, columns, since, where),
+    )[1]
     payload = {
         "title": "Money Trees",
         "artist": "Kendrick Lamar",
         "apple_music_id": "12",
         "shazam_url": "https://s",
     }
-    out = capture.capture(payload, sp, hub, settings, NOW, use_cache=False)
-    assert out["ok"] is True and cache_io == []
     capture.capture(payload, sp, hub, settings, NOW)
-    assert ("put", mirror.cache_key(settings.workspace)) in cache_io, (
-        "the worker path still checkpoints"
-    )
+    assert mirror.cache_key(settings.workspace) in puts, "the worker path still checkpoints"
+    puts.clear()
+    sinces.clear()
+    out = capture.capture(payload, sp, hub, settings, NOW, use_cache=False)
+    assert out["ok"] is True
+    assert [key for key in puts if key.startswith("music-sync/mirror-cache/")] == []
+    assert ("playlists", stamped) in sinces
 
 
 def test_capture_already_in_inbox(settings):

@@ -55,9 +55,9 @@ runs in tests, locally, or on any future platform.
   status. `capture_drain` (its own function, one container, one input; started
   after each accepted capture, by status reads that find one due and hourly by
   the reconcile cron) delivers markers oldest first through the old synchronous
-  `deliver` step, outside the worker. It reads the catalog fresh and never writes
-  the worker's mirror cache (a concurrent writer could leave its cursor ahead of
-  its rows), waits while pending intent (reconcile, replay or package checkpoint)
+  `deliver` step, outside the worker. It starts from the worker's mirror cache,
+  pulling only rows that arrived since, and never writes it back (a concurrent
+  writer could leave its cursor ahead of its rows), waits while pending intent (reconcile, replay or package checkpoint)
   exists without any Spotify call, gates the whole queue on Spotify's
   429 Retry-After (`music-sync/capture-spotify-gate.json.gz`), rechecks a
   `no_match` daily and backs other failures off from 1 minute to 1 hour (honoring

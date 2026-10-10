@@ -69,8 +69,8 @@ def capture(
     client_id: str | None = None,
     use_cache: bool = True,
 ) -> dict:
-    """`use_cache=False` (queue delivery outside the worker) reads the catalog fresh
-    and leaves the worker's incremental mirror cache alone."""
+    """`use_cache=False` (queue delivery outside the worker) starts from the worker's
+    incremental mirror cache, pulling only what arrived since, and never writes it."""
     title, artist = (payload.get("title") or "").strip(), (payload.get("artist") or "").strip()
     if not title or not artist:
         return {"ok": False, "message": "title and artist required", "isrc": None}
@@ -99,7 +99,7 @@ def capture(
     isrc = resolved.isrc
     if not isrc:
         return {"ok": False, "message": f"{title} by {artist} has no ISRC on Spotify", "isrc": None}
-    cache = mirror_mod.load_cache(settings) if use_cache else None
+    cache = mirror_mod.load_cache(settings)
     m = mirror_mod.load_mirror(
         hub,
         cache=cache,
