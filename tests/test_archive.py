@@ -26,6 +26,7 @@ def s3(monkeypatch):
     )
     # Exercise the production call signatures; only the SDK transport is replaced.
     monkeypatch.setattr(boto3, "client", lambda *args, **kwargs: client)
+    monkeypatch.setattr(archive, "_shared_clients", {})
     yield client
     client.close()
 
@@ -182,3 +183,20 @@ def test_raw_archives_are_never_listed_or_deleted(settings):
         archive.keys(settings, "raw/spotify-capture/")
     with pytest.raises(ValueError):
         archive.delete(settings, "raw/spotify-capture/x.json.gz")
+
+
+def test_operations_reuse_one_client_per_credential(settings, monkeypatch):
+    # A new client per object costs a TLS handshake each; capture intake does four.
+    created = []
+
+    class Client:
+        def put_object(self, **kwargs):
+            return {}
+
+    monkeypatch.setattr(archive, "_shared_clients", {})
+    monkeypatch.setattr(archive, "_client", lambda settings: created.append(1) or Client())
+    archive.put(settings, "music-sync/a.json.gz", b"x")
+    archive.put(settings, "music-sync/b.json.gz", b"y")
+    assert created == [1]
+    archive.put(settings.model_copy(update={"r2_api_token": "other"}), "music-sync/c.json.gz", b"z")
+    assert created == [1, 1]
