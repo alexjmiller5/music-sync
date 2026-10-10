@@ -96,6 +96,23 @@ def test_accept_is_idempotent_and_refuses_a_changed_payload(settings, objects):
         capture_clients.accept(settings, "client-id", {**PAYLOAD, "capture_id": "bad"}, NOW)
 
 
+def test_a_retry_restores_the_queue_entry_a_failed_write_left_out(settings, objects, monkeypatch):
+    real_put = capture_clients.archive.put
+
+    def marker_fails(settings, key, value):
+        if key.startswith(capture_clients.QUEUE_PREFIX):
+            raise RuntimeError("R2 unavailable")
+        real_put(settings, key, value)
+
+    monkeypatch.setattr(capture_clients.archive, "put", marker_fails)
+    with pytest.raises(RuntimeError):
+        capture_clients.accept(settings, "client-id", PAYLOAD, NOW)
+    assert queued(objects) == [] and receipt(objects)["status"] == "queued"
+    monkeypatch.setattr(capture_clients.archive, "put", real_put)
+    assert capture_clients.accept(settings, "client-id", PAYLOAD, NOW)["status"] == "queued"
+    assert queued(objects), "the client's retry puts the capture back in the queue"
+
+
 def test_drain_delivers_queued_captures_in_arrival_order_and_records_the_outcome(settings, objects):
     later = "a4af8b79-a4c9-4b7a-a616-553021037845"
     capture_clients.accept(
