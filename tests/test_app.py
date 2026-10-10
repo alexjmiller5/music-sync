@@ -664,6 +664,57 @@ def test_catalog_rate_limit_after_the_add_keeps_added_and_waits_its_retry_after(
     assert capture_clients.SPOTIFY_GATE_KEY not in objects, "only Spotify's limit gates the queue"
 
 
+def test_captures_queue_and_wait_while_a_package_checkpoint_is_pending(capture_api, monkeypatch):
+    import gzip
+    import json
+    from core import archive, capture as cap, capture_clients
+
+    post, objects = capture_api
+    token = issue_capture_token(post)["token"]
+    objects[archive.PENDING_KEY] = gzip.compress(json.dumps({"intent": "package"}).encode())
+    monkeypatch.setattr(
+        cap, "resolve_track", lambda *a: pytest.fail("Spotify called during a pending checkpoint")
+    )
+    accepted = post("/capture-consumer", CONSUMER_BODY, token)
+    assert accepted.status_code == 202 and accepted.json()["status"] == "queued"
+    post.drain()
+    status = status_of(post, token)
+    assert status["status"] == "queued" and status["retry_at"] is not None, "waits, never refused"
+    assert any(key.startswith(capture_clients.QUEUE_PREFIX) for key in objects), "never dropped"
+    assert post("/capture-consumer", CONSUMER_BODY, token).status_code == 202
+
+    objects[archive.PENDING_KEY] = gzip.compress(json.dumps(None).encode())
+    monkeypatch.setattr(cap, "resolve_track", lambda *a: {"id": "selected"})
+    monkeypatch.setattr(app, "_capture", added_capture)
+    post.drain(later(3600))
+    assert status_of(post, token)["status"] == "added"
+
+
+def test_capture_is_still_accepted_while_spotify_throttles_the_drain(capture_api, monkeypatch):
+    import httpx
+    from core import capture as cap
+
+    post, _ = capture_api
+    token = issue_capture_token(post)["token"]
+
+    def throttled(*args):
+        response = httpx.Response(
+            429,
+            headers={"Retry-After": "79200"},
+            request=httpx.Request("GET", "https://api.spotify.com/v1/search"),
+        )
+        raise httpx.HTTPStatusError("429", request=response.request, response=response)
+
+    monkeypatch.setattr(cap, "resolve_track", throttled)
+    post("/capture-consumer", CONSUMER_BODY, token)
+    post.drain()
+    second = {**CONSUMER_BODY, "capture_id": "a4af8b79-a4c9-4b7a-a616-553021037845"}
+    accepted = post("/capture-consumer", second, token)
+    assert accepted.status_code == 202 and accepted.json()["status"] == "queued"
+    assert post.drain()["deferred_until"] is not None, "the whole queue waits out Retry-After"
+    assert status_of(post, token, second["capture_id"])["status"] == "queued"
+
+
 def test_definitive_no_match_tells_the_client_to_stay_away(capture_api, monkeypatch):
     from core import capture as cap
 

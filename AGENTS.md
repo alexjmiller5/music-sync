@@ -57,7 +57,8 @@ runs in tests, locally, or on any future platform.
   the reconcile cron) delivers markers oldest first through the old synchronous
   `deliver` step, outside the worker. It reads the catalog fresh and never writes
   the worker's mirror cache (a concurrent writer could leave its cursor ahead of
-  its rows), waits while pending intent exists, gates the whole queue on Spotify's
+  its rows), waits while pending intent (reconcile, replay or package checkpoint)
+  exists without any Spotify call, gates the whole queue on Spotify's
   429 Retry-After (`music-sync/capture-spotify-gate.json.gz`), rechecks a
   `no_match` daily and backs other failures off from 1 minute to 1 hour (honoring
   any Retry-After). A capture can land while a reconcile is still reading; the

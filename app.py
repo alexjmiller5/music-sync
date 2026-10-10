@@ -319,16 +319,26 @@ def _capture_access(body: dict):
 
 def _deliver_queued(client_id: str, payload: dict, received_at: str):
     """The drain's step: the synchronous select/add/catalog delivery of one capture."""
+    import gzip
+    import json
     from datetime import datetime
 
+    from core import archive, capture_clients, workspaces
     from core import capture as cap
-    from core import capture_clients, workspaces
     from core.config import Settings
 
     base = Settings()
     capture_clients.require_active(base, client_id)
     # The client's workspace decides whose Spotify, hub and Notion this touches.
     settings = workspaces.settings_for(base, capture_clients.client_workspace(base, client_id))
+    # A pending reconcile, replay or package checkpoint goes first: wait before any
+    # Spotify call (the drain keeps the capture queued and stops).
+    pending = archive.get(settings, archive.pending_key(settings))
+    if pending and json.loads(gzip.decompress(pending)):
+        return {
+            "ok": False,
+            "message": "Pending recovery; retry after the original operation completes",
+        }
     received = datetime.fromisoformat(received_at.replace("Z", "+00:00"))
     return capture_clients.deliver(
         settings,
