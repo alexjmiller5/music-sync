@@ -1,6 +1,6 @@
 """Retained raw pulls through soma; recovery checkpoints in project-owned R2."""
 
-from contextlib import closing, nullcontext
+from contextlib import closing
 from datetime import datetime
 from hashlib import sha256
 from urllib.parse import quote
@@ -37,14 +37,25 @@ def _client(settings: Settings) -> BaseClient:
     )
 
 
+_shared_clients: dict[tuple[str, str, str], BaseClient] = {}
+
+
+def _shared(settings: Settings) -> BaseClient:
+    """One client per process and credential: reusing its connections saves a TLS
+    handshake per object (capture intake makes four calls)."""
+    key = (settings.r2_account_id, settings.r2_access_key_id, settings.r2_api_token)
+    if key not in _shared_clients:
+        _shared_clients[key] = _client(settings)
+    return _shared_clients[key]
+
+
 def put(settings: Settings, key: str, data: bytes, s3: BaseClient | None = None) -> None:
     if key.startswith("raw/"):
         _file_request(settings, "PUT", key, data)
         return
-    with nullcontext(s3) if s3 is not None else closing(_client(settings)) as client:
-        client.put_object(
-            Bucket=settings.r2_bucket, Key=key, Body=data, ContentType="application/gzip"
-        )
+    (s3 or _shared(settings)).put_object(
+        Bucket=settings.r2_bucket, Key=key, Body=data, ContentType="application/gzip"
+    )
 
 
 def keys(settings: Settings, prefix: str, s3: BaseClient | None = None) -> list[str]:
@@ -52,19 +63,19 @@ def keys(settings: Settings, prefix: str, s3: BaseClient | None = None) -> list[
     if prefix.startswith("raw/"):
         raise ValueError("raw archives are not listed")
     found = []
-    with nullcontext(s3) if s3 is not None else closing(_client(settings)) as client:
-        for page in client.get_paginator("list_objects_v2").paginate(
-            Bucket=settings.r2_bucket, Prefix=prefix
-        ):
-            found.extend(item["Key"] for item in page.get("Contents", []))
+    for page in (
+        (s3 or _shared(settings))
+        .get_paginator("list_objects_v2")
+        .paginate(Bucket=settings.r2_bucket, Prefix=prefix)
+    ):
+        found.extend(item["Key"] for item in page.get("Contents", []))
     return found
 
 
 def delete(settings: Settings, key: str, s3: BaseClient | None = None) -> None:
     if key.startswith("raw/"):
         raise ValueError("raw archives are retained")
-    with nullcontext(s3) if s3 is not None else closing(_client(settings)) as client:
-        client.delete_object(Bucket=settings.r2_bucket, Key=key)
+    (s3 or _shared(settings)).delete_object(Bucket=settings.r2_bucket, Key=key)
 
 
 # Outside raw/ so raw-backup lifecycle expiration cannot discard retry evidence.
@@ -81,15 +92,14 @@ def pending_key(settings: Settings) -> str:
 def get(settings: Settings, key: str, s3: BaseClient | None = None) -> bytes | None:
     if key.startswith("raw/"):
         return _file_request(settings, "GET", key)
-    with nullcontext(s3) if s3 is not None else closing(_client(settings)) as client:
-        try:
-            response = client.get_object(Bucket=settings.r2_bucket, Key=key)
-        except ClientError as exc:
-            if exc.response["Error"]["Code"] == "NoSuchKey":
-                return None
-            raise
-        with closing(response["Body"]) as body:
-            return body.read()
+    try:
+        response = (s3 or _shared(settings)).get_object(Bucket=settings.r2_bucket, Key=key)
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "NoSuchKey":
+            return None
+        raise
+    with closing(response["Body"]) as body:
+        return body.read()
 
 
 def _file_request(
