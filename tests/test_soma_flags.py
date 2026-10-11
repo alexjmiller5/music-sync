@@ -1,5 +1,6 @@
 import copy
 import json
+import re
 
 import httpx
 import pytest
@@ -34,6 +35,18 @@ class Server:
         self.writes.append(copy.deepcopy(body))
         if request.url.path == "/v1/rows/insert":
             row = body["rows"][0]
+            if not re.fullmatch(
+                r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z", row.get("updated_at") or ""
+            ):
+                # The live hub's answer for a row without the writer's clock.
+                return httpx.Response(
+                    200,
+                    json={
+                        "inserted": [],
+                        "existing": [],
+                        "rejected": [{"id": row["id"], "col": "updated_at"}],
+                    },
+                )
             existed = row["id"] in self.rows
             self.rows.setdefault(
                 row["id"], {**row, "updated_at": "r1", "hub_at": "h1", "deleted_at": None}

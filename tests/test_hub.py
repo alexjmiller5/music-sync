@@ -225,3 +225,24 @@ def test_worker_clients_opt_into_read_retries():
 
     assert with_read_retries(Hub("https://hub.test", "t")).read_retries
     assert Hub("https://hub.test", "t").read_retries == ()
+
+
+def test_insert_stamps_the_writer_clock_the_hub_requires():
+    sent = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        sent.append(body)
+        return httpx.Response(
+            200, json={"inserted": [body["rows"][0]["id"]], "existing": [], "rejected": []}
+        )
+
+    make(handler).insert("tasks", {"id": "t1", "title": "x"})
+    row = sent[0]["rows"][0]
+    stamp = datetime.strptime(row["updated_at"], "%Y-%m-%dT%H:%M:%S.%fZ").replace(
+        tzinfo=timezone.utc
+    )
+    assert len(row["updated_at"]) == 24 and abs(datetime.now(timezone.utc) - stamp) < timedelta(
+        minutes=1
+    )
+    assert sent[0]["columns"] == ["id", "title", "updated_at"]

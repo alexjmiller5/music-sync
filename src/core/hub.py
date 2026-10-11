@@ -30,6 +30,10 @@ def with_read_retries(hub):
     return hub
 
 
+def _stamp() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
 class Hub:
     def __init__(
         self, base_url: str, token: str, http: httpx.Client | None = None, read_retries=()
@@ -87,6 +91,7 @@ class Hub:
                 time.sleep(delay)
 
     def insert(self, table, row):
+        row = {"updated_at": _stamp(), **row}  # the hub requires the writer's clock
         receipt = self._post(
             "/v1/rows/insert", {"table": table, "columns": sorted(row), "rows": [row]}
         )
@@ -153,7 +158,7 @@ class Hub:
     def push(self, table: str, rows: list[dict]) -> dict:
         if not rows:
             return {"upserted": 0, "rejected": []}
-        stamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        stamp = _stamp()
         groups = defaultdict(list)
         for row in rows:
             row = {"updated_at": stamp, **row}
