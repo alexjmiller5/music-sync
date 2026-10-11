@@ -642,6 +642,7 @@ def remaining(package: dict, state: dict, today: str) -> dict:
             {
                 "name": s["name"],
                 "public": False,
+                "only_if_no_owned_playlist_has_this_name": True,  # an uncertain create may exist
                 "description": rules.describe(s["rule"], today, planned_names),
             }
             for s in package["smart"]
