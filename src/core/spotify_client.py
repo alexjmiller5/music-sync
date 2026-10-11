@@ -204,17 +204,13 @@ class SpotifyClient:
         return snapshot
 
     def create_playlist(self, name: str, description: str, public: bool = False) -> dict:
-        created = self._request(
+        # Spotify may still list the playlist as public: neither this flag nor a later
+        # change-details call reliably makes an API-created playlist private.
+        return self._request(
             "POST",
             f"{API}/v1/me/playlists",
             json={"name": name, "public": public, "description": description[:300]},
         )
-        if not public:  # Spotify ignores public=false on this endpoint (observed 2026-10-10)
-            self.set_public(created["id"], False)
-        return created
-
-    def set_public(self, playlist_id: str, public: bool) -> None:
-        self._request("PUT", f"{API}/v1/playlists/{playlist_id}", json={"public": public})
 
     def rename_playlist(self, playlist_id: str, name: str) -> None:
         self._request("PUT", f"{API}/v1/playlists/{playlist_id}", json={"name": name})
