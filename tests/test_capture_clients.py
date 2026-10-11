@@ -73,6 +73,7 @@ def test_accept_stores_the_capture_and_queues_it_without_touching_spotify(settin
         "artist": "Artist",
         "retry_at": None,
         "reason": None,
+        "task_id": None,
     }
     state = receipt(objects)
     assert state["payload"] == PAYLOAD and state["status"] == "queued"
@@ -169,6 +170,89 @@ def test_no_exact_match_is_rechecked_daily_not_every_drain(settings, objects):
     assert searches == [1], "rechecked once a day"
     capture_clients.drain(settings, step, datetime(2026, 10, 10, 22, 1, tzinfo=timezone.utc))
     assert searches == [1, 1]
+
+
+class Tasks:
+    def __init__(self):
+        self.opened, self.closed, self.fail_close = [], [], False
+
+    def open(self, client_id, state):
+        self.opened.append((client_id, state["capture_id"], list(state["no_match_checks"])))
+        return "task-1"
+
+    def close(self, client_id, state):
+        if self.fail_close:
+            raise RuntimeError("hub unavailable")
+        self.closed.append((client_id, state["capture_id"], state["task_id"], state["isrc"]))
+
+
+def test_no_match_opens_one_reconcile_task_and_a_later_match_closes_it(settings, objects):
+    capture_clients.accept(settings, "client-id", PAYLOAD, NOW)
+    tasks = Tasks()
+    found = False
+
+    def step(client_id, payload, received_at):
+        return capture_clients.deliver(
+            settings,
+            client_id,
+            payload,
+            lambda p: SELECTED if found else None,
+            lambda p, selected, record: {"ok": True, "message": "added", "isrc": "USAAA2600001"},
+        )
+
+    capture_clients.drain(settings, step, NOW, tasks=tasks)
+    assert tasks.opened == [("client-id", CAPTURE_ID, ["2026-10-09T22:00:00.000Z"])]
+    view = capture_clients.status(settings, "client-id", CAPTURE_ID)
+    assert view["status"] == "not_added" and view["task_id"] == "task-1"
+
+    capture_clients.drain(
+        settings, step, datetime(2026, 10, 10, 22, 1, tzinfo=timezone.utc), tasks=tasks
+    )
+    assert len(tasks.opened) == 1, "one task per capture"
+    assert receipt(objects)["no_match_checks"] == [
+        "2026-10-09T22:00:00.000Z",
+        "2026-10-10T22:01:00.000Z",
+    ]
+
+    found = True
+    tasks.fail_close = True
+    later = datetime(2026, 10, 11, 22, 2, tzinfo=timezone.utc)
+    capture_clients.drain(settings, step, later, tasks=tasks)
+    view = capture_clients.status(settings, "client-id", CAPTURE_ID)
+    assert view["status"] == "added" and view["task_id"] == "task-1"
+    assert queued(objects), "the task still needs closing"
+    tasks.fail_close = False
+    capture_clients.drain(
+        settings, step, datetime(2026, 10, 11, 23, 30, tzinfo=timezone.utc), tasks=tasks
+    )
+    assert tasks.closed == [("client-id", CAPTURE_ID, "task-1", "USAAA2600001")]
+    assert queued(objects) == []
+    capture_clients.drain(
+        settings, step, datetime(2026, 10, 12, 23, 0, tzinfo=timezone.utc), tasks=tasks
+    )
+    assert len(tasks.closed) == 1
+
+
+def test_task_creation_failure_keeps_the_capture_and_retries_on_the_next_check(settings, objects):
+    capture_clients.accept(settings, "client-id", PAYLOAD, NOW)
+
+    class Flaky(Tasks):
+        def open(self, client_id, state):
+            raise RuntimeError("hub unavailable")
+
+    def step(client_id, payload, received_at):
+        return capture_clients.deliver(
+            settings, client_id, payload, lambda p: None, lambda *a: None
+        )
+
+    capture_clients.drain(settings, step, NOW, tasks=Flaky())
+    view = capture_clients.status(settings, "client-id", CAPTURE_ID)
+    assert view["status"] == "not_added" and view["task_id"] is None
+    tasks = Tasks()
+    capture_clients.drain(
+        settings, step, datetime(2026, 10, 10, 22, 1, tzinfo=timezone.utc), tasks=tasks
+    )
+    assert capture_clients.status(settings, "client-id", CAPTURE_ID)["task_id"] == "task-1"
 
 
 def test_spotify_rate_limit_defers_the_whole_queue_until_retry_after(settings, objects):

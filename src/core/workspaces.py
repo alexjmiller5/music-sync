@@ -44,6 +44,7 @@ USER_FIELDS = {
     "inbox_cap": int,
     "undo_days": int,
     "flags_task_config": _task_binding,
+    "capture_task_config": _task_binding,
 }
 SECRET_FIELDS = {"spotify_refresh_token", "soma_hub_token", "notion_token"}
 # Not a Settings field: the default workspace keeps the RECONCILE_ENABLED env gate.

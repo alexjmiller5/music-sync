@@ -29,3 +29,5 @@ class Settings(BaseSettings):
     # workspaces.settings_for, never by env.
     workspace: str = "default"
     flags_task_config: dict | None = None
+    # Soma task binding for "Reconcile capture" tasks; falls back to flags_task_config.
+    capture_task_config: dict | None = None

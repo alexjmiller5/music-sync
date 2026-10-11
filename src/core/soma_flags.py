@@ -210,3 +210,87 @@ def deliver_reviews(settings, http, items, today):
         hub.insert(binding["table"], {"id": row_id, **{col[k]: v for k, v in values.items()}})
         ids.append(row_id)
     return ids
+
+
+def _capture_binding(settings):
+    return settings.capture_task_config or settings.flags_task_config
+
+
+def open_capture_task(settings, http, capture, today):
+    """One create-only "Reconcile capture" task for a capture with no exact Spotify match.
+
+    The ID comes from the workspace, client and capture, so daily rechecks, retries
+    and a task the owner already edited, closed or deleted never produce a second one.
+    No reminder or notification is set.
+    """
+    binding = _capture_binding(settings)
+    if not binding:
+        return None
+    payload = capture["payload"]
+    isrc = payload.get("isrc")
+    checks = capture.get("no_match_checks") or []
+    search = (
+        f"ISRC {isrc} in market {settings.spotify_market}"
+        if isrc
+        else f"exact title and artist in market {settings.spotify_market}"
+    )
+    recognized = payload.get("recognized_at")
+    notes = [
+        "Shazam recognized this capture, but Music Sync found no exact Spotify recording for "
+        "it, so it was not added. Music Sync checks again daily and closes this task when a "
+        "check finds it; add or choose a version in Spotify yourself to finish sooner.",
+        f"Shazam: {payload.get('shazam_url')}",
+        f"Apple Music ID: {payload.get('apple_music_id')}",
+        f"ISRC: {isrc}" if isrc else "ISRC: none (no ISRC from Shazam)",
+        f"Recognized: {recognized}"
+        if recognized
+        else f"Received by Music Sync: {capture.get('received_at')} (recognition time unknown)",
+        f"Spotify searches: {len(checks)} ({search}): " + ", ".join(checks),
+        f"Capture ID: {capture['capture_id']}",
+    ]
+    identity = json.dumps(
+        [settings.workspace, capture["client_id"], capture["capture_id"]], separators=(",", ":")
+    )
+    row_id = uuid5(NAMESPACE_URL, "music-sync-capture-v1:" + identity).hex
+    values = {
+        **binding["defaults"],
+        "title": f"Reconcile capture: {payload['title']} - {payload['artist']}",
+        "due": today,
+        "notes": "\n".join(notes),
+    }
+    col = binding["columns"]
+    hub = Hub(settings.soma_hub_url.rstrip("/"), settings.soma_hub_token, http)
+    hub.insert(binding["table"], {"id": row_id, **{col[k]: v for k, v in values.items()}})
+    return row_id
+
+
+def close_capture_task(settings, http, task_id, isrc, today):
+    """Append the resolution and complete a still-open capture task; True when closed now."""
+    binding = _capture_binding(settings)
+    if not binding:
+        return False
+    col = binding["columns"]
+    hub = Hub(settings.soma_hub_url.rstrip("/"), settings.soma_hub_token, http)
+    for _ in range(5):
+        row = _read(hub, binding, task_id)
+        if (
+            row is None
+            or row.get("deleted_at")
+            or row.get(col["status"]) not in binding["open_statuses"]
+        ):
+            return False  # the owner already resolved it
+        note = f"{today}: a later check found it on Spotify ({isrc}) and added it to the inbox."
+        values = {
+            col["notes"]: (row.get(col["notes"]) or "") + "\n" + note,
+            col["status"]: binding.get("completed_status", "Completed"),
+            col.get("completed_date", "completed_date"): today,
+            col.get("ai_completed", "ai_completed"): 1,
+        }
+        try:
+            hub.patch(
+                binding["table"], task_id, values, {k: row[k] for k in ("updated_at", "hub_at")}
+            )
+        except RevisionConflict:
+            continue  # definitively not applied; re-read the owner's edit and retry
+        return True
+    raise HubError("task kept changing; the capture keeps it queued for another try")

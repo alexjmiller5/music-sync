@@ -223,3 +223,81 @@ def test_review_exception_becomes_one_quiet_task_row(setup):
     assert "curated list" in row["body"] and row["due"] == "2026-10-09"
     assert row["state"] == "Doing"
     assert deliver_reviews(settings, http, [], "2026-10-10") == []
+
+
+CAPTURE = {
+    "client_id": "client-1",
+    "capture_id": "3d2ed84e-9413-4a4a-a7e1-c596201bf84d",
+    "received_at": "2026-10-11T18:00:00.000Z",
+    "no_match_checks": ["2026-10-11T18:00:05.000Z"],
+    "payload": {
+        "capture_id": "3d2ed84e-9413-4a4a-a7e1-c596201bf84d",
+        "title": "Song",
+        "artist": "Artist",
+        "apple_music_id": "123",
+        "shazam_url": "https://www.shazam.com/track/123/song",
+        "isrc": "USAAA2600001",
+        "recognized_at": "2026-10-11T13:59:58-04:00",
+    },
+}
+CAPTURE_CONFIG = {
+    **CONFIG,
+    "columns": {**CONFIG["columns"], "completed_date": "done_on", "ai_completed": "by_agent"},
+}
+
+
+def test_unmatched_capture_opens_one_quiet_task_and_a_later_match_closes_it(setup):
+    from core.soma_flags import close_capture_task, open_capture_task
+
+    settings, server, http, _ = setup
+    settings = settings.model_copy(update={"capture_task_config": CAPTURE_CONFIG})
+    task_id = open_capture_task(settings, http, CAPTURE, "2026-10-11")
+    assert open_capture_task(settings, http, CAPTURE, "2026-10-12") == task_id
+    assert len(server.rows) == 1
+    row = server.rows[task_id]
+    assert row["label"] == "Reconcile capture: Song - Artist"
+    assert row["state"] == "Open" and row["due"] == "2026-10-11"
+    for detail in (
+        "https://www.shazam.com/track/123/song",
+        "Apple Music ID: 123",
+        "ISRC: USAAA2600001",
+        "Recognized: 2026-10-11T13:59:58-04:00",
+        "Spotify searches: 1",
+        "ISRC USAAA2600001",
+        "2026-10-11T18:00:05.000Z",
+    ):
+        assert detail in row["body"], detail
+    assert not any("notif" in key for key in row), "no reminder or notification"
+
+    assert close_capture_task(settings, http, task_id, "USAAA2600001", "2026-10-13") is True
+    row = server.rows[task_id]
+    assert row["state"] == "Completed" and row["done_on"] == "2026-10-13" and row["by_agent"] == 1
+    assert row["body"].endswith(
+        "2026-10-13: a later check found it on Spotify (USAAA2600001) and added it to the inbox."
+    )
+    writes = len(server.writes)
+    assert close_capture_task(settings, http, task_id, "USAAA2600001", "2026-10-14") is False
+    assert len(server.writes) == writes, "a closed task is left alone"
+
+
+def test_capture_task_keeps_an_owner_closed_task_and_falls_back_to_the_flags_binding(setup):
+    from core.soma_flags import close_capture_task, open_capture_task
+
+    settings, server, http, _ = setup  # only flags_task_config is set
+    task_id = open_capture_task(
+        settings, http, {**CAPTURE, "payload": {**CAPTURE["payload"], "isrc": None}}, "2026-10-11"
+    )
+    assert "no ISRC from Shazam" in server.rows[task_id]["body"]
+    assert "exact title and artist" in server.rows[task_id]["body"]
+    server.rows[task_id]["state"] = "Done by hand"
+    writes = len(server.writes)
+    assert close_capture_task(settings, http, task_id, "USAAA2600001", "2026-10-12") is False
+    assert len(server.writes) == writes
+    unbound = settings.model_copy(update={"flags_task_config": None, "capture_task_config": None})
+    assert open_capture_task(unbound, http, CAPTURE, "2026-10-11") is None
+
+
+def test_capture_task_binding_reads_its_own_setting_from_the_environment(settings, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TASK_CONFIG", json.dumps(CONFIG))
+    fresh = type(settings)(**settings.model_dump(exclude={"capture_task_config"}))
+    assert fresh.capture_task_config == CONFIG and fresh.flags_task_config is None

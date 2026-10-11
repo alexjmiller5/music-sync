@@ -1,6 +1,10 @@
 import app
 import pytest
 
+# Bind soma_flags to the real Hub before any test patches core.hub.Hub: queue
+# delivery imports it lazily, and a first import under a patch would keep the fake.
+from core import soma_flags  # noqa: F401
+
 from tests.test_metadata_replay import KEY, STAMP, replay_env as replay_env
 
 
@@ -122,7 +126,7 @@ def capture_api(settings, monkeypatch):
 
     post.get = lambda path, token=None: request("GET", path, None, token)
     post.drain = lambda now=None: capture_clients.drain(
-        settings, app._deliver_queued, now or datetime.now(timezone.utc)
+        settings, app._deliver_queued, now or datetime.now(timezone.utc), tasks=app.CAPTURE_TASKS
     )
     post.spawned = spawned
     return post, objects
@@ -179,6 +183,7 @@ def test_capture_is_accepted_at_once_and_delivered_by_the_drain(capture_api, mon
         "artist": "Artist",
         "retry_at": None,
         "reason": None,
+        "task_id": None,
     }
     assert response.status_code == 202 and response.json() == {"ok": True, **queued}
     assert len(post.spawned) == 1, "accepting starts a drain"
@@ -713,6 +718,53 @@ def test_capture_is_still_accepted_while_spotify_throttles_the_drain(capture_api
     assert accepted.status_code == 202 and accepted.json()["status"] == "queued"
     assert post.drain()["deferred_until"] is not None, "the whole queue waits out Retry-After"
     assert status_of(post, token, second["capture_id"])["status"] == "queued"
+
+
+def test_no_match_files_a_reconcile_task_the_status_reports_and_a_match_closes(
+    capture_api, monkeypatch
+):
+    from core import capture as cap
+
+    post, _ = capture_api
+    token = issue_capture_token(post)["token"]
+    opened, closed = [], []
+
+    def open_task(settings, http, capture, today):
+        opened.append(
+            (settings.workspace, capture["client_id"], capture["payload"]["title"], today)
+        )
+        return "task-1"
+
+    monkeypatch.setattr(soma_flags, "open_capture_task", open_task)
+    monkeypatch.setattr(
+        soma_flags,
+        "close_capture_task",
+        lambda settings, http, task_id, isrc, today: closed.append((task_id, isrc)) or True,
+    )
+    monkeypatch.setattr(cap, "resolve_track", lambda *a: None)
+    post("/capture-consumer", CONSUMER_BODY, token)
+    post.drain()
+    status = status_of(post, token)
+    assert status["status"] == "not_added" and status["task_id"] == "task-1"
+    assert len(opened) == 1 and opened[0][0] == "default" and opened[0][2] == "Song"
+    repeat = post("/capture-consumer", CONSUMER_BODY, token)
+    assert repeat.status_code == 422 and repeat.json()["task_id"] == "task-1"
+
+    monkeypatch.setattr(cap, "resolve_track", lambda *a: {"id": "selected"})
+    monkeypatch.setattr(app, "_capture", added_capture)
+    post.drain(later(86400 + 60))
+    assert status_of(post, token)["status"] == "added"
+    assert closed == [("task-1", "USAAA2600001")] and len(opened) == 1
+
+
+def test_capture_drain_files_tasks_through_the_app_hooks(settings, monkeypatch):
+    from core import capture_clients, config
+
+    monkeypatch.setattr(config, "Settings", lambda: settings)
+    seen = {}
+    monkeypatch.setattr(capture_clients, "drain", lambda *a, **kw: seen.update(kw) or {})
+    app.capture_drain.get_raw_f()()
+    assert seen["tasks"] is app.CAPTURE_TASKS
 
 
 def test_definitive_no_match_tells_the_client_to_stay_away(capture_api, monkeypatch):

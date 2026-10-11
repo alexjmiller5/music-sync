@@ -264,6 +264,7 @@ def view(state: dict) -> dict:
         "artist": payload.get("artist"),
         "retry_at": None if status == "added" else state.get("retry_at"),
         "reason": state.get("reason"),
+        "task_id": state.get("task_id"),
     }
 
 
@@ -318,12 +319,21 @@ def _backoff(attempts: int) -> timedelta:
     return timedelta(seconds=min(3600, 60 * 2**attempts))
 
 
-def drain(settings: Settings, step, now: datetime, deadline: float | None = None) -> dict:
+def _task_open(state: dict) -> bool:
+    """A reconcile task exists and has not been closed after the capture was added."""
+    return bool(state.get("task_id")) and not state.get("task_closed")
+
+
+def drain(
+    settings: Settings, step, now: datetime, deadline: float | None = None, tasks=None
+) -> dict:
     """Deliver queued captures oldest first through `step(client_id, payload, received_at)`.
 
     `step` runs the synchronous delivery and raises Unauthorized or DeliveryFailure.
     A Spotify rate limit stops the drain and gates every capture until its
     Retry-After; any other failure backs the capture off and stops the drain.
+    `tasks.open(client_id, state)` files one reconcile task for a no-match capture and
+    `tasks.close(client_id, state)` completes it once a later check adds the song.
     """
     summary = {"processed": 0, "added": 0, "deferred_until": None}
     gate = _load(settings, SPOTIFY_GATE_KEY)
@@ -335,7 +345,7 @@ def drain(settings: Settings, step, now: datetime, deadline: float | None = None
         client_id, name = marker[len(QUEUE_PREFIX) + 1 :].split("/", 1)
         capture_id = name.removesuffix(".json.gz")
         state = _load(settings, _receipt_key(client_id, capture_id))
-        if state is None or "payload" not in state or "isrc" in state:
+        if state is None or "payload" not in state or ("isrc" in state and not _task_open(state)):
             archive.delete(settings, marker)
             continue
         if state.get("retry_at") and _parse(state["retry_at"]) > now:
@@ -345,12 +355,20 @@ def drain(settings: Settings, step, now: datetime, deadline: float | None = None
         if deadline is not None and time.monotonic() > deadline:
             break
         summary["processed"] += 1
-        if _drain_one(settings, step, client_id, capture_id, now, summary):
+        if _drain_one(settings, step, client_id, capture_id, now, summary, tasks):
             break
     return summary
 
 
-def _drain_one(settings, step, client_id, capture_id, now, summary) -> bool:
+def _log_task_failure(action: str, exc: Exception) -> None:
+    import structlog
+
+    structlog.get_logger().error(
+        "capture_task_failed", action=action, error_type=type(exc).__name__
+    )
+
+
+def _drain_one(settings, step, client_id, capture_id, now, summary, tasks=None) -> bool:
     """Deliver one capture and record what happened; True stops the drain."""
     key = _receipt_key(client_id, capture_id)
     state = _load(settings, key)
@@ -380,11 +398,34 @@ def _drain_one(settings, step, client_id, capture_id, now, summary) -> bool:
         return True
     if result.get("ok") is True:
         record(status="added", retry_at=None, reason=None)
-        archive.delete(settings, _queue_key(client_id, capture_id))
         summary["added"] += 1
+        latest = _load(settings, key)
+        if tasks is not None and _task_open(latest):
+            try:
+                tasks.close(client_id, latest)
+            except Exception as exc:  # keep it queued so the next drain closes the task
+                _log_task_failure("close", exc)
+                record(
+                    status="added", retry_at=_iso(now + _backoff(attempts)), attempts=attempts + 1
+                )
+                return False
+            record(status="added", task_closed=True)
+        archive.delete(settings, _queue_key(client_id, capture_id))
         return False
     if result.get("reason") == "no_match":
-        record(status="not_added", reason="no_match", retry_at=_iso(now + NO_MATCH_RECHECK))
+        checks = [*state.get("no_match_checks", []), _iso(now)]
+        record(
+            status="not_added",
+            reason="no_match",
+            retry_at=_iso(now + NO_MATCH_RECHECK),
+            no_match_checks=checks,
+        )
+        latest = _load(settings, key)
+        if tasks is not None and not latest.get("task_id"):
+            try:
+                record(status="not_added", task_id=tasks.open(client_id, latest))
+            except Exception as exc:  # the next daily check tries again
+                _log_task_failure("open", exc)
         return False
     record(retry_at=_iso(now + _backoff(attempts)), attempts=attempts + 1, reason=None)
     return str(result.get("message", "")).startswith("Pending recovery")

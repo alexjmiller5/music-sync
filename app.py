@@ -144,7 +144,50 @@ def capture_drain():
         _deliver_queued,
         datetime.now(timezone.utc),
         deadline=time.monotonic() + DRAIN_BUDGET,
+        tasks=CAPTURE_TASKS,
     )
+
+
+class _CaptureTasks:
+    """The drain's "Reconcile capture" task hooks, in the capture client's own workspace."""
+
+    @staticmethod
+    def _settings(client_id: str):
+        from core import capture_clients, workspaces
+        from core.config import Settings
+
+        base = Settings()
+        return workspaces.settings_for(base, capture_clients.client_workspace(base, client_id))
+
+    def open(self, client_id: str, state: dict):
+        from datetime import date
+
+        from core import soma_flags
+
+        with httpx.Client(timeout=30) as http:
+            return soma_flags.open_capture_task(
+                self._settings(client_id),
+                http,
+                {**state, "client_id": client_id},
+                date.today().isoformat(),
+            )
+
+    def close(self, client_id: str, state: dict) -> None:
+        from datetime import date
+
+        from core import soma_flags
+
+        with httpx.Client(timeout=30) as http:
+            soma_flags.close_capture_task(
+                self._settings(client_id),
+                http,
+                state["task_id"],
+                state["isrc"],
+                date.today().isoformat(),
+            )
+
+
+CAPTURE_TASKS = _CaptureTasks()
 
 
 def _spawn_drain() -> None:

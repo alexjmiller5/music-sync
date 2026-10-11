@@ -212,7 +212,10 @@ later attempt can resolve it. Read the result with
 `status` is `queued` (waiting; `retry_at` says until when if known), `added`,
 `not_added` with `reason: no_match` (no exact Spotify recording yet; rechecked
 daily, `retry_at` is the next check) or `rejected` (the client was revoked before
-delivery). Repeating the same client, capture UUID and payload never queues it
+delivery). A `no_match` also files one "Reconcile capture: TITLE - ARTIST" task in
+Soma (no reminder; its notes carry the Shazam URL, Apple Music ID, ISRC, capture time
+and the Spotify searches tried) and `task_id` reports it; a later check that adds the
+song appends a note and completes the task unless its owner already closed it. Repeating the same client, capture UUID and payload never queues it
 twice: it answers `202` while queued (with `Retry-After` when a retry time is
 known), the delivered receipt
 `{"ok":true,"capture_id":"...","isrc":"USAAA2600001","spotify_outcome":"added"}`
