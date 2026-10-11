@@ -254,9 +254,14 @@ def test_create_rename_and_unlike(settings, mocker):
         {},
         {"name": "older", "public": False, "description": "smart"},
     )
-    assert calls[1] == ("PUT", "/v1/playlists/P", {}, {"name": "older (pre-sync)"})
-    assert [(m, p) for m, p, _, _ in calls[2:]] == [("DELETE", "/v1/me/library")] * 2
-    assert len(calls[2][2]["uris"].split(",")) == 40
+    # Spotify leaves a /me/playlists creation public despite public=false; set it explicitly.
+    assert calls[1] == ("PUT", "/v1/playlists/NEW", {}, {"public": False})
+    assert calls[2] == ("PUT", "/v1/playlists/P", {}, {"name": "older (pre-sync)"})
+    assert [(m, p) for m, p, _, _ in calls[3:]] == [("DELETE", "/v1/me/library")] * 2
+    assert len(calls[3][2]["uris"].split(",")) == 40
+    calls.clear()
+    c.create_playlist("shared", "smart", public=True)
+    assert [m for m, *_ in calls] == ["POST"]
 
 
 def test_set_description_truncates_to_300(settings, mocker):
