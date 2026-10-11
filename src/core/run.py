@@ -265,11 +265,16 @@ def reconcile_run(
         mirror.save_cache(settings, cache)  # the next run then reads only hub changes
     if not dry_run and writes:
         # Observation imports return their flags to the operator for triage instead.
-        flags.file(settings, http, out.flags, out.errors, today)
-        if not out.errors:
-            from core.soma_flags import deliver_reviews
+        try:
+            flags.file(settings, http, out.flags, out.errors, today)
+            if not out.errors:
+                from core.soma_flags import deliver_reviews
 
-            deliver_reviews(settings, http, out.review_items, today)
+                deliver_reviews(settings, http, out.review_items, today)
+        except Exception as exc:
+            # The run's changes are applied; retained batches retry on the next run.
+            log.error("flag_delivery_failed", error_type=type(exc).__name__)
+            out.errors.append(f"flag delivery failed after the run finished: {type(exc).__name__}")
     return out
 
 
