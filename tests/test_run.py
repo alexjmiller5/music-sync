@@ -262,3 +262,25 @@ def test_pending_replay_blocks_reconcile_before_spotify_setup(
     out = run.reconcile(settings, dry_run=dry_run, writes=writes)
     assert out.errors and "metadata" in out.errors[0].lower()
     assert not out.applied and not out.planned
+
+
+def test_flag_delivery_failure_after_the_run_is_reported_not_raised(settings, mocker):
+    """The run's work is done; a flag destination failure must not read as 'nothing applied'."""
+    mocker.patch("core.run.mirror.load_mirror", return_value=Mirror({}, {}, {}, [], set()))
+    mocker.patch("core.run.mirror.pull_live", return_value=Live({}, {}, {}))
+    mocker.patch("core.run.archive.put")
+    mocker.patch("core.run.reconcile_mod.plan", return_value=[Action("flag", text="odd")])
+    mocker.patch("core.run.flags.file", side_effect=ValueError("flag destination moved"))
+    reviews = mocker.patch("core.soma_flags.deliver_reviews")
+
+    log = run.reconcile(
+        settings,
+        dry_run=False,
+        now=datetime(2026, 9, 8, tzinfo=timezone.utc),
+        spotify=LiveSpotify(),
+        hub=FailingHub(),
+    )
+
+    assert log.flags == ["odd"]
+    assert log.errors == ["flag delivery failed after the run finished: ValueError"]
+    reviews.assert_not_called()
