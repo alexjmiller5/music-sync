@@ -314,3 +314,33 @@ def test_capture_task_binding_reads_its_own_setting_from_the_environment(setting
     monkeypatch.setenv("CAPTURE_TASK_CONFIG", json.dumps(CONFIG))
     fresh = type(settings)(**settings.model_dump(exclude={"capture_task_config"}))
     assert fresh.capture_task_config == CONFIG and fresh.flags_task_config is None
+
+
+def test_renamed_hub_adopts_delivered_history_and_holds_undelivered_batches(setup):
+    import gzip
+
+    settings, server, http, saved = setup
+    existing(server)
+    send(setup)
+    key = next(k for k in saved if k.startswith("music-sync/flag-tasks/"))
+
+    def retained(mutate):
+        state = json.loads(gzip.decompress(saved[key]))
+        mutate(state)
+        saved[key] = gzip.compress(json.dumps(state).encode())
+
+    # The hub's URL changed (a rename) after every retained batch was delivered.
+    retained(lambda s: s.update(endpoint="https://old-name.test"))
+    assert flags.file(settings, http, ["Flag B"], [], "2026-01-02") == "adopted"
+    assert server.rows["adopted"]["body"].count("Flag B") == 1
+    state = json.loads(gzip.decompress(saved[key]))
+    assert state["endpoint"] == settings.soma_hub_url.rstrip("/")
+    # Undelivered work retained for another URL is never redirected.
+    retained(
+        lambda s: (
+            s.update(endpoint="https://old-name.test"),
+            next(iter(s["batches"].values())).update(delivered=False),
+        )
+    )
+    with pytest.raises(ValueError, match="another hub"):
+        flags.file(settings, http, ["Flag C"], [], "2026-01-03")

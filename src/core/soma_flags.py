@@ -104,7 +104,10 @@ def file_life(settings, http, flags, errors, today):
     raw = archive.get(settings, key)
     state = json.loads(gzip.decompress(raw)) if raw else {"endpoint": endpoint, "batches": {}}
     if state["endpoint"] != endpoint:
-        raise ValueError("retained flag tasks belong to another hub")
+        if any(not record["delivered"] for record in state["batches"].values()):
+            raise ValueError("retained flag tasks belong to another hub")
+        # The hub URL changed (a rename) with nothing left to deliver there: start over.
+        state = {"endpoint": endpoint, "batches": {}}
 
     def save():
         archive.put(

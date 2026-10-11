@@ -22,6 +22,8 @@ runs in tests, locally, or on any future platform.
   notes appends merge only after definitive conflicts; unknown write outcomes
   require retained marker evidence. Never discard an ambiguous batch or replace
   completed/deleted target identities. The serialized worker owns all recovery.
+  A changed hub URL (a rename) is adopted only once every retained batch was
+  delivered; undelivered batches for another URL stop delivery.
 - Notion uses the dedicated Music Sync connection stored in this project's ENV
   item. Its read, insert and update capabilities cover the Tasks database and
   this project's page for flag tasks and their project relation. No user
