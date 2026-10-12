@@ -7,6 +7,7 @@ import re
 import time
 from collections import defaultdict
 
+from core import table_pull
 from core.model import ISRC_RE, Live, LiveItem, LivePlaylist, Membership, Mirror, Playlist, Song
 
 SONG_COLS = [
@@ -51,14 +52,22 @@ PROV_COLS = [
 ]
 
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 FULL_REFRESH_SECONDS = 7 * 24 * 3600
+# Provenance holds every media source; the mirror reads only these two song
+# slices, or the hub cannot serve the table within its limits.
+PROVENANCE_SLICES = (
+    {"to_kind": "songs", "rel": "imported_from"},
+    {"to_kind": "songs", "rel": "evidence_of", "asserted_by": "music-sync"},
+)
 
 
 def new_cache(now: float | None = None) -> dict:
     return {
         "version": CACHE_VERSION,
         "refreshed_at": time.time() if now is None else now,
+        "pull": None,
+        "tables": {},
         "slices": {},
     }
 
@@ -111,40 +120,71 @@ def load_playlists(hub) -> Mirror:
 def load_mirror(
     hub, cache: dict | None = None, now: float | None = None, checkpoint=None
 ) -> Mirror:
-    """Full pulls, or with `cache` only rows the hub stamped since the last load.
+    """Full pulls, or with `cache` only what the hub received since the last load.
 
-    The hub stamps `hub_at` on every accepted write and `since` is inclusive, so a
-    delta merged by ID reproduces the full read; soft deletes arrive as rows. A
-    cache older than a week is rebuilt from scratch (purges never appear in deltas).
-    `checkpoint` persists the cache after each slice so a cold load survives a timeout.
+    Songs, playlists and memberships go through soma's table-pull helper: one
+    `/v1/cursor` request per quiet round, and the cursor is the mark read BEFORE
+    pulling, so a row committed mid-walk is read next round. Provenance is
+    watched, never pulled whole: a slice is re-read from its held mark only when
+    the table's mark moved. Soft deletes arrive as rows. A cache older than a
+    week is rebuilt from scratch (purges never appear in deltas). `checkpoint`
+    persists the cache after each step so a cold load survives a timeout.
     """
     revisions = {}
     now = time.time() if now is None else now
     if cache is not None and now - cache.get("refreshed_at", 0) > FULL_REFRESH_SECONDS:
         cache.clear()
         cache.update(new_cache(now))
-
-    def pull(table, columns, **kwargs):
-        cols = list(dict.fromkeys([*columns, "updated_at", "hub_at"]))
-        if cache is None:
-            rows = hub.pull(table, cols, **kwargs)
-        else:
-            key = json.dumps([table, cols, kwargs.get("where")], sort_keys=True)
-            slot = cache["slices"].setdefault(key, {"cursor": "", "rows": {}})
-            delta = hub.pull(table, cols, since=slot["cursor"], **kwargs)
-            for row in delta:
-                slot["rows"][row["id"]] = row
-            stamps = [
-                r["hub_at"] for r in delta if isinstance(r.get("hub_at"), str) and r["hub_at"]
-            ]
-            slot["cursor"] = max([slot["cursor"], *stamps])
-            rows = list(slot["rows"].values())
-            if checkpoint:
-                checkpoint()
-        revisions.setdefault(table, {}).update(
-            {row["id"]: {key: row.get(key) for key in ("updated_at", "hub_at")} for row in rows}
+    columns = {
+        table: list(dict.fromkeys([*cols, "updated_at", "hub_at"]))
+        for table, cols in (
+            ("songs", SONG_COLS),
+            ("playlists", PLAYLIST_COLS),
+            ("playlist_songs", MEMBER_COLS),
         )
-        return rows
+    }
+    prov_columns = list(dict.fromkeys([*PROV_COLS, "updated_at", "hub_at"]))
+    if cache is None:
+        rows = {table: hub.pull(table, cols) for table, cols in columns.items()}
+        provenance = [
+            r
+            for where in PROVENANCE_SLICES
+            for r in hub.pull("provenance", prov_columns, where=where)
+        ]
+    else:
+        out = table_pull.pull_tables(
+            hub.base, None, columns, cache["pull"], watch=("provenance",), post=hub.read
+        )
+        for table, change in out["changes"].items():
+            held = cache["tables"].setdefault(table, {})
+            if change["full"]:
+                held.clear()
+            held.update({r["id"]: r for r in [*change["rows"], *change["tombstones"]]})
+        cache["pull"] = out["state"]
+        if checkpoint:
+            checkpoint()
+        watched = out["watched"]["provenance"]
+        provenance = []
+        for where in PROVENANCE_SLICES:
+            key = json.dumps([prov_columns, where], sort_keys=True)
+            slot = cache["slices"].setdefault(key, {"mark": None, "n": None, "rows": {}})
+            if (slot["mark"], slot["n"]) != (watched["mark"], watched["n"]):
+                # A mark behind the held one (a restore or purge) re-reads the slice whole.
+                if slot["mark"] is None or watched["mark"] < slot["mark"]:
+                    slot["rows"], since = {}, ""
+                else:
+                    since = slot["mark"]
+                delta = hub.pull("provenance", prov_columns, since=since, where=where)
+                slot["rows"].update({r["id"]: r for r in delta})
+                slot["mark"], slot["n"] = watched["mark"], watched["n"]
+                if checkpoint:
+                    checkpoint()
+            provenance += slot["rows"].values()
+        rows = {table: list(cache["tables"][table].values()) for table in columns}
+    for table, got in [*rows.items(), ("provenance", provenance)]:
+        revisions.setdefault(table, {}).update(
+            {row["id"]: {key: row.get(key) for key in ("updated_at", "hub_at")} for row in got}
+        )
 
     songs = {
         r["id"]: Song(
@@ -163,7 +203,7 @@ def load_mirror(
             r["album_year"],
             r["duration_ms"],
         )
-        for r in pull("songs", SONG_COLS)
+        for r in rows["songs"]
         if not r.get("deleted_at")
     }
     playlists = {
@@ -177,24 +217,15 @@ def load_mirror(
             int(r["pinned"] or 0),
             r["expires_at"],
         )
-        for r in pull("playlists", PLAYLIST_COLS)
+        for r in rows["playlists"]
         if not r.get("deleted_at")
     }
     memberships, deleted = {}, []
-    for r in pull("playlist_songs", MEMBER_COLS):
+    for r in rows["playlist_songs"]:
         m = Membership(
             r["playlist_id"], r["isrc"], r["spotify_track_id"], r["added_at"], r.get("deleted_at")
         )
         (deleted.append(m) if m.deleted_at else memberships.__setitem__((m.playlist_id, m.isrc), m))
-    # Provenance holds every media source; pull only the two song slices this
-    # mirror reads, or the hub cannot serve the table within its limits.
-    provenance = pull(
-        "provenance", PROV_COLS, where={"to_kind": "songs", "rel": "imported_from"}
-    ) + pull(
-        "provenance",
-        PROV_COLS,
-        where={"to_kind": "songs", "rel": "evidence_of", "asserted_by": "music-sync"},
-    )
     captures = {
         (r["to_ref"], r["from_kind"])
         for r in provenance

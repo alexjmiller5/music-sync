@@ -5,6 +5,7 @@ import pytest
 
 from core import mirror
 from core.model import Playlist
+from tests.hubsim import HubReads
 
 FIX = Path(__file__).parent / "fixtures"
 PLAYLISTS = json.loads((FIX / "live_playlists.json").read_text())
@@ -261,17 +262,24 @@ def test_pull_live_always_fetches_smart_playlists_even_if_snapshot_unchanged():
     assert sp.item_calls == ["P1", "P2"]
 
 
-class StampedHub(FakeHub):
-    """Rows carry hub_at; incremental pulls return only rows stamped at or after since."""
+class SimHub(FakeHub, HubReads):
+    """FakeHub tables behind the hub's paged read protocol (tests/hubsim.py)."""
 
-    def __init__(self, tables):
+    def __init__(self, tables, page=200):
         super().__init__(tables)
-        self.pulls = []
+        self.page, self.reads, self.pulls = page, [], []
 
     def pull(self, table, columns, since="", where=None):
-        self.pulls.append((table, since))
-        rows = super().pull(table, [*columns, "hub_at"], since, where)
-        return [r for r in rows if not since or (r.get("hub_at") or "") >= since]
+        return HubReads.pull(self, table, columns, since, where)
+
+    def read(self, route, body):
+        self.reads.append(route)
+        return HubReads.read(self, route, body)
+
+    def read_page(self, table, columns, since="", limit=200, after=None, where=None):
+        if after is None:
+            self.pulls.append((table, since))
+        return HubReads.read_page(self, table, columns, since, limit, after, where)
 
 
 def stamped_tables():
@@ -295,7 +303,7 @@ def stamped_tables():
 
 def test_cached_mirror_pulls_only_changes_and_applies_soft_deletes():
     tables = stamped_tables()
-    hub, cache = StampedHub(tables), mirror.new_cache(now=1000)
+    hub, cache = SimHub(tables), mirror.new_cache(now=1000)
     first = mirror.load_mirror(hub, cache=cache, now=1000)
     assert set(first.songs) == {"USAAA2600001"} and all(s == "" for _, s in hub.pulls)
     tables["songs"][0].update(title="Renamed", hub_at="2026-10-02T00:00:00.000Z")
@@ -313,7 +321,7 @@ def test_cached_mirror_pulls_only_changes_and_applies_soft_deletes():
 
 
 def test_stale_cache_falls_back_to_a_full_pull():
-    hub = StampedHub(stamped_tables())
+    hub = SimHub(stamped_tables())
     cache = mirror.new_cache(now=0)
     mirror.load_mirror(hub, cache=cache, now=0)
     hub.pulls.clear()
@@ -321,12 +329,16 @@ def test_stale_cache_falls_back_to_a_full_pull():
     assert all(since == "" for _, since in hub.pulls)
 
 
-def test_cache_is_checkpointed_after_each_slice():
-    hub, cache, saved = StampedHub(stamped_tables()), mirror.new_cache(now=0), []
+def test_cache_is_checkpointed_after_each_step():
+    hub, cache, saved = SimHub(stamped_tables()), mirror.new_cache(now=0), []
     mirror.load_mirror(
-        hub, cache=cache, now=0, checkpoint=lambda: saved.append(len(cache["slices"]))
+        hub,
+        cache=cache,
+        now=0,
+        checkpoint=lambda: saved.append((bool(cache["pull"]), len(cache["slices"]))),
     )
-    assert saved == list(range(1, len(saved) + 1)) and len(saved) >= 4
+    # The three tables in one helper round, then each provenance slice.
+    assert saved == [(True, 0), (True, 1), (True, 2)]
 
 
 def test_pull_live_reuses_a_smart_playlist_unchanged_since_its_last_write():
@@ -377,3 +389,139 @@ def test_pull_live_rereads_a_smart_playlist_changed_outside_music_sync():
     assert "P1" in sp.item_calls and "reused" not in live.raw
     assert all(it.observed for it in live.playlists["P1"].items)
     assert "spotify:track:t9" not in [it.uri for it in live.playlists["P1"].items]
+
+
+def stamped_song(isrc, hub_at, **extra):
+    return {"id": isrc, "liked": 0, "first_seen": hub_at, "hub_at": hub_at, **extra}
+
+
+def test_cached_mirror_never_skips_a_row_committed_behind_the_walk():
+    # Two writes land mid-walk: an earlier-stamped row behind the keyset position
+    # and a later-stamped one ahead of it. A cursor taken from the rows received
+    # would jump past the first one forever; the cursor read before the pull keeps it.
+    t1, t2, t3, t4 = (f"2026-10-0{d}T00:00:00.000Z" for d in (1, 2, 3, 4))
+    tables = stamped_tables()
+    tables["songs"] = [stamped_song("USAAA2600001", t1), stamped_song("USAAA2600005", t1)]
+    hub, cache = SimHub(tables, page=1), mirror.new_cache(now=0)
+    mirror.load_mirror(hub, cache=cache, now=0)
+    tables["songs"].append(stamped_song("USAAA2600009", t2))
+    committed = []
+
+    def commit_mid_walk():
+        if not committed:
+            committed.append(1)
+            tables["songs"].append(stamped_song("USAAA2600000", t3))  # behind the walk
+            tables["songs"].append(stamped_song("USAAA2600099", t4))  # ahead of it
+
+    hub.on_page = commit_mid_walk
+    mirror.load_mirror(hub, cache=cache, now=1)
+    hub.on_page = None
+    third = mirror.load_mirror(hub, cache=cache, now=2)
+    assert {"USAAA2600000", "USAAA2600099"} <= set(third.songs)
+
+
+def test_quiet_cached_mirror_round_is_one_cursor_request():
+    hub, cache = SimHub(stamped_tables()), mirror.new_cache(now=0)
+    mirror.load_mirror(hub, cache=cache, now=0)
+    hub.reads.clear()
+    pulls = []
+    hub.scan = lambda *a, **kw: pulls.append(a) or []
+    again = mirror.load_mirror(hub, cache=cache, now=1)
+    assert hub.reads == ["/v1/cursor"] and pulls == []
+    assert set(again.songs) == {"USAAA2600001"} and set(again.playlists) == {"P"}
+
+
+def test_cached_mirror_rereads_provenance_slices_only_from_the_held_mark():
+    t1, t2 = "2026-10-01T00:00:00.000Z", "2026-10-02T00:00:00.000Z"
+    tables = stamped_tables()
+    edge = {
+        "id": "shazam:1:USAAA2600001",
+        "from_kind": "shazam",
+        "from_ref": "1",
+        "to_kind": "songs",
+        "to_ref": "USAAA2600001",
+        "rel": "imported_from",
+        "hub_at": t1,
+    }
+    tables["provenance"] = [edge]
+    hub, cache = SimHub(tables), mirror.new_cache(now=0)
+    first = mirror.load_mirror(hub, cache=cache, now=0)
+    assert first.captures == {("USAAA2600001", "shazam")}
+    # Another source's edge moves the table: both slices re-read from the held mark.
+    tables["provenance"].append({**edge, "id": "x", "to_kind": "movies", "hub_at": t2})
+    tables["provenance"].append(
+        {**edge, "id": "takeout:2:USAAA2600001", "from_kind": "takeout", "hub_at": t2}
+    )
+    sinces = []
+    scan = hub.scan
+    hub.scan = lambda table, columns, *, where=None, since="": (
+        sinces.append((table, since)) or scan(table, columns, where=where, since=since)
+    )
+    second = mirror.load_mirror(hub, cache=cache, now=1)
+    assert sinces == [("provenance", t1), ("provenance", t1)]
+    assert second.captures == {("USAAA2600001", "shazam"), ("USAAA2600001", "takeout")}
+    # A quiet table is not re-read at all.
+    sinces.clear()
+    mirror.load_mirror(hub, cache=cache, now=2)
+    assert sinces == []
+
+
+def test_cached_mirror_drops_purged_rows_when_a_mark_moves_back():
+    # A purge of a table's newest rows moves its mark behind the held cursor:
+    # the table, or the provenance slice, is read whole again and the purged row is gone.
+    t1, t2 = "2026-10-01T00:00:00.000Z", "2026-10-02T00:00:00.000Z"
+    tables = stamped_tables()
+    tables["songs"].append(stamped_song("USAAA2600002", t2))
+    edge = {
+        "id": "shazam:2:USAAA2600002",
+        "from_kind": "shazam",
+        "from_ref": "2",
+        "to_kind": "songs",
+        "to_ref": "USAAA2600002",
+        "rel": "imported_from",
+        "hub_at": t2,
+    }
+    older = {**edge, "id": "shazam:1:USAAA2600001", "to_ref": "USAAA2600001", "hub_at": t1}
+    tables["provenance"] = [older, edge]
+    hub, cache = SimHub(tables), mirror.new_cache(now=0)
+    first = mirror.load_mirror(hub, cache=cache, now=0)
+    assert "USAAA2600002" in first.songs and ("USAAA2600002", "shazam") in first.captures
+    tables["songs"].pop()
+    tables["provenance"].pop()
+    second = mirror.load_mirror(hub, cache=cache, now=1)
+    assert set(second.songs) == {"USAAA2600001"}
+    assert second.captures == {("USAAA2600001", "shazam")}
+
+
+def test_provenance_slice_never_skips_an_edge_committed_behind_the_walk():
+    t1, t2, t3, t4 = (f"2026-10-0{d}T00:00:00.000Z" for d in (1, 2, 3, 4))
+
+    def edge(n, hub_at):
+        isrc = f"USAAA260000{n}"
+        return {
+            "id": f"shazam:{n}:{isrc}",
+            "from_kind": "shazam",
+            "from_ref": str(n),
+            "to_kind": "songs",
+            "to_ref": isrc,
+            "rel": "imported_from",
+            "hub_at": hub_at,
+        }
+
+    tables = stamped_tables()
+    tables["provenance"] = [edge(1, t1)]
+    hub, cache = SimHub(tables, page=1), mirror.new_cache(now=0)
+    mirror.load_mirror(hub, cache=cache, now=0)
+    tables["provenance"].append(edge(5, t2))
+    committed = []
+
+    def commit_mid_walk():
+        if not committed:
+            committed.append(1)
+            tables["provenance"] += [edge(0, t3), edge(9, t4)]  # behind and ahead
+
+    hub.on_page = commit_mid_walk
+    mirror.load_mirror(hub, cache=cache, now=1)
+    hub.on_page = None
+    third = mirror.load_mirror(hub, cache=cache, now=2)
+    assert {("USAAA2600000", "shazam"), ("USAAA2600009", "shazam")} <= third.captures
