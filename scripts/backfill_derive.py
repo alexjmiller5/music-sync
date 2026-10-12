@@ -230,6 +230,13 @@ def run(
             return proofs, current
         # Proofs first: newer row inputs must invalidate older proofs. Commit
         # neither cache nor cursor until BOTH reads succeed. hub_at is inclusive.
+        # The next cursor is the mark read BEFORE pulling: the newest stamp
+        # received would skip a row committed behind the walk's keyset position.
+        marks = read_with_retry(lambda: hub.read("/v1/cursor", {"tables": ["provenance", table]}))[
+            "tables"
+        ]
+        if not all(isinstance(marks.get(t), str) for t in ("provenance", table)):
+            raise HubError("invalid cursor response")
         changes = [
             ("provenance", proofs, hub.pull("provenance", PROOF_COLS, cursors["provenance"] or "")),
             (table, current, hub.pull(table, COLS, cursors[table] or "")),
@@ -252,7 +259,7 @@ def run(
             cursors[name] = (
                 None
                 if cursor is None or any(not isinstance(s, str) or not s for s in stamps)
-                else max([cursor, *stamps])
+                else marks[name]
             )
         return proofs, current
 
