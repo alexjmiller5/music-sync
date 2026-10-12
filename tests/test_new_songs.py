@@ -2,6 +2,7 @@ from core import new_songs
 from core.model import Song
 
 T1, T2, T3, T4 = (f"2026-10-0{d}T00:00:00.000Z" for d in (1, 2, 3, 4))
+T0 = "2026-09-30T00:00:00.000Z"
 
 
 def song(isrc, **kw):
@@ -100,10 +101,15 @@ def test_history_finds_songs_you_first_added_to_a_curated_playlist_or_new_songs(
         ("CU", "F"): T1,
     }
     memberships = [Membership(p, i, "t", at, None) for (p, i), at in added.items()]
+    # A was also added to a second curated playlist earlier, now removed: the
+    # earliest curated add (Spotify's own date) wins.
+    playlists["CU2"] = Playlist("CU2", "older", "curated", None, None, None, 1, None)
+    memberships.append(Membership("CU2", "A", "t", "2024-06-01T00:00:00.000Z", T1))
     songs = {i: song(i) for i in "ABCDEF"}
-    songs["F"].found_at = T2  # already set: left alone
+    songs["F"].found_at = T0  # already set, earlier than its curated add: left alone
+    songs["B"].found_at = "2026-10-05T00:00:00.000Z"  # later than its first add: moved back
     assert new_songs.found_from_history(songs, playlists, memberships, edges) == {
-        "A": "2025-01-02T03:04:05.000Z",
+        "A": "2024-06-01T00:00:00.000Z",
         "B": "2026-10-01T00:00:00.000Z",
     }
 

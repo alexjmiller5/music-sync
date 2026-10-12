@@ -70,25 +70,29 @@ def edits(current: list[str], desired: list[str]) -> list[tuple]:
 
 def found_from_history(songs: dict, playlists: dict, memberships: list, edges: list) -> dict:
     """found_at for songs you brought into the catalog yourself before it was kept:
-    the first catalog import of a song from a curated playlist or the inbox
-    (an imported_from edge with created_row 1) found it at that membership's add
-    time. Songs that already have found_at are left alone."""
-    added = {(m.playlist_id, m.isrc): m.added_at for m in memberships if m.added_at}
+    a song whose first catalog import (an imported_from edge with created_row 1)
+    came from a curated playlist or the inbox was found at its earliest add to any
+    curated playlist or the inbox (Spotify's dates, removed memberships included).
+    A song keeps a found_at that is already no later than that."""
+    kinds = {pid: p.kind for pid, p in playlists.items()}
+    first = {}
+    for m in memberships:
+        if kinds.get(m.playlist_id) in ("curated", "inbox") and m.added_at:
+            if m.isrc not in first or at(m.added_at) < at(first[m.isrc]):
+                first[m.isrc] = m.added_at
     out = {}
     for e in edges:
         detail = e.get("detail")
         detail = json.loads(detail) if isinstance(detail, str) else detail or {}
-        isrc, pid = e.get("to_ref"), e.get("from_ref")
-        playlist = playlists.get(pid)
-        when = added.get((pid, isrc))
+        isrc = e.get("to_ref")
+        when = first.get(isrc)
         if (
             e.get("from_kind") == "playlist"
             and detail.get("created_row") == 1
-            and playlist
-            and playlist.kind in ("curated", "inbox")
+            and kinds.get(e.get("from_ref")) in ("curated", "inbox")
             and isrc in songs
-            and not songs[isrc].found_at
             and when
+            and (not songs[isrc].found_at or at(when) < at(songs[isrc].found_at))
         ):
             moment = at(when).astimezone(timezone.utc)
             out[isrc] = moment.strftime("%Y-%m-%dT%H:%M:%S.") + f"{moment.microsecond // 1000:03d}Z"
