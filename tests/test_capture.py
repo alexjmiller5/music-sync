@@ -88,17 +88,20 @@ class FakeSpotify:
         self.searches.append(("isrc", isrc, market))
         return self.tracks
 
-    def add_items(self, pid, uris):
+    def add_items(self, pid, uris, position=None):
         self.calls.append(("add", pid, uris))
+        self.positions = [*getattr(self, "positions", []), position]
         # Add the matched track to inbox_items so it shows up in get_playlist_items
+        at = len(self.inbox_items) if position is None else position
         for uri in uris:
             for t in self.tracks:
                 if t["uri"] == uri:
-                    self.inbox_items.append(
+                    self.inbox_items.insert(
+                        at,
                         {
                             "added_at": "2026-09-08T12:00:00.000Z",
                             "item": t,
-                        }
+                        },
                     )
                     break
 
@@ -293,8 +296,10 @@ def test_capture_trims_inbox(settings):
     )
     settings.inbox_cap = 2
     capture.capture({"title": "New", "artist": "A"}, sp, hub, settings, NOW)
-    # With 3 existing items + 1 new = 4 total, inbox_cap=2 removes oldest 2
-    assert ("remove", "IN", ["spotify:track:0", "spotify:track:1"]) in sp.calls
+    # With 3 existing items + 1 new = 4 total, inbox_cap=2 removes the 2 that came
+    # your way longest ago (these have no catalog time, so their Spotify add time)
+    removed = [sorted(c[2]) for c in sp.calls if c[0] == "remove"]
+    assert removed == [["spotify:track:0", "spotify:track:1"]]
     # The new song (track:9) must not be in any remove call
     for call in sp.calls:
         if call[0] == "remove":
@@ -567,3 +572,69 @@ def test_event_insert_failure_retries_same_evidence_without_another_spotify_add(
     assert attempts[0] == attempts[1]
     assert all(objects[key] == value for key, value in original.items())
     assert len([c for c in sp.calls if c[0] == "add"]) == 1
+
+
+def test_a_capture_lands_in_new_songs_at_its_listening_time(settings):
+    # New songs is newest first; a capture heard between two songs goes between them.
+    newer = {
+        "added_at": "2026-09-08T00:00:00.000Z",
+        "item": track("n", "N", "a", isrc="USAAA2600001"),
+    }
+    older = {
+        "added_at": "2026-09-01T00:00:00.000Z",
+        "item": track("o", "O", "a", isrc="USAAA2600002"),
+    }
+    sp = FakeSpotify([track("9", "Heard", "A", isrc="GBBTV1101287")], inbox_items=[newer, older])
+    hub = FakeHub(
+        INBOX,
+        songs=[
+            {"id": "USAAA2600001", "liked": 0, "shazam_last_at": "2026-09-08T00:00:00.000Z"},
+            {"id": "USAAA2600002", "liked": 1, "liked_at": "2026-09-01T00:00:00.000Z"},
+        ],
+    )
+    payload = {
+        "title": "Heard",
+        "artist": "A",
+        "capture_id": "00000000-0000-4000-8000-000000000009",
+    }
+    payload["recognized_at"] = "2026-09-05T00:00:00.000Z"
+    out = capture.capture(payload, sp, hub, settings, NOW, client_id="c")
+    assert out["ok"] and sp.positions == [1]
+    assert [i["item"]["id"] for i in sp.inbox_items] == ["n", "9", "o"]
+
+
+class PickHub(FakeHub):
+    def __init__(self, rows):
+        super().__init__(INBOX, songs=rows)
+
+
+def picking_spotify(*tracks):
+    sp = FakeSpotify([track("searched", "Song", "Artist", isrc="USAAA2600009")])
+    by_id = {t["id"]: t for t in tracks}
+    sp.get_track = lambda track_id, market: by_id[track_id]
+    return sp
+
+
+def test_a_version_picked_for_a_capture_is_used_instead_of_a_search(settings):
+    cid = "00000000-0000-4000-8000-000000000007"
+    pick = track("picked", "Song (Live)", "Artist", isrc="USAAA2600002")
+    hub = PickHub(
+        [{"id": "USAAA2600002", "liked": 0, "spotify_ids": '["picked"]', "resolves_capture": cid}]
+    )
+    sp = picking_spotify(pick)
+    payload = {"title": "Song", "artist": "Artist", "capture_id": cid}
+    assert capture.resolve_track(payload, sp, settings, hub=hub) == pick
+    assert sp.searches == []
+
+
+def test_a_pick_whose_recording_does_not_match_its_row_is_ignored(settings):
+    cid = "00000000-0000-4000-8000-000000000007"
+    wrong = track("picked", "Song", "Artist", isrc="USAAA2600003")
+    hub = PickHub(
+        [{"id": "USAAA2600002", "liked": 0, "spotify_ids": '["picked"]', "resolves_capture": cid}]
+    )
+    sp = picking_spotify(wrong)
+    payload = {"title": "Song", "artist": "Artist", "capture_id": cid}
+    # The pick is refused, so the ordinary exact search decides.
+    assert capture.resolve_track(payload, sp, settings, hub=hub)["id"] == "searched"
+    assert sp.searches == [("metadata", "Song", "Artist", "US")]

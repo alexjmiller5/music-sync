@@ -52,10 +52,13 @@ justfile          dev / test / sync-secrets / deploy
 Every song lives in soma with `liked` = whether it's hearted in Spotify.
 Playlists come in three kinds:
 
-- **inbox** - exactly one, `new songs`, capped at 100. Songs land here from
-  the user adding directly or from the Shazam shortcut; membership implies
-  nothing (not liked by being there, not removed by un-hearting). Songs that
-  age out unliked stay in the catalog with their capture history.
+- **inbox** - exactly one, `new songs`: the 100 songs that most recently came
+  your way, newest first. Each song's time is the latest of its Shazam, its like
+  (while liked) and the time you found it yourself (added a new song to a curated
+  playlist or to New songs, or an agent added it to the songs table). Removing one
+  by hand keeps it out until it comes your way again; membership implies nothing
+  else (not liked by being there). Songs that age out stay in the catalog with
+  their capture history.
 - **curated** - every other playlist the user edits by hand. The reconciler
   preserves membership independently of likes. Duplicate keepers and
   replacement aliases require review.
@@ -541,7 +544,7 @@ Playlist predicates should reference stable IDs through `in_playlist_ids_any`
 and `not_in_playlist_ids` lists. Renames do not affect those references;
 descriptions use the current display names. Unknown IDs and ambiguous legacy
 name references stop that rule for review. Duplicate inbox occurrences also
-pause FIFO trimming and membership replacement until the keeper is reviewed;
+pause the New songs arrangement and membership replacement until the keeper is reviewed;
 they do not stop retaining genuine new recognition history.
 
 Followed-artist source collection is independently read-only:
@@ -596,7 +599,7 @@ recognition imports and rule changes run in that same worker.
 
 `run.reconcile(..., writes=False)` is an observation-only import: full owned
 playlist pulls, actual liked values and complete observed membership rows.
-It does not enforce auto-like, FIFO, rules or expiry. It retains newly detected
+It does not enforce auto-like, New songs order, rules or expiry. It retains newly detected
 auto-like intent separately so an import cannot consume it. Unknown playlist
 classification and duplicate membership aliases remain unresolved for review.
 

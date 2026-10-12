@@ -241,7 +241,10 @@ def open_capture_task(settings, http, capture, today):
     notes = [
         "Shazam recognized this capture, but Music Sync found no exact Spotify recording for "
         "it, so it was not added. Music Sync checks again daily and closes this task when a "
-        "check finds it; add or choose a version in Spotify yourself to finish sooner.",
+        "check finds it. To finish sooner, have an agent add the version you pick as a songs "
+        "row (id = its ISRC, spotify_ids = [its track id], liked 0, first_seen now) with "
+        "resolves_capture = the Capture ID below: Music Sync then adds it to New songs at this "
+        "capture's listening time and closes this task.",
         f"Shazam: {payload.get('shazam_url')}",
         f"Apple Music ID: {payload.get('apple_music_id')}",
         f"ISRC: {isrc}" if isrc else "ISRC: none (no ISRC from Shazam)",
@@ -267,8 +270,9 @@ def open_capture_task(settings, http, capture, today):
     return row_id
 
 
-def close_capture_task(settings, http, task_id, isrc, today):
-    """Append the resolution and complete a still-open capture task; True when closed now."""
+def close_capture_task(settings, http, task_id, isrc, today, picked=False):
+    """Append the resolution and complete a still-open capture task; True when closed now.
+    `picked`: the recording was the version someone picked for the capture."""
     binding = _capture_binding(settings)
     if not binding:
         return False
@@ -282,7 +286,12 @@ def close_capture_task(settings, http, task_id, isrc, today):
             or row.get(col["status"]) not in binding["open_statuses"]
         ):
             return False  # the owner already resolved it
-        note = f"{today}: a later check found it on Spotify ({isrc}) and added it to the inbox."
+        note = (
+            f"{today}: the version picked for it ({isrc}) was added to New songs at the"
+            " capture's listening time."
+            if picked
+            else f"{today}: a later check found it on Spotify ({isrc}) and added it to the inbox."
+        )
         values = {
             col["notes"]: (row.get(col["notes"]) or "") + "\n" + note,
             col["status"]: binding.get("completed_status", "Completed"),

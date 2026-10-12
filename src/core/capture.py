@@ -6,7 +6,7 @@ import re
 from uuid import uuid4
 from datetime import datetime
 
-from core import archive, metadata, recognition
+from core import archive, metadata, new_songs, recognition
 from core import mirror as mirror_mod
 from core.config import Settings
 from core.model import Live
@@ -31,7 +31,29 @@ def _iso(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
 
 
-def resolve_track(payload: dict, spotify, settings: Settings) -> dict | None:
+def picked_song(payload: dict, settings: Settings, hub=None) -> dict | None:
+    """The one live songs row whose resolves_capture names this capture: the version
+    someone picked for it when Spotify had no exact match (see core/new_songs.py)."""
+    capture_id = payload.get("capture_id")
+    if not capture_id:
+        return None
+    if hub is None:
+        from core.hub import Hub
+
+        hub = Hub(settings.soma_hub_url, settings.soma_hub_token)
+    rows = [
+        r
+        for r in hub.pull(
+            "songs",
+            ["id", "spotify_ids", "resolves_capture", "deleted_at"],
+            where={"resolves_capture": capture_id},
+        )
+        if not r.get("deleted_at")
+    ]
+    return rows[0] if len(rows) == 1 else None
+
+
+def resolve_track(payload: dict, spotify, settings: Settings, hub=None) -> dict | None:
     title, artist = (payload.get("title") or "").strip(), (payload.get("artist") or "").strip()
     if not title or not artist:
         return None
@@ -39,6 +61,15 @@ def resolve_track(payload: dict, spotify, settings: Settings) -> dict | None:
         from core.spotify_client import SpotifyClient
 
         spotify = SpotifyClient(settings)
+    if row := picked_song(payload, settings, hub):
+        ids = row.get("spotify_ids")
+        ids = json.loads(ids) if isinstance(ids, str) else ids or []
+        if ids:
+            track = spotify.get_track(ids[0], settings.spotify_market)
+            resolved = mirror_mod.item_from_raw({"track": track})
+            # Only the recording the row names: a pick for another ISRC is refused.
+            if resolved.isrc == row["id"] and resolved.track_id and resolved.uri:
+                return track
     if isrc := payload.get("isrc"):
         track = next(
             (
@@ -88,7 +119,11 @@ def capture(
     spotify = spotify or SpotifyClient(settings)
     hub = hub or with_read_retries(Hub(settings.soma_hub_url, settings.soma_hub_token))
     song_columns = metadata.require_observed_contract(hub)
-    tr = resolved_track if resolved_track is not None else resolve_track(payload, spotify, settings)
+    tr = (
+        resolved_track
+        if resolved_track is not None
+        else resolve_track(payload, spotify, settings, hub)
+    )
     if not tr:
         return {
             "ok": False,
@@ -155,10 +190,32 @@ def capture(
         settings, payload, now, source_ref, isrc, client_id
     )
     now_s = _iso(now)
+
+    def came(it):
+        # New songs is newest first by when a song came your way (core/new_songs.py);
+        # a song the catalog has no time for yet stands at its Spotify add time.
+        song = m.songs.get(it.isrc)
+        return (song and new_songs.came_at(song)) or it.added_at or now_s
+
+    known = m.songs.get(isrc)
+    heard = max(
+        (
+            t
+            for t in (
+                event.get("recognized_at") or event["received_at"],
+                known and new_songs.came_at(known),
+            )
+            if t
+        ),
+        key=new_songs.at,
+    )
     if existing is None:
         if record_outcome:
             record_outcome("unknown")  # durable before the request can reach Spotify
-        spotify.add_items(inbox.id, [tr["uri"]])
+        position = sum(
+            1 for it in observed_items if it.isrc and new_songs.at(came(it)) > new_songs.at(heard)
+        )
+        spotify.add_items(inbox.id, [tr["uri"]], position=position)
     if record_outcome:
         record_outcome("added")  # acknowledgement or observed inbox membership
     created = isrc not in m.songs
@@ -218,17 +275,17 @@ def capture(
             *(a.row for a in observations if a.kind == "edge"),
         ],
     )
-    items = sorted(
-        (
-            mirror_mod.item_from_raw(i)
-            for i in spotify.get_playlist_items(inbox.id, settings.spotify_market)
-        ),
-        key=lambda x: x.added_at,
-    )
-    mirror_mod.validate_recording_aliases(items)
-    extra = [i for i in items if i.isrc][
-        : max(0, len([i for i in items if i.isrc]) - settings.inbox_cap)
+    items = [
+        mirror_mod.item_from_raw(i)
+        for i in spotify.get_playlist_items(inbox.id, settings.spotify_market)
     ]
+    mirror_mod.validate_recording_aliases(items)
+    newest = sorted(
+        (i for i in items if i.isrc),
+        key=lambda i: new_songs.at(heard if i.isrc == isrc else came(i)),
+        reverse=True,
+    )
+    extra = newest[settings.inbox_cap :]
     identities = [item.isrc for item in items if item.isrc]
     # Only recordings the catalog already holds in the inbox (or this capture) are
     # evicted; a hand-added song waits until reconciliation imports its history.

@@ -350,3 +350,21 @@ def test_429_with_long_retry_after_fails_fast_without_sleeping(settings, mocker)
     assert exc.value.response.status_code == 429
     assert len(calls) == 1
     sleep.assert_not_called()
+
+
+def test_reorder_and_replace_items_json_bodies(settings, mocker):
+    calls = []
+
+    def handler(req):
+        if req.url.host == "accounts.spotify.com":
+            return token_resp()
+        calls.append((req.method, req.url.path, json.loads(req.content)))
+        return httpx.Response(200, json={"snapshot_id": "s"})
+
+    c = make(handler, settings, mocker)
+    assert c.reorder_items("P", 5, 1) == "s"
+    assert c.replace_items("P", ["spotify:track:1", "spotify:track:2"]) == "s"
+    assert calls == [
+        ("PUT", "/v1/playlists/P/items", {"range_start": 5, "insert_before": 1, "range_length": 1}),
+        ("PUT", "/v1/playlists/P/items", {"uris": ["spotify:track:1", "spotify:track:2"]}),
+    ]

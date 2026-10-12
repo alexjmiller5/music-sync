@@ -344,3 +344,17 @@ def test_renamed_hub_adopts_delivered_history_and_holds_undelivered_batches(setu
     )
     with pytest.raises(ValueError, match="another hub"):
         flags.file(settings, http, ["Flag C"], [], "2026-01-03")
+
+
+def test_a_capture_task_resolved_by_a_picked_version_says_so(setup):
+    from core.soma_flags import close_capture_task, open_capture_task
+
+    settings, server, http, _ = setup
+    settings = settings.model_copy(update={"capture_task_config": CAPTURE_CONFIG})
+    task_id = open_capture_task(settings, http, CAPTURE, "2026-10-11")
+    assert "resolves_capture" in server.rows[task_id]["body"]  # how to finish it sooner
+    assert close_capture_task(settings, http, task_id, "USAAA2600002", "2026-10-13", picked=True)
+    assert server.rows[task_id]["body"].endswith(
+        "2026-10-13: the version picked for it (USAAA2600002) was added to New songs at the"
+        " capture's listening time."
+    )

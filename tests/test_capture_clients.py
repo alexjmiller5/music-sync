@@ -558,3 +558,31 @@ def test_recognition_time_retains_source_offset_and_precision():
         capture_clients.validate_payload({**PAYLOAD, "recognized_at": value})["recognized_at"]
         == value
     )
+
+
+def test_a_capture_someone_picked_a_version_for_is_checked_now_not_tomorrow(settings, objects):
+    capture_clients.accept(settings, "client-id", PAYLOAD, NOW)
+    picked = False
+
+    class Picking(Tasks):
+        def resolved(self, client_id, state):
+            return picked
+
+    tasks, selections = Picking(), []
+
+    def step(client_id, payload, received_at):
+        return capture_clients.deliver(
+            settings,
+            client_id,
+            payload,
+            lambda p: selections.append(1) or (SELECTED if picked else None),
+            lambda p, selected, record: {"ok": True, "message": "added", "isrc": "USAAA2600001"},
+        )
+
+    capture_clients.drain(settings, step, NOW, tasks=tasks)
+    capture_clients.drain(settings, step, NOW.replace(hour=23), tasks=tasks)
+    assert selections == [1], "an unresolved no-match still waits for its daily recheck"
+    picked = True
+    capture_clients.drain(settings, step, NOW.replace(hour=23, minute=30), tasks=tasks)
+    assert selections == [1, 1]
+    assert capture_clients.status(settings, "client-id", CAPTURE_ID)["status"] == "added"

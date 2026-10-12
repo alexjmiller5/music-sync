@@ -487,8 +487,8 @@ def test_capture_status_tracks_spotify_effect_even_when_catalog_fails(
         catalog.catalog = broken_catalog
     elif failure == "add_timeout":
 
-        def add_then_timeout(pid, uris):
-            FakeSpotify.add_items(spotify, pid, uris)
+        def add_then_timeout(pid, uris, position=None):
+            FakeSpotify.add_items(spotify, pid, uris, position)
             raise httpx.ReadTimeout("ack lost")
 
         spotify.add_items = add_then_timeout
@@ -739,7 +739,9 @@ def test_no_match_files_a_reconcile_task_the_status_reports_and_a_match_closes(
     monkeypatch.setattr(
         soma_flags,
         "close_capture_task",
-        lambda settings, http, task_id, isrc, today: closed.append((task_id, isrc)) or True,
+        lambda settings, http, task_id, isrc, today, picked=False: (
+            closed.append((task_id, isrc)) or True
+        ),
     )
     monkeypatch.setattr(cap, "resolve_track", lambda *a: None)
     post("/capture-consumer", CONSUMER_BODY, token)
