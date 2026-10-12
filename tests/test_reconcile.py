@@ -415,13 +415,14 @@ def test_new_songs_cap_and_exemption():
         {},
     )
     acts = reconcile.plan(m, live, NOW, inbox_cap=3)
-    # Songs new to the catalog you put in New songs count from their add time; the
-    # liked ones (2026-09-01) are newer, so the oldest hand-add falls off.
+    # Songs new to the catalog you put in New songs count from their add time; B's
+    # like (2026-09-01) is newer, so it leads and the oldest hand-add falls off. A was
+    # already curated when liked, so that like is Music Sync's, not A coming your way.
     assert [a.uri for a in kinds(acts, "arrange_items")] == [None]
     assert kinds(acts, "arrange_items")[0].uris == [
         "spotify:track:tB",
-        "spotify:track:tA",
         "spotify:track:tZ02",
+        "spotify:track:tZ01",
     ]
     found = {a.isrc: a.row.get("found_at") for a in kinds(acts, "upsert_song")}
     assert found["Z00"] == "2026-08-01T00:00:00.000Z"
@@ -811,3 +812,20 @@ def test_an_item_without_an_isrc_leaves_new_songs_unarranged_and_flags():
     acts = reconcile.plan(m, live, NOW)
     assert arranged(acts) is None
     assert any("order is left alone" in a.text for a in kinds(acts, "flag"))
+
+
+def test_music_sync_liking_a_curated_song_does_not_bring_it_into_new_songs():
+    m = inbox_mirror(
+        [timed("CUR", liked=1, liked_at=T4), timed("A", shazam_last_at=T2)], members=["A"]
+    )
+    m.playlists["CU"] = pl("CU", "mood", "curated")
+    m.memberships[("CU", "CUR")] = Membership("CU", "CUR", "tCUR", T1)  # curated before the like
+    live = Live(
+        {
+            "IN": live_pl("IN", "new songs", [item("A")]),
+            "CU": live_pl("CU", "mood", [item("CUR", added=T1)]),
+        },
+        {"CUR": item("CUR", added=T4)},
+        {},
+    )
+    assert arranged(reconcile.plan(m, live, NOW)) is None

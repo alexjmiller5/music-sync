@@ -106,3 +106,14 @@ def test_history_finds_songs_you_first_added_to_a_curated_playlist_or_new_songs(
         "A": "2025-01-02T03:04:05.000Z",
         "B": "2026-10-01T00:00:00.000Z",
     }
+
+
+def test_a_like_of_a_song_already_in_a_curated_playlist_is_not_when_it_came_your_way():
+    # Music Sync likes curated songs itself (and the rollout liked them in bulk):
+    # such a like is not a song coming your way; its curated add is.
+    s = song("A", liked=1, liked_at=T3, shazam_last_at=T1)
+    assert new_songs.came_at(s, curated_at=T2) == T1
+    assert new_songs.came_at(s, curated_at=T4) == T3  # liked first, curated later
+    assert new_songs.came_at(s) == T3
+    songs = {"A": s, "B": song("B", shazam_last_at=T2)}
+    assert new_songs.rank(songs, cap=10, curated_at={"A": T2}) == ["B", "A"]
