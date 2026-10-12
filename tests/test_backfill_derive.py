@@ -225,7 +225,9 @@ def test_resume_reuses_d1_numeric_year_proof():
     [
         ([1990.0, 1990, None], '["1990.0","1990.0",null]', True),
         ([1991, 1990, None], '["1990.0","1990.0",null]', False),
-        ([1990, 1990, None], '["1990","1990",null]', False),
+        ([1990, 1990, None], '["1990","1990",null]', True),
+        ([1990.0, 1990, None], '["1990","1990",null]', True),
+        ([1991, 1990, None], '["1990","1990",null]', False),
         ([None, None, None], "[null,null,null]", True),
         ([None, None, None], '["None",null,null]', False),
         (["01990", "1990", None], '["01990","1990",null]', True),
@@ -233,7 +235,7 @@ def test_resume_reuses_d1_numeric_year_proof():
         ([1e20, 1990, None], '["1.0e+20","1990.0",null]', True),
     ],
 )
-def test_year_checkpoint_matches_d1_binding(values, raw, reuse):
+def test_year_checkpoint_matches_typed_and_earlier_real_proofs(values, raw, reuse):
     service = Service()
     service.rows["S0000"].update(zip(backfill_derive.YEARS, values))
     service.persist("S0000", "first_year")

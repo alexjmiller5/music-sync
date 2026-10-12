@@ -66,22 +66,35 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def input_digests(values: list) -> set[str]:
+    """Hashes of the inputs as the hub renders them (soma's canonical_text: an
+    integral number as an integer, '1999') and as earlier hubs did (every number
+    as REAL, '1999.0'); the hub still accepts proofs in either form."""
+    typed = ",".join(
+        f"CASE WHEN typeof(?{i})='real' AND ?{i}=CAST(?{i} AS INTEGER) "
+        f"THEN CAST(CAST(?{i} AS INTEGER) AS TEXT) ELSE CAST(?{i} AS TEXT) END"
+        for i in range(1, len(values) + 1)
+    )
+    real = [float(v) if isinstance(v, (int, float)) else v for v in values]
+    with closing(sqlite3.connect(":memory:")) as db:
+        raws = [
+            db.execute(f"SELECT json_array({typed})", values).fetchone()[0],
+            db.execute(
+                "SELECT json_array(" + ",".join("CAST(? AS TEXT)" for _ in real) + ")", real
+            ).fetchone()[0],
+        ]
+    return {hashlib.sha256(raw.encode()).hexdigest() for raw in raws}
+
+
 def complete(row: dict, table: str, col: str, proofs: dict) -> bool:
     name, fields = SOURCES[col]
     if col != "first_year" and not any(row.get(c) not in (None, "", [], "[]") for c in fields):
         return False
     values = [row.get(c) for c in YEARS] if col == "first_year" else [row["id"]]
-    # D1 binds JS Number inputs as REAL even for catalog int years. Match
-    # validate.js inputsHash's SQLite rendering; text and NULL stay unchanged.
-    values = [float(v) if isinstance(v, (int, float)) else v for v in values]
-    with closing(sqlite3.connect(":memory:")) as db:
-        raw = db.execute(
-            "SELECT json_array(" + ",".join("CAST(? AS TEXT)" for _ in values) + ")", values
-        ).fetchone()[0]
-    digest = hashlib.sha256(raw.encode()).hexdigest()
+    digests = input_digests(values)
     return all(
         field in row
-        and (p := proofs.get(f"{table}:{row['id']}:{field}", {})).get("inputs_hash") == digest
+        and (p := proofs.get(f"{table}:{row['id']}:{field}", {})).get("inputs_hash") in digests
         and p.get("from_kind") == f"http:{name}"
         for field in fields
     )
