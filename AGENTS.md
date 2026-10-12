@@ -220,12 +220,17 @@ runs in tests, locally, or on any future platform.
   `shazam_dates_estimated`) is recomputed from those originals, so a retried
   capture never counts twice. Exact times come only from `recognized_at`;
   playlist add dates and receipt times are estimates.
-- The worker loads the mirror incrementally: each slice's rows and `hub_at`
-  cursor live under `music-sync/mirror-cache/` in the recovery bucket, deltas use
-  the hub's inclusive `since`, the cache is checkpointed after each slice and
-  rebuilt weekly. Dry runs never write it. Worker calls get 3,600 s; apply stops
-  cleanly 3,000 s into a call and stays pending. Worker hub clients retry
-  transient page-read failures twice.
+- The worker loads the mirror incrementally through soma's table-pull helper
+  (`core/table_pull.py`, vendored verbatim - update by re-copying, never edit):
+  one `/v1/cursor` request per quiet round, and every cursor is the mark read
+  BEFORE pulling, never the newest row received (a row committed mid-walk would
+  be skipped). Songs, playlists and memberships are helper tables; provenance is
+  watched, and each song slice re-reads from its held mark only when the table's
+  mark moves (a mark behind it re-reads the slice whole). Rows, helper state and
+  slice marks live under `music-sync/mirror-cache/` in the recovery bucket; the
+  cache is checkpointed after each step and rebuilt weekly. Dry runs never write
+  it. Worker calls get 3,600 s; apply stops cleanly 3,000 s into a call and stays
+  pending. Worker hub clients retry transient page-read failures twice.
 - Spotify reads are budgeted (Development Mode quota): the scheduled reconcile
   reads every owned playlist except a smart playlist whose Spotify snapshot equals
   the one recorded after Music Sync's own last write; its items come from the
@@ -308,6 +313,7 @@ app.py                       Modal shim: serialized worker, cron and proxy-auth 
 src/core/
   spotify_client.py          Spotify Web API client (post-2026-02 Development Mode endpoint set)
   hub.py                     soma hub HTTP client (pull, push, derive)
+  table_pull.py              soma's incremental table-pull helper (vendored verbatim)
   mirror.py                  load the mirror (songs, playlists, playlist_songs) from the hub
   metadata.py                pure observed base-field patches and per-field archive evidence
   metadata_replay.py         metadata-only recovery from one retained Spotify archive

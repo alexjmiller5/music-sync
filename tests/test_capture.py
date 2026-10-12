@@ -6,6 +6,7 @@ from copy import deepcopy
 import pytest
 
 from core import capture
+from tests.hubsim import HubReads
 
 
 @pytest.fixture(autouse=True)
@@ -108,7 +109,7 @@ class FakeSpotify:
         return self.inbox_items
 
 
-class FakeHub:
+class FakeHub(HubReads):
     def catalog(self):
         from tests.test_metadata_contract import catalog
 
@@ -212,11 +213,8 @@ def test_capture_outside_the_worker_resumes_the_mirror_cache_but_never_writes_it
         FakeSpotify([track("1", "Money Trees", "Kendrick Lamar")]),
         FakeHub([{**INBOX[0], "hub_at": stamped}]),
     )
-    sinces, pull = [], hub.pull
-    hub.pull = lambda table, columns, since="", where=None: (
-        sinces.append((table, since)),
-        pull(table, columns, since, where),
-    )[1]
+    reads, read = [], hub.read
+    hub.read = lambda route, body: (reads.append((route, body)), read(route, body))[1]
     payload = {
         "title": "Money Trees",
         "artist": "Kendrick Lamar",
@@ -226,11 +224,12 @@ def test_capture_outside_the_worker_resumes_the_mirror_cache_but_never_writes_it
     capture.capture(payload, sp, hub, settings, NOW)
     assert mirror.cache_key(settings.workspace) in puts, "the worker path still checkpoints"
     puts.clear()
-    sinces.clear()
+    reads.clear()
     out = capture.capture(payload, sp, hub, settings, NOW, use_cache=False)
     assert out["ok"] is True
     assert [key for key in puts if key.startswith("music-sync/mirror-cache/")] == []
-    assert ("playlists", stamped) in sinces
+    # Nothing new on the hub: the held cache answers after one cursor request.
+    assert [route for route, _ in reads] == ["/v1/cursor"]
 
 
 def test_capture_already_in_inbox(settings):

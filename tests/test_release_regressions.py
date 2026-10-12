@@ -11,6 +11,7 @@ import pytest
 
 from core import actions, capture, run
 from core.hub import Hub, HubError
+from tests.hubsim import HubReads
 
 NOW = datetime(2026, 9, 8, 12, tzinfo=timezone.utc)
 T = "2026-09-07T00:00:00.000Z"
@@ -31,7 +32,7 @@ def raw(isrc=A, tid="a", added=T, playable=True):
     }
 
 
-class Store:
+class Store(HubReads):
     def catalog(self):
         from tests.test_metadata_contract import catalog
 
@@ -714,6 +715,8 @@ def test_observation_import_meets_hub_datetime_contract_and_recovers(
         if req.url.path == "/v1/catalog":
             return httpx.Response(200, json=store.catalog())
         body = json.loads(req.content)
+        if req.url.path == "/v1/cursor" or "batch" in body:
+            return httpx.Response(200, json=store.read(req.url.path, body))
         table = body["table"]
         if req.url.path.endswith("/insert"):
             return httpx.Response(200, json=store.insert_rows(table, body["rows"]))
@@ -885,6 +888,8 @@ def test_retry_timestamp_survives_restart_and_preserves_newer_edit(
             return httpx.Response(200, json=store.catalog())
         nonlocal interrupted
         body = json.loads(req.content)
+        if req.url.path == "/v1/cursor" or "batch" in body:
+            return httpx.Response(200, json=store.read(req.url.path, body))
         table = body["table"]
         if req.url.path.endswith("/insert"):
             return httpx.Response(200, json=store.insert_rows(table, body["rows"]))
@@ -969,6 +974,8 @@ def test_direct_imports_keep_hub_timestamp_fallback(settings, archive_store, flo
         if req.url.path == "/v1/catalog":
             return httpx.Response(200, json=store.catalog())
         body = json.loads(req.content)
+        if req.url.path == "/v1/cursor" or "batch" in body:
+            return httpx.Response(200, json=store.read(req.url.path, body))
         table = body["table"]
         if req.url.path.endswith("/insert"):
             return httpx.Response(200, json=store.insert_rows(table, body["rows"]))

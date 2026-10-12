@@ -80,9 +80,13 @@ class Hub:
             body["after"] = cursor
 
     def _read_page(self, body):
+        return self.read("/v1/rows/pull", body)
+
+    def read(self, route, body):
+        """An idempotent read POST (rows/pull, cursor), retried on transient failures."""
         for delay in (*self.read_retries, None):
             try:
-                return self._post("/v1/rows/pull", body)
+                return self._post(route, body)
             except HubError as exc:
                 status = exc.diagnostic.get("status")
                 transient = exc.diagnostic["category"] == "transport" or (status or 0) >= 500
