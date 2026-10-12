@@ -96,8 +96,15 @@ class Service:
 
             return httpx.Response(200, json=catalog())
         assert request.url.host == "hub.test" and request.method == "POST"
-        assert request.url.path in ("/v1/rows/pull", "/v1/derive")
+        assert request.url.path in ("/v1/rows/pull", "/v1/derive", "/v1/cursor")
         body = json.loads(request.content)
+        if request.url.path == "/v1/cursor":
+            stores = {"songs": self.rows, "provenance": self.proofs}
+            marks = {
+                t: max((r.get("hub_at") or "" for r in stores[t].values()), default="")
+                for t in body["tables"]
+            }
+            return httpx.Response(200, json={"tables": marks})
         if request.url.path == "/v1/rows/pull":
             assert body["table"] in ("songs", "provenance")
             rows = self.rows.values() if body["table"] == "songs" else self.proofs.values()
@@ -1168,3 +1175,39 @@ def test_bounded_selection_requires_a_source_column():
     with pytest.raises(ValueError):
         backfill_derive.run(service.hub, "songs", None, ids=["S0000"], refresh=True)
     assert service.calls == []
+
+
+def test_incremental_confirmation_cursor_is_the_mark_read_before_the_pull():
+    # A proof committed while a confirmation walk is in progress, stamped after
+    # the walk began: the next delta starts at the mark read before that walk,
+    # never at the newest stamp received, which would skip a row committed
+    # behind the walk's keyset position.
+    service = IncrementalService(2)
+    events, original = [], service.respond
+
+    def respond(request):
+        reply = original(request)
+        if request.url.path == "/v1/cursor":
+            events.append(("mark", json.loads(reply.content)["tables"]["provenance"]))
+        return reply
+
+    service.respond = respond
+    service.hub._http = httpx.Client(transport=httpx.MockTransport(respond))
+
+    def commit_mid_walk(body):
+        if body["table"] == "provenance":
+            events.append(("pull", body["since"]))
+            if service.calls and not any(e[0] == "late" for e in events):
+                service.tick += 1
+                late = service.stamp("provenance")
+                for proof in service.proofs.values():
+                    proof["hub_at"] = late
+                events.append(("late", late))
+
+    service.before_pull = commit_mid_walk
+    out = service.run("mb_tags")
+    assert out["completed_recordings"] == 2 and not out["failed"]
+    late = next(i for i, e in enumerate(events) if e[0] == "late")
+    before = [e[1] for e in events[:late] if e[0] == "mark"][-1]
+    after = [e[1] for e in events[late:] if e[0] == "pull"]
+    assert after and after[0] == before != events[late][1]

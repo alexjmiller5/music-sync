@@ -248,7 +248,8 @@ runs in tests, locally, or on any future platform.
   remains an observed input. Completion requires actual current rows and source
   proofs, not derived counts. Empty/partial results remain unresolved.
   Confirmation merges incremental pulls by ID with independent inclusive
-  server `hub_at` cursors. Read proofs before songs and commit both caches and
+  server `hub_at` cursors, each the table's `/v1/cursor` mark read before its
+  pull (never the newest stamp received). Read proofs before songs and commit both caches and
   cursors only after both reads succeed; evict deleted rows and nonqualifying
   proofs. Any missing stamp keeps that table on full refreshes for the run.
   The operator command supports bounded first_year repair with `--ids-file`
