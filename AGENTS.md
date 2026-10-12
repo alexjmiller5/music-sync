@@ -55,8 +55,8 @@ runs in tests, locally, or on any future platform.
   the capture in its receipt plus an empty marker under `music-sync/capture-queue/`
   and answers 202 without Spotify or hub I/O; `GET /<capture_id>` reports its
   status. `capture_drain` (its own function, one container, one input; started
-  after each accepted capture, by status reads that find one due and hourly by
-  the reconcile cron) delivers markers oldest first through the old synchronous
+  after each accepted capture, by status reads that find one due and by the
+  6-hourly reconcile cron) delivers markers oldest first through the old synchronous
   `deliver` step, outside the worker. It starts from the worker's mirror cache,
   pulling only rows that arrived since, and never writes it back (a concurrent
   writer could leave its cursor ahead of its rows), waits while pending intent (reconcile, replay or package checkpoint)
@@ -191,7 +191,7 @@ runs in tests, locally, or on any future platform.
   full `resolved_track` with its pre-write inbox items.
 - **soma is written ONLY by this app.** Agents and the user write
   Spotify directly (the `spotify_player` CLI via the `spotify` skill, or the
-  Spotify app itself) - never soma. The hourly reconcile is what mirrors
+  Spotify app itself) - never soma. The reconcile (every 6 hours, 01:40/07:40/13:40/19:40 UTC) is what mirrors
   those Spotify changes into the catalog. Playlist kind/rule/pinned/expiry
   changes go through `just rules` (`core/smart.py` in the worker); there is no
   agent write exception for those columns.

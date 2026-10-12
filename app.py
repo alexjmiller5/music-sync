@@ -1,7 +1,7 @@
 """Modal deployment shim - ALL infrastructure lives here, as code.
 
 Business logic stays in src/core/ (plain Python, no Modal imports). This file
-maps it onto Modal: image, secrets, the hourly reconcile, operator endpoints,
+maps it onto Modal: image, secrets, the 6-hourly reconcile, operator endpoints,
 and the app-issued-token capture endpoint.
 """
 
@@ -95,14 +95,15 @@ def worker(operation: str, body: dict | None = None):
     dry_run = body.get("dry_run") is True
     if not dry_run and os.environ.get("RECONCILE_ENABLED") != "1":
         return {"skipped": True}
-    if body.get("all_workspaces") is True:  # the hourly cron: every workspace in turn
+    if body.get("all_workspaces") is True:  # the cron: every workspace in turn
         return {wid: _run(dry_run=False, workspace=wid) for wid in _workspace_ids()}
     if body.get("workspace"):
         return _run(dry_run=dry_run, workspace=body["workspace"])
     return _run(dry_run=dry_run)
 
 
-@app.function(image=image, schedule=modal.Cron("0 * * * *"), timeout=WORKER_TIMEOUT)
+# Every 6 hours (UTC): Spotify's Development Mode quota cannot sustain an hourly full read.
+@app.function(image=image, schedule=modal.Cron("40 1,7,13,19 * * *"), timeout=WORKER_TIMEOUT)
 def reconcile_cron():
     # Hourly backstop for captures waiting on a Retry-After or their daily recheck.
     _spawn_drain()
