@@ -173,18 +173,34 @@ class _CaptureTasks:
                 date.today().isoformat(),
             )
 
+    def resolved(self, client_id: str, state: dict) -> bool:
+        """Someone picked a Spotify version for this capture (a songs row names it).
+        Only hastens the recheck and words the closing note: a failed lookup is False."""
+        from core import capture as cap
+
+        try:
+            payload = state.get("payload") or {}
+            return cap.picked_song(payload, self._settings(client_id)) is not None
+        except Exception as exc:
+            structlog.get_logger().warning(
+                "capture_pick_lookup_failed", error_type=type(exc).__name__
+            )
+            return False
+
     def close(self, client_id: str, state: dict) -> None:
         from datetime import date
 
         from core import soma_flags
 
+        settings = self._settings(client_id)
         with httpx.Client(timeout=30) as http:
             soma_flags.close_capture_task(
-                self._settings(client_id),
+                settings,
                 http,
                 state["task_id"],
                 state["isrc"],
                 date.today().isoformat(),
+                picked=self.resolved(client_id, state),
             )
 
 

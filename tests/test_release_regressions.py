@@ -138,12 +138,13 @@ class Spotify:
         self._call("like", uris)
         self.liked = [raw()]
 
-    def add_items(self, pid, uris):
+    def add_items(self, pid, uris, position=None):
         self._call("add", uris)
         for uri in uris:
             source = next((row for row in self.liked if row["item"]["uri"] == uri), None)
             isrc = source["item"]["external_ids"]["isrc"] if source else A
-            self.items.append(raw(isrc, tid=uri.split(":")[-1]))
+            at = len(self.items) if position is None else position
+            self.items.insert(at, raw(isrc, tid=uri.split(":")[-1]))
             self.snapshot += 1
             if self.partial_add:
                 self.partial_add = False

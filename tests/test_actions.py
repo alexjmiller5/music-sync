@@ -294,3 +294,78 @@ def test_playlist_rows_record_the_snapshot_music_sync_wrote():
     assert rows["D"]["snapshot_id"] is None  # a description change leaves the snapshot unknown
     assert rows["U"]["snapshot_id"] == "seen"  # untouched playlists keep the observed one
     assert sp.reads == []  # a first add attempt never re-reads the playlist
+
+
+class ArrangingSpotify(FakeSpotify):
+    """A playlist that really moves: arranging reads it and edits it in place."""
+
+    def __init__(self, items):
+        super().__init__()
+        self.items = list(items)
+
+    def get_playlist_items(self, pid, market):
+        self.calls.append(("read", pid))
+        return [{"track": {"uri": u}} for u in self.items]
+
+    def add_items(self, pid, uris, position=None):
+        self.calls.append(("add", pid, tuple(uris), position))
+        self.items[position:position] = uris
+        return "snap"
+
+    def remove_items(self, pid, uris):
+        self.calls.append(("remove", pid, tuple(uris)))
+        self.items = [u for u in self.items if u not in uris]
+        return "snap"
+
+    def reorder_items(self, pid, start, before):
+        self.calls.append(("move", pid, start, before))
+        self.items.insert(before, self.items.pop(start))
+        return "snap"
+
+    def replace_items(self, pid, uris):
+        self.calls.append(("replace", pid, tuple(uris)))
+        self.items = list(uris)
+        return "snap"
+
+
+def arrange(uris):
+    return [Action("arrange_items", playlist_id="IN", uris=uris, reason="new songs order")]
+
+
+def test_arranging_reads_the_playlist_and_edits_it_into_order():
+    sp = ArrangingSpotify(["b", "c", "x"])
+    log = actions.apply(arrange(["a", "b", "c"]), sp, FakeHub(), dry_run=False, market="US")
+    assert not log.errors and sp.items == ["a", "b", "c"]
+    assert sp.calls == [("read", "IN"), ("remove", "IN", ("x",)), ("add", "IN", ("a",), 0)]
+    assert log.applied["arrange_items"] == 1
+
+
+def test_a_large_rearrangement_replaces_the_playlist_in_one_write():
+    sp = ArrangingSpotify([f"s{i}" for i in range(30)])
+    desired = [f"s{i}" for i in reversed(range(30))]
+    log = actions.apply(arrange(desired), sp, FakeHub(), dry_run=False, market="US")
+    assert not log.errors and sp.items == desired
+    assert [c[0] for c in sp.calls] == ["read", "replace"]
+
+
+def test_a_resumed_arrangement_continues_from_what_the_playlist_holds_now():
+    # The first attempt died after its removal; the pending op re-reads and finishes.
+    sp = ArrangingSpotify(["b", "c"])
+    log = actions.apply(
+        [],
+        sp,
+        FakeHub(),
+        dry_run=False,
+        market="US",
+        pending=[
+            {"kind": "arrange_items", "playlist_id": "IN", "uris": ["a", "b", "c"], "count": 1}
+        ],
+    )
+    assert not log.errors and sp.items == ["a", "b", "c"]
+    assert sp.calls == [("read", "IN"), ("add", "IN", ("a",), 0)]
+
+
+def test_arranging_without_a_market_stops_before_writing():
+    sp = ArrangingSpotify(["b"])
+    log = actions.apply(arrange(["a", "b"]), sp, FakeHub(), dry_run=False)
+    assert log.errors and sp.items == ["b"]

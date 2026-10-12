@@ -73,7 +73,7 @@ runs in tests, locally, or on any future platform.
   owner-closed one is left alone). The marker stays until that close succeeds. A capture can land while a reconcile is still reading; the
   next reconcile observes that membership.
 - `writes=False` selects observation-only planning before enforcement. Import
-  actual liked values and full memberships; never persist hypothetical FIFO,
+  actual liked values and full memberships; never persist hypothetical New songs arrangement,
   auto-like, rule or expiry changes during review. Pending curation intents
   survive observation imports in the owning app recovery store.
 - Every Spotify mutation flow archives its pre-write pull, including capture
@@ -134,7 +134,7 @@ runs in tests, locally, or on any future platform.
   (`soma_flags.deliver_reviews`, stable ID, no notification). Unknown playlists
   need classification; duplicate/alias choices need review. Never automatically
   select a duplicate keeper outside an owner-confirmed rollout package.
-  Duplicate inbox recordings also hold FIFO trimming and membership replacement;
+  Duplicate inbox recordings also hold the New songs arrangement and membership replacement;
   capture still retains recognition history and confirms existing presence.
   Playlist-rule references use `in_playlist_ids_any` / `not_in_playlist_ids`;
   a shared predicate lives in one smart rule and others reuse it with
@@ -215,6 +215,28 @@ runs in tests, locally, or on any future platform.
   limit longer than the client waits stops the run with the exact `remaining`
   actions and keeps the checkpoint, so another client can finish them and a
   rerun of the same package adopts that work without repeating it.
+- **New songs** (the one `inbox` playlist, `core/new_songs.py`) holds the
+  `inbox_cap` (100) songs that most recently came your way, newest first. A song
+  comes your way at the latest of `shazam_last_at`, `liked_at` (while liked) and
+  `found_at`; likes and Shazams interleave by time, and unliking drops the like
+  time. Reconcile always reads the inbox and plans one `arrange_items` op: applied,
+  it re-reads the playlist and edits it into order (remove, move, positioned add;
+  more than 10 edits replace it in one write), so a resumed op simply continues.
+  `found_at` is the songs you found yourself: Music Sync sets it to the Spotify add
+  time when you first add a song new to the catalog to a curated playlist or New
+  songs, and moves it later when you add a known song to New songs by hand. A song
+  removed from New songs (tombstoned inbox membership) stays out until it comes
+  your way after that. A capture inserts at its listening-time position and trims
+  by time; the next reconcile settles the exact order.
+- **Agents add songs through soma, never Spotify, with exactly these columns**:
+  `id` (ISRC), `spotify_ids` ([track id]), `liked` 0, `first_seen` (now) and either
+  `found_at` (a song Alex found himself) or `resolves_capture` (the version picked
+  for a "Reconcile capture" task's Capture ID). Music Sync owns every other column
+  and all of Spotify: reconcile places a `found_at` song; a `resolves_capture` row
+  makes the drain (promptly, not at the daily recheck) deliver that capture with
+  that recording (`capture.picked_song`, refused unless the Spotify track's ISRC
+  equals the row id), recording the Shazam at its listening time, and closing the
+  task with a "version picked" note.
 - Recognition events (captures and imported history) each have a retained
   original and one create-only provenance row. The songs Shazam summary
   (`shazamed`, `shazam_count`, `shazam_first_at`, `shazam_last_at`,

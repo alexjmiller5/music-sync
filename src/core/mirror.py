@@ -25,6 +25,9 @@ SONG_COLS = [
     "album",
     "album_year",
     "duration_ms",
+    "shazam_last_at",
+    "found_at",
+    "resolves_capture",
     "deleted_at",
 ]
 PLAYLIST_COLS = [
@@ -202,6 +205,9 @@ def load_mirror(
             r["album"],
             r["album_year"],
             r["duration_ms"],
+            r.get("shazam_last_at"),
+            r.get("found_at"),
+            r.get("resolves_capture"),
         )
         for r in rows["songs"]
         if not r.get("deleted_at")
@@ -300,11 +306,12 @@ def pull_live(
             raw.setdefault("reused", {})[p["id"]] = p["snapshot_id"]
             continue
         # smart playlists get rewritten by rule materialization without moving their snapshot
-        # (a heart/un-heart elsewhere never bumps them), so always re-fetch those
+        # (a heart/un-heart elsewhere never bumps them), so always re-fetch those; the
+        # inbox's order is planned against what it holds now, so it is always read too
         if (
             full
             or not known
-            or known.kind == "smart"
+            or known.kind in ("smart", "inbox")
             or not known.snapshot_id
             or known.snapshot_id != p.get("snapshot_id")
         ):

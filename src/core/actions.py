@@ -8,10 +8,13 @@ from datetime import datetime, timezone
 
 import structlog
 
+from core import new_songs
 from core.model import Action
 
 log = structlog.get_logger()
 CHUNK = 500  # hub rows per checkpointed operation
+# An arrangement needing more single edits than this replaces the playlist in one write.
+REPLACE_AFTER = 10
 
 HUB_TABLE = {
     "upsert_song": "songs",
@@ -26,6 +29,7 @@ SPOTIFY_WRITE_KINDS = {
     "add_item",
     "readd_item",
     "remove_item",
+    "arrange_items",
     "set_description",
     "delete_playlist",
 }
@@ -63,6 +67,7 @@ def _batches(actions: list[Action], writes: bool) -> list[dict]:
         "add_item",
         "remove_item",
         "readd_item",
+        "arrange_items",
         "set_description",
         "delete_playlist",
     ):
@@ -71,6 +76,9 @@ def _batches(actions: list[Action], writes: bool) -> list[dict]:
             if writes and a.kind == kind:
                 groups[a.playlist_id].append(a)
         for pid, group in groups.items():
+            if kind == "arrange_items":
+                ops.append({"kind": kind, "playlist_id": pid, "uris": group[-1].uris, "count": 1})
+                continue
             ops.append(
                 {
                     "kind": kind,
@@ -208,6 +216,8 @@ def apply(
                     written[pid] = spotify.add_items(pid, uris) if uris else None
                 elif kind == "remove_item":
                     written[pid] = spotify.remove_items(pid, uris)
+                elif kind == "arrange_items":
+                    written[pid] = _arrange(spotify, pid, uris, market)
                 elif kind == "set_description":
                     spotify.set_description(pid, op["text"])
                     written[pid] = None
@@ -228,3 +238,28 @@ def apply(
         # continue dependent writes, or clear pending intent on an uncertain outcome.
         out.errors.append(f"{operation}: {e}")
     return out
+
+
+def _arrange(spotify, pid, desired, market):
+    """Edit a playlist into `desired` order from what it holds now, so a resumed
+    attempt simply continues. Many edits become one replacing write."""
+    if market is None:
+        raise RuntimeError("Arranging a playlist requires a complete current observation")
+    current = [
+        (row.get("item") or row.get("track") or {}).get("uri")
+        for row in spotify.get_playlist_items(pid, market)
+    ]
+    if len(set(current)) != len(current) or None in current:
+        raise RuntimeError("Playlist holds duplicate or unidentified items; arrangement held")
+    ops = new_songs.edits(current, desired)
+    if len(ops) > REPLACE_AFTER:
+        return spotify.replace_items(pid, desired)
+    snapshot = None
+    for op in ops:
+        if op[0] == "remove":
+            snapshot = spotify.remove_items(pid, op[1])
+        elif op[0] == "move":
+            snapshot = spotify.reorder_items(pid, op[1], op[2])
+        else:
+            snapshot = spotify.add_items(pid, [op[1]], position=op[2])
+    return snapshot

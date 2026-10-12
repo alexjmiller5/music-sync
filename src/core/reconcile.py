@@ -3,7 +3,7 @@
 import dataclasses
 from datetime import datetime, timezone
 
-from core import metadata, rules
+from core import metadata, new_songs, rules
 from core.model import Action, Live, LiveItem, Membership, Mirror, Song
 
 ORDER = [
@@ -11,6 +11,7 @@ ORDER = [
     "add_item",
     "remove_item",
     "readd_item",
+    "arrange_items",
     "set_description",
     "delete_playlist",
     "upsert_song",
@@ -131,13 +132,19 @@ def plan(
             liked_at = _iso(value.astimezone(timezone.utc))
         s = mirror.songs.get(isrc)
         if s is None:
-            acts.append(
-                Action(
-                    "upsert_song",
-                    isrc=isrc,
-                    row={"id": isrc, "liked": liked, "liked_at": liked_at, "first_seen": now_s},
+            row = {"id": isrc, "liked": liked, "liked_at": liked_at, "first_seen": now_s}
+            # A song new to the catalog that you added to a curated playlist or New
+            # songs yourself was found by you then (New songs orders by it).
+            hand = [
+                it.added_at
+                for (pid, i), it in actual.items()
+                if i == isrc and kind_of.get(pid) in ("curated", "inbox") and it.added_at
+            ]
+            if hand:
+                row["found_at"] = _iso(
+                    min(datetime.fromisoformat(t) for t in hand).astimezone(timezone.utc)
                 )
-            )
+            acts.append(Action("upsert_song", isrc=isrc, row=row))
             src = next(
                 (
                     (pid, it)
@@ -175,6 +182,14 @@ def plan(
                     "upsert_song", isrc=isrc, row={"id": isrc, "liked": liked, "liked_at": liked_at}
                 )
             )
+
+    # A known song you added to New songs by hand came your way again at that time.
+    for (pid, isrc), it in sorted(actual.items()):
+        s = mirror.songs.get(isrc)
+        if pid in inbox_ids and s and (pid, isrc) not in mirror.memberships and it.added_at:
+            found = _iso(datetime.fromisoformat(it.added_at).astimezone(timezone.utc))
+            if not s.found_at or datetime.fromisoformat(found) > datetime.fromisoformat(s.found_at):
+                acts.append(Action("upsert_song", isrc=isrc, row={"id": isrc, "found_at": found}))
 
     acts = metadata.merge_actions(
         acts, metadata.observation_actions(mirror, live, now, source_ref=source_ref, market=market)
@@ -282,7 +297,13 @@ def plan(
     for pid in sorted(inbox_ids - set(live.playlists)):
         flags.append(f"{pid}: inbox playlist missing from Spotify")
 
-    # inbox FIFO (rule 6)
+    # New songs (rule 6): the inbox_cap songs that most recently came your way,
+    # newest first (core/new_songs.py), reached by one arrange operation.
+    dismissed = {
+        g.isrc: g.deleted_at
+        for g in mirror.deleted_memberships
+        if g.playlist_id in inbox_ids and g.deleted_at
+    }
     for pid in inbox_ids:
         lp = live.playlists.get(pid)
         if not lp or lp.items is None:
@@ -291,26 +312,53 @@ def plan(
             # URI removal affects every matching occurrence, and membership rows
             # cannot choose a surviving occurrence without the owner's review.
             continue
-        with_isrc = sorted([it for it in lp.items if it.isrc], key=lambda x: x.added_at)
-        for it in with_isrc[: max(0, len(with_isrc) - inbox_cap)]:
-            acts.append(
-                Action(
-                    "remove_item",
-                    playlist_id=pid,
-                    isrc=it.isrc,
-                    uri=it.uri,
-                    reason="inbox overflow",
+        if any(not it.isrc for it in lp.items):
+            flags.append(f"{lp.name}: holds an item without an ISRC; its order is left alone")
+            continue
+        held = {it.isrc: it for it in lp.items}
+        uri_of = {isrc: it.uri for isrc, it in held.items()}
+        eligible = {}
+        for isrc, s in view.songs.items():
+            uri = uri_of.get(isrc) or routing_uri(isrc)
+            if uri:
+                uri_of[isrc], eligible[isrc] = uri, s
+        order = new_songs.rank(eligible, inbox_cap, dismissed)
+        for isrc in order:
+            if isrc not in held:
+                known = mirror.memberships.get((pid, isrc))
+                acts.append(
+                    Action(
+                        "upsert_membership",
+                        playlist_id=pid,
+                        isrc=isrc,
+                        row={
+                            "id": f"{pid}:{isrc}",
+                            "playlist_id": pid,
+                            "isrc": isrc,
+                            "spotify_track_id": uri_of[isrc].split(":")[-1],
+                            "added_at": _earliest(known.added_at if known else None, now_s),
+                            "deleted_at": None,
+                        },
+                    )
                 )
-            )
+                actual[(pid, isrc)] = LiveItem(
+                    isrc, uri_of[isrc].split(":")[-1], uri_of[isrc], now_s, None, False, None, []
+                )
+        for isrc in sorted(set(held) - set(order)):
             acts.append(
                 Action(
                     "delete_membership",
                     playlist_id=pid,
-                    isrc=it.isrc,
-                    row={"id": f"{pid}:{it.isrc}", "deleted_at": now_s},
+                    isrc=isrc,
+                    row={"id": f"{pid}:{isrc}", "deleted_at": now_s},
                 )
             )
-            actual.pop((pid, it.isrc), None)
+            actual.pop((pid, isrc), None)
+        uris = [uri_of[isrc] for isrc in order]
+        if uris != [it.uri for it in lp.items]:
+            acts.append(
+                Action("arrange_items", playlist_id=pid, uris=uris, reason="new songs order")
+            )
 
     # smart materialization (rule 7), including freshly observed songs and gestures.
     for isrc in liked_effective:

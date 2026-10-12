@@ -104,7 +104,7 @@ def test_first_song_write_and_fifo_keep_metadata_in_both_paths(observation_only)
     row = kinds(acts, "upsert_song")[0].row
     assert row["title"] == "n" and row["spotify_ids"] == ["tA"]
     assert row["liked"] == 0 and row["first_seen"] == "2026-09-08T12:00:00.000Z"
-    assert bool(kinds(acts, "remove_item")) is (not observation_only)
+    assert bool(kinds(acts, "arrange_items")) is (not observation_only)
     assert any(a.row["rel"] == "evidence_of" for a in kinds(acts, "edge"))
 
 
@@ -402,7 +402,7 @@ def test_relike_never_restores_curated_regardless_tombstone_age():
     }
 
 
-def test_inbox_fifo_and_exemption():
+def test_new_songs_cap_and_exemption():
     m = base()
     items = [item(f"Z{i:02d}", added=f"2026-08-{i + 1:02d}T00:00:00.000Z") for i in range(3)]
     live = Live(
@@ -414,10 +414,17 @@ def test_inbox_fifo_and_exemption():
         {"A": item("A"), "B": item("B")},
         {},
     )
-    acts = reconcile.plan(m, live, NOW, inbox_cap=2)
-    assert [a.uri for a in kinds(acts, "remove_item") if a.playlist_id == "IN"] == [
-        "spotify:track:tZ00"
+    acts = reconcile.plan(m, live, NOW, inbox_cap=3)
+    # Songs new to the catalog you put in New songs count from their add time; the
+    # liked ones (2026-09-01) are newer, so the oldest hand-add falls off.
+    assert [a.uri for a in kinds(acts, "arrange_items")] == [None]
+    assert kinds(acts, "arrange_items")[0].uris == [
+        "spotify:track:tB",
+        "spotify:track:tA",
+        "spotify:track:tZ02",
     ]
+    found = {a.isrc: a.row.get("found_at") for a in kinds(acts, "upsert_song")}
+    assert found["Z00"] == "2026-08-01T00:00:00.000Z"
     assert not [a for a in kinds(acts, "like")]  # unliked inbox songs are never liked
 
 
@@ -678,3 +685,129 @@ def test_observation_import_patches_only_recordings_it_catalogs():
     acts = reconcile.plan(m, live, NOW, observation_only=True, source_ref="raw/x", market="US")
     assert {a.isrc for a in acts if a.kind in ("upsert_song", "edge")} == {"A"}
     assert any("classification" in (a.text or "") for a in kinds(acts, "flag"))
+
+
+# New songs: the inbox_cap songs that most recently came your way, newest first.
+T0, T1, T2, T3, T4 = (f"2026-09-0{d}T00:00:00.000Z" for d in range(1, 6))
+
+
+def timed(isrc, liked=0, liked_at=None, **kw):
+    s = song(isrc, liked=liked)
+    s.liked_at = liked_at
+    for k, v in kw.items():
+        setattr(s, k, v)
+    return s
+
+
+def inbox_mirror(songs, members=(), deleted=()):
+    memberships = {("IN", i): Membership("IN", i, "t" + i, T0) for i in members}
+    gone = [Membership("IN", i, "t" + i, T0, at) for i, at in deleted]
+    return Mirror(
+        {s.id: s for s in songs}, {"IN": pl("IN", "new songs", "inbox")}, memberships, gone, set()
+    )
+
+
+def arranged(acts):
+    out = kinds(acts, "arrange_items")
+    assert len(out) <= 1
+    return out[0].uris if out else None
+
+
+def test_new_songs_holds_the_latest_songs_newest_first_with_likes_and_shazams_interleaved():
+    m = inbox_mirror(
+        [
+            timed("OLD", liked=1, liked_at=T0),
+            timed("FOUND", found_at=T1),
+            timed("LIKED", liked=1, liked_at=T2),
+            timed("SHAZ", shazam_last_at=T3),
+        ],
+        members=["OLD", "FOUND"],
+    )
+    live = Live(
+        {"IN": live_pl("IN", "new songs", [item("OLD"), item("FOUND")])},
+        {"OLD": item("OLD", added=T0), "LIKED": item("LIKED", added=T2)},
+        {},
+    )
+    acts = reconcile.plan(m, live, NOW, inbox_cap=3)
+    assert arranged(acts) == ["spotify:track:tSHAZ", "spotify:track:tLIKED", "spotify:track:tFOUND"]
+    assert {a.isrc for a in kinds(acts, "upsert_membership") if a.playlist_id == "IN"} == {
+        "SHAZ",
+        "LIKED",
+    }
+    assert [a.isrc for a in kinds(acts, "delete_membership") if a.playlist_id == "IN"] == ["OLD"]
+    assert not [a for a in acts if a.playlist_id == "IN" and a.kind in ("add_item", "remove_item")]
+
+
+def test_no_arrangement_when_new_songs_already_holds_the_order():
+    m = inbox_mirror(
+        [timed("A", shazam_last_at=T2), timed("B", shazam_last_at=T1)], members=["A", "B"]
+    )
+    live = Live({"IN": live_pl("IN", "new songs", [item("A"), item("B")])}, {}, {})
+    assert arranged(reconcile.plan(m, live, NOW)) is None
+
+
+def test_a_song_new_to_the_catalog_added_to_a_curated_playlist_is_found_at_its_add_time():
+    m = inbox_mirror([timed("A", shazam_last_at=T1)], members=["A"])
+    m.playlists["CU"] = pl("CU", "mood", "curated")
+    live = Live(
+        {
+            "IN": live_pl("IN", "new songs", [item("A")]),
+            "CU": live_pl("CU", "mood", [item("NEW", added=T4)]),
+        },
+        {},
+        {},
+    )
+    acts = reconcile.plan(m, live, NOW)
+    row = next(a.row for a in kinds(acts, "upsert_song") if a.isrc == "NEW")
+    assert row["found_at"] == T4
+    assert arranged(acts) == ["spotify:track:tNEW", "spotify:track:tA"]
+
+
+def test_a_hand_add_to_new_songs_moves_a_known_song_to_its_add_time():
+    m = inbox_mirror([timed("A", shazam_last_at=T2), timed("K", shazam_last_at=T0)], members=["A"])
+    live = Live({"IN": live_pl("IN", "new songs", [item("A"), item("K", added=T4)])}, {}, {})
+    acts = reconcile.plan(m, live, NOW)
+    assert any(a.isrc == "K" and a.row.get("found_at") == T4 for a in kinds(acts, "upsert_song"))
+    assert arranged(acts) == ["spotify:track:tK", "spotify:track:tA"]
+
+
+def test_unliking_drops_a_song_unless_a_shazam_keeps_it():
+    m = inbox_mirror(
+        [
+            timed("ONLY", liked=1, liked_at=T3),
+            timed("BOTH", liked=1, liked_at=T3, shazam_last_at=T1),
+        ],
+        members=["ONLY", "BOTH"],
+    )
+    live = Live({"IN": live_pl("IN", "new songs", [item("ONLY"), item("BOTH")])}, {}, {})
+    assert arranged(reconcile.plan(m, live, NOW)) == ["spotify:track:tBOTH"]
+
+
+def test_a_song_removed_from_new_songs_by_hand_stays_out_until_it_comes_back():
+    m = inbox_mirror(
+        [timed("A", shazam_last_at=T2), timed("GONE", shazam_last_at=T1)],
+        members=["A"],
+        deleted=[("GONE", T3)],
+    )
+    live = Live({"IN": live_pl("IN", "new songs", [item("A")])}, {}, {})
+    assert arranged(reconcile.plan(m, live, NOW)) is None
+    m.songs["GONE"].shazam_last_at = T4  # Shazamed again after it was removed
+    assert arranged(reconcile.plan(m, live, NOW)) == ["spotify:track:tGONE", "spotify:track:tA"]
+
+
+def test_new_songs_keeps_an_alias_it_already_holds():
+    m = inbox_mirror(
+        [timed("A", shazam_last_at=T2), timed("B", shazam_last_at=T3)], members=["A", "B"]
+    )
+    live = Live(
+        {"IN": live_pl("IN", "new songs", [item("A", track_id="alias"), item("B")])}, {}, {}
+    )
+    assert arranged(reconcile.plan(m, live, NOW)) == ["spotify:track:tB", "spotify:track:alias"]
+
+
+def test_an_item_without_an_isrc_leaves_new_songs_unarranged_and_flags():
+    m = inbox_mirror([timed("A", shazam_last_at=T2), timed("B", shazam_last_at=T3)], members=["A"])
+    live = Live({"IN": live_pl("IN", "new songs", [item("A"), item(None)])}, {}, {})
+    acts = reconcile.plan(m, live, NOW)
+    assert arranged(acts) is None
+    assert any("order is left alone" in a.text for a in kinds(acts, "flag"))

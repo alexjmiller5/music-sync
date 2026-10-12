@@ -349,7 +349,10 @@ def drain(
             archive.delete(settings, marker)
             continue
         if state.get("retry_at") and _parse(state["retry_at"]) > now:
-            continue
+            # A no-match someone picked a version for is checked now, not tomorrow.
+            resolved = getattr(tasks, "resolved", None)
+            if not (state.get("reason") == "no_match" and resolved and resolved(client_id, state)):
+                continue
         due.append((state["received_at"], client_id, capture_id))
     for _, client_id, capture_id in sorted(due):
         if deadline is not None and time.monotonic() > deadline:

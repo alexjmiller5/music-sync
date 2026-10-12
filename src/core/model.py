@@ -21,6 +21,11 @@ class Song:
     album: str | None = None
     album_year: int | None = None
     duration_ms: int | None = None
+    shazam_last_at: str | None = None
+    # When you found it yourself (an agent's row, or a hand-add); see core/new_songs.py.
+    found_at: str | None = None
+    # The Cochlea capture this recording was picked for when Spotify had no exact match.
+    resolves_capture: str | None = None
 
 
 @dataclass
@@ -110,3 +115,4 @@ class Action:
     reason: str = ""
     playlist_name: str | None = None
     title: str | None = None
+    uris: list[str] | None = None  # arrange_items: the playlist's complete order
