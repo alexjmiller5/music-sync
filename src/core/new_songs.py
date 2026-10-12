@@ -14,17 +14,29 @@ def at(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
-def came_at(song) -> str | None:
-    times = [song.shazam_last_at, song.liked_at if song.liked else None, song.found_at]
+def came_at(song, curated_at: str | None = None) -> str | None:
+    """`curated_at`: when the song first entered a curated playlist. A like after
+    that is Music Sync liking a curated song (or the rollout's bulk like), not the
+    song coming your way, so only a like before it counts."""
+    liked = song.liked_at if song.liked else None
+    if liked and curated_at and at(curated_at) <= at(liked):
+        liked = None
+    times = [song.shazam_last_at, liked, song.found_at]
     return max((t for t in times if t), key=at, default=None)
 
 
-def rank(songs: dict, cap: int, dismissed: dict[str, str] | None = None) -> list[str]:
+def rank(
+    songs: dict,
+    cap: int,
+    dismissed: dict[str, str] | None = None,
+    curated_at: dict[str, str] | None = None,
+) -> list[str]:
     """ISRCs of the songs New songs holds, newest first. `dismissed`: isrc -> when
-    it was removed from New songs; it stays out while that is not older than came_at."""
+    it was removed from New songs; it stays out while that is not older than came_at.
+    `curated_at`: isrc -> when it first entered a curated playlist (see came_at)."""
     timed = []
     for isrc, song in songs.items():
-        when = came_at(song)
+        when = came_at(song, (curated_at or {}).get(isrc))
         if when is None:
             continue
         gone = (dismissed or {}).get(isrc)
@@ -80,4 +92,14 @@ def found_from_history(songs: dict, playlists: dict, memberships: list, edges: l
         ):
             moment = at(when).astimezone(timezone.utc)
             out[isrc] = moment.strftime("%Y-%m-%dT%H:%M:%S.") + f"{moment.microsecond // 1000:03d}Z"
+    return out
+
+
+def first_curated(memberships, kind_of: dict) -> dict[str, str]:
+    """isrc -> the earliest add time of any curated playlist membership, live or removed."""
+    out = {}
+    for m in memberships:
+        if kind_of.get(m.playlist_id) == "curated" and m.added_at:
+            if m.isrc not in out or at(m.added_at) < at(out[m.isrc]):
+                out[m.isrc] = m.added_at
     return out

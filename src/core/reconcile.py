@@ -304,6 +304,9 @@ def plan(
         for g in mirror.deleted_memberships
         if g.playlist_id in inbox_ids and g.deleted_at
     }
+    curated_at = new_songs.first_curated(
+        [*view.memberships.values(), *mirror.deleted_memberships], kind_of
+    )
     for pid in inbox_ids:
         lp = live.playlists.get(pid)
         if not lp or lp.items is None:
@@ -322,7 +325,7 @@ def plan(
             uri = uri_of.get(isrc) or routing_uri(isrc)
             if uri:
                 uri_of[isrc], eligible[isrc] = uri, s
-        order = new_songs.rank(eligible, inbox_cap, dismissed)
+        order = new_songs.rank(eligible, inbox_cap, dismissed, curated_at)
         for isrc in order:
             if isrc not in held:
                 known = mirror.memberships.get((pid, isrc))

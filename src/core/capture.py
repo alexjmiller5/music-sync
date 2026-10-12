@@ -191,11 +191,16 @@ def capture(
     )
     now_s = _iso(now)
 
+    curated_at = new_songs.first_curated(
+        [*m.memberships.values(), *m.deleted_memberships],
+        {pid: p.kind for pid, p in m.playlists.items()},
+    )
+
     def came(it):
         # New songs is newest first by when a song came your way (core/new_songs.py);
         # a song the catalog has no time for yet stands at its Spotify add time.
         song = m.songs.get(it.isrc)
-        return (song and new_songs.came_at(song)) or it.added_at or now_s
+        return (song and new_songs.came_at(song, curated_at.get(it.isrc))) or it.added_at or now_s
 
     known = m.songs.get(isrc)
     heard = max(
@@ -203,7 +208,7 @@ def capture(
             t
             for t in (
                 event.get("recognized_at") or event["received_at"],
-                known and new_songs.came_at(known),
+                known and new_songs.came_at(known, curated_at.get(isrc)),
             )
             if t
         ),
