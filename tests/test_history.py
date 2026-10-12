@@ -74,3 +74,17 @@ def test_catalog_pull_exhausts_keyset_pages_and_preserves_revisions():
     rows = hub.pull("songs", ["id", "updated_at", "hub_at"])
     assert [r["id"] for r in rows] == ["a", "b"]
     assert requests[0]["limit"] == 200 and requests[1]["after"] == "next"
+
+
+def test_reused_playlists_keep_their_fingerprint_and_emit_no_evidence():
+    from core import history
+
+    raw = {
+        "items": {
+            "C": [{"item": {"uri": "spotify:track:a", "external_ids": {"isrc": "USAAA2600001"}}}]
+        },
+        "reused": {"S": "snap"},
+    }
+    actions, prints = history.occurrence_evidence(raw, "raw/x", {"S": "fp-s", "C": "old"})
+    assert prints["S"] == "fp-s" and prints["C"] != "old"
+    assert {a.row["detail"]["locator"] for a in actions} == {"/items/C/0"}

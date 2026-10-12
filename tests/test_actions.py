@@ -250,3 +250,47 @@ def test_time_budget_stops_between_operations_and_keeps_the_rest_pending():
     )
     assert hub.pushed == [] and saved == [[500, 500, 1]]
     assert out.errors and "time budget" in out.errors[0]
+
+
+class SnapshotSpotify(FakeSpotify):
+    """Returns Spotify's post-write snapshot; reading a playlist is recorded."""
+
+    def __init__(self):
+        super().__init__()
+        self.reads, self.version = [], 0
+
+    def add_items(self, pid, uris):
+        super().add_items(pid, uris)
+        self.version += 1
+        return f"{pid}-v{self.version}"
+
+    def remove_items(self, pid, uris):
+        super().remove_items(pid, uris)
+        self.version += 1
+        return f"{pid}-v{self.version}"
+
+    def get_playlist_items(self, pid, market):
+        self.reads.append(pid)
+        return []
+
+
+def test_playlist_rows_record_the_snapshot_music_sync_wrote():
+    sp, hub = SnapshotSpotify(), FakeHub()
+    acts = [
+        Action("add_item", playlist_id="S", uri="spotify:track:1"),
+        Action("remove_item", playlist_id="S", uri="spotify:track:2"),
+        Action("add_item", playlist_id="D", uri="spotify:track:1"),
+        Action("set_description", playlist_id="D", text="smart · new text"),
+        Action("upsert_playlist", playlist_id="S", row={"id": "S", "snapshot_id": "before"}),
+        Action("upsert_playlist", playlist_id="D", row={"id": "D", "snapshot_id": "before"}),
+        Action("upsert_playlist", playlist_id="U", row={"id": "U", "snapshot_id": "seen"}),
+    ]
+    log = actions.apply(acts, sp, hub, dry_run=False, market="US")
+    assert not log.errors
+    rows = {r["id"]: r for t, rs in hub.pushed if t == "playlists" for r in rs}
+    assert (
+        rows["S"]["snapshot_id"] == "S-v3"
+    )  # its own final write (the remove): the next run reuses it
+    assert rows["D"]["snapshot_id"] is None  # a description change leaves the snapshot unknown
+    assert rows["U"]["snapshot_id"] == "seen"  # untouched playlists keep the observed one
+    assert sp.reads == []  # a first add attempt never re-reads the playlist

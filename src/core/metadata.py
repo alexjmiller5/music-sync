@@ -35,7 +35,7 @@ def observations(live: Live) -> dict[str, list[LiveItem]]:
     items = [*live.observations, *live.liked.values()]
     items.extend(it for p in live.playlists.values() for it in p.items or [])
     for it in items:
-        if it.isrc and not it.is_local:
+        if it.isrc and not it.is_local and it.observed:
             grouped[it.isrc].append(it)
     return grouped
 

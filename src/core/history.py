@@ -9,6 +9,10 @@ from core.model import Action
 
 def occurrence_evidence(raw, source_ref, previous):
     actions, fingerprints = [], {}
+    # A reused (not re-read) playlist is unchanged since its last observation.
+    for pid in raw.get("reused", {}):
+        if pid in previous:
+            fingerprints[pid] = previous[pid]
     for pid, items in sorted(raw.get("items", {}).items()):
         digest = hashlib.sha256(
             json.dumps(items, sort_keys=True, separators=(",", ":")).encode()

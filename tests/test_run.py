@@ -284,3 +284,19 @@ def test_flag_delivery_failure_after_the_run_is_reported_not_raised(settings, mo
     assert log.flags == ["odd"]
     assert log.errors == ["flag delivery failed after the run finished: ValueError"]
     reviews.assert_not_called()
+
+
+def test_the_scheduled_run_reuses_unchanged_smart_playlists(settings, mocker):
+    mocker.patch("core.run.mirror.load_mirror", return_value=Mirror({}, {}, {}, [], set()))
+    pulled = mocker.patch("core.run.mirror.pull_live", return_value=Live({}, {}, {}))
+    mocker.patch("core.run.archive.put")
+    mocker.patch("core.run.reconcile_mod.plan", return_value=[])
+    mocker.patch("core.run.flags.file")
+    run.reconcile(
+        settings,
+        dry_run=False,
+        now=datetime(2026, 9, 8, tzinfo=timezone.utc),
+        spotify=LiveSpotify(),
+        hub=FailingHub(),
+    )
+    assert pulled.call_args.kwargs == {"full": True, "reuse_smart": True}

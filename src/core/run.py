@@ -114,7 +114,9 @@ def reconcile_run(
             me = next(p["owner"]["id"] for p in raw["playlists"] if p["id"] == inbox)
             live = mirror.live_from_raw(raw, me, m)
         else:
-            live = mirror.pull_live(spotify, settings.spotify_market, me, m, full=True)
+            live = mirror.pull_live(
+                spotify, settings.spotify_market, me, m, full=True, reuse_smart=True
+            )
         source_ref = observation_key or archive.key_for(now)
         if not dry_run:
             archive.put(settings, source_ref, gzip.compress(json.dumps(live.raw).encode()))
