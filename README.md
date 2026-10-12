@@ -8,7 +8,7 @@ in Spotify from rules over that catalog, deployed on
 ## Layout
 
 ```
-app.py            Modal shim - one serialized worker, hourly trigger and HTTPS endpoints
+app.py            Modal shim - one serialized worker, 6-hourly trigger and HTTPS endpoints
 src/core/         business logic (plain Python, portable, no Modal imports)
   spotify_client.py  Spotify Web API client (post-2026-02 Development Mode endpoint set)
   hub.py              soma hub HTTP client (pull, push, derive)
@@ -93,7 +93,7 @@ require Modal proxy auth (`Modal-Key` / `Modal-Secret` headers). The consumer
 capture endpoint uses an app-issued Bearer token instead.
 
 **`POST /reconcile`** - runs the reconciler on demand (same logic as the
-hourly cron). Body:
+6-hourly cron). Body:
 
 ```json
 {"dry_run": false}
@@ -228,7 +228,7 @@ failure before the capture is stored returns `503`.
 The drain honors Spotify's `Retry-After` for the whole queue (a `429` stops it and
 nothing calls Spotify until then), backs other failures off from one minute to an
 hour, waits while a reconcile recovery is pending, and runs after every accepted
-capture, on status reads that find a capture due, and hourly with the reconcile cron.
+capture, on status reads that find a capture due, and with the 6-hourly reconcile cron.
 
 Validated deliveries also report a `spotify_outcome` bound to the same
 `capture_id`, independently of completion of catalog maintenance:
@@ -380,7 +380,8 @@ still apply). The live catalog is not asserted to have changed: follow the
 ## Operating
 
 **Normal use.** Spotify is the editing interface: like songs, edit curated
-playlists, Shazam with Cochlea. With `RECONCILE_ENABLED=1` the hourly cron
+playlists, Shazam with Cochlea. With `RECONCILE_ENABLED=1` the cron (every 6 hours, 01:40/07:40/13:40/19:40 UTC;
+Spotify's Development Mode quota cannot sustain an hourly full read)
 mirrors those changes into soma, likes newly curated songs, materializes
 smart playlists and trims the inbox. Nothing about the catalog is edited by hand.
 
