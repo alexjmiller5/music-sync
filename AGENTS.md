@@ -65,8 +65,9 @@ runs in tests, locally, or on any future platform.
   `no_match` daily and backs other failures off from 1 minute to 1 hour (honoring
   any Retry-After). A `no_match` files one create-only "Reconcile capture: TITLE -
   ARTIST" Soma task (`soma_flags.open_capture_task`, ID from workspace/client/capture,
-  no reminder) through `capture_task_config` (env `CAPTURE_TASK_CONFIG`, which reads the
-  ENV item's staged Soma tasks binding; falls back to `flags_task_config`), records
+  no reminder) through `capture_task_config` (env `CAPTURE_TASK_CONFIG`, the ENV item's own
+  Soma tasks binding with no project relation, since a capture is not Music Sync
+  project work; falls back to `flags_task_config`), records
   its `task_id` on the receipt and in `GET /<capture_id>`; when a later check adds the
   song, `close_capture_task` appends the outcome and completes a still-open task (an
   owner-closed one is left alone). The marker stays until that close succeeds. A capture can land while a reconcile is still reading; the

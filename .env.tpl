@@ -17,5 +17,6 @@ R2_ACCESS_KEY_ID=op://Music Sync/Music Sync ENV/R2_ACCESS_KEY_ID
 RECONCILE_ENABLED=op://Music Sync/Music Sync ENV/RECONCILE_ENABLED
 # Fernet key that encrypts workspace secrets at rest (core/workspaces.py).
 WORKSPACE_SECRET_KEY=op://Music Sync/Music Sync ENV/WORKSPACE_SECRET_KEY
-# The Soma tasks binding (staged for flags, which stay on Notion) files "Reconcile capture" tasks.
-CAPTURE_TASK_CONFIG=op://Music Sync/Music Sync ENV/FLAGS_TASK_CONFIG_STAGED
+# The Soma tasks binding for "Reconcile capture" tasks: no project relation, since a
+# capture is not Music Sync project work (flags keep their own staged binding).
+CAPTURE_TASK_CONFIG=op://Music Sync/Music Sync ENV/CAPTURE_TASK_CONFIG
