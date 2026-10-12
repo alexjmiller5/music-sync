@@ -145,6 +145,9 @@ def apply(
             chunked.append(op)
     ops = chunked
     operation = "checkpoint"
+    # Snapshot each playlist has after this run's own writes (None when a write returns
+    # none), so the next run can reuse an unchanged smart playlist without reading it.
+    written: dict[str, str | None] = {}
     try:
         if checkpoint:
             checkpoint(ops)  # durable intent BEFORE the first mutation
@@ -162,6 +165,10 @@ def apply(
                 hub.insert_rows(op["table"], op["rows"])
                 out.applied["insert_edge"] += len(op["rows"])
             elif kind == "hub":
+                if op["table"] == "playlists":
+                    for row in op["rows"]:
+                        if row.get("id") in written:
+                            row["snapshot_id"] = written[row["id"]]
                 hub.push(op["table"], op["rows"])
                 for name, count in op["counts"].items():
                     out.applied[name] += count
@@ -187,19 +194,23 @@ def apply(
                             checkpoint(ops[index:])
                         spotify.like(uris)
                 elif kind in ("add_item", "readd_item"):
-                    if market is not None:
+                    if op.get("attempted") and market is not None:
                         # A timeout or failure between client chunks may have added some URIs.
                         present = {
                             (r.get("item") or r.get("track") or {}).get("uri")
                             for r in spotify.get_playlist_items(pid, market)
                         }
                         uris = [uri for uri in uris if uri not in present]
-                    if uris:
-                        spotify.add_items(pid, uris)
+                    elif not op.get("attempted"):
+                        op["attempted"] = True  # only a resumed attempt re-reads the playlist
+                        if checkpoint:
+                            checkpoint(ops[index:])
+                    written[pid] = spotify.add_items(pid, uris) if uris else None
                 elif kind == "remove_item":
-                    spotify.remove_items(pid, uris)
+                    written[pid] = spotify.remove_items(pid, uris)
                 elif kind == "set_description":
                     spotify.set_description(pid, op["text"])
+                    written[pid] = None
                 elif kind == "delete_playlist":
                     spotify.unfollow_playlist(pid)
                 out.applied[kind] += op["count"]

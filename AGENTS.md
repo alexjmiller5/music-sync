@@ -226,6 +226,14 @@ runs in tests, locally, or on any future platform.
   rebuilt weekly. Dry runs never write it. Worker calls get 3,600 s; apply stops
   cleanly 3,000 s into a call and stays pending. Worker hub clients retry
   transient page-read failures twice.
+- Spotify reads are budgeted (Development Mode quota): the scheduled reconcile
+  reads every owned playlist except a smart playlist whose Spotify snapshot equals
+  the one recorded after Music Sync's own last write; its items come from the
+  catalog membership (marked unobserved, listed under `raw["reused"]`, history
+  fingerprint carried over). Writes record the returned snapshot on the playlists
+  row (unknown after a description change, which forces one re-read). An add batch
+  re-reads its playlist only when resuming an attempted batch. Package apply and
+  recovery keep complete reads.
 - Observation imports (`writes=False`) run in the worker (`observe`), return
   their flags instead of filing them and are allowed while reconciliation is
   disabled. Membership rows keep the earliest `added_at` when a replacement

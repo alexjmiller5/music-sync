@@ -327,3 +327,53 @@ def test_cache_is_checkpointed_after_each_slice():
         hub, cache=cache, now=0, checkpoint=lambda: saved.append(len(cache["slices"]))
     )
     assert saved == list(range(1, len(saved) + 1)) and len(saved) >= 4
+
+
+def test_pull_live_reuses_a_smart_playlist_unchanged_since_its_last_write():
+    from core import metadata
+    from core.model import Membership, Mirror
+
+    snap = PLAYLISTS[0]["snapshot_id"]
+    member = Membership("P1", "USZZZ2600099", "t1", "2026-01-01T00:00:00.000Z")
+    m = Mirror(
+        songs={},
+        playlists={"P1": Playlist("P1", "a", "smart", {"v": 1}, None, snap, 1, None)},
+        memberships={("P1", "USZZZ2600099"): member},
+        deleted_memberships=[],
+        captures=set(),
+    )
+    sp = FakeSpotify()
+    live = mirror.pull_live(sp, "US", "alexmiller", m, full=True, reuse_smart=True)
+    assert "P1" not in sp.item_calls and "P2" in sp.item_calls  # others are still read
+    items = live.playlists["P1"].items
+    assert [(i.isrc, i.track_id, i.uri, i.added_at, i.observed) for i in items] == [
+        ("USZZZ2600099", "t1", "spotify:track:t1", "2026-01-01T00:00:00.000Z", False)
+    ]
+    assert live.raw["reused"] == {"P1": snap} and "P1" not in live.raw["items"]
+    # Rebuilt from the catalog, never a fresh Spotify observation of its metadata.
+    assert "USZZZ2600099" not in metadata.observations(live)
+    # A retained pull with reused playlists reads back the same way.
+    again = mirror.live_from_raw(live.raw, "alexmiller", m)
+    assert [i.uri for i in again.playlists["P1"].items] == ["spotify:track:t1"]
+    # Only smart playlists are reused; a curated one with the same snapshot is read.
+    m.playlists["P1"].kind, m.playlists["P1"].rule = "curated", None
+    sp = FakeSpotify()
+    live = mirror.pull_live(sp, "US", "alexmiller", m, full=True, reuse_smart=True)
+    assert "P1" in sp.item_calls and "reused" not in live.raw
+
+
+def test_pull_live_rereads_a_smart_playlist_changed_outside_music_sync():
+    from core.model import Membership, Mirror
+
+    m = Mirror(
+        songs={},
+        playlists={"P1": Playlist("P1", "a", "smart", {"v": 1}, None, "older", 1, None)},
+        memberships={("P1", "X"): Membership("P1", "X", "t9", "2026-01-01T00:00:00.000Z")},
+        deleted_memberships=[],
+        captures=set(),
+    )
+    sp = FakeSpotify()
+    live = mirror.pull_live(sp, "US", "alexmiller", m, full=True, reuse_smart=True)
+    assert "P1" in sp.item_calls and "reused" not in live.raw
+    assert all(it.observed for it in live.playlists["P1"].items)
+    assert "spotify:track:t9" not in [it.uri for it in live.playlists["P1"].items]

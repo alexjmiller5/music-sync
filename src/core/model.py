@@ -79,6 +79,7 @@ class LiveItem:
     album_year: int | None = None
     duration_ms: int | None = None
     linked_from_id: str | None = None
+    observed: bool = True  # False: rebuilt from the catalog for a reused smart playlist
 
 
 @dataclass
