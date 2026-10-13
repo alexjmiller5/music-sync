@@ -27,6 +27,7 @@ src/core/         business logic (plain Python, portable, no Modal imports)
   history.py           occurrence-specific evidence for changed playlist contents
   recognition.py       retained recognition events and the songs Shazam summary
   smart.py             supported playlist kind/rule configuration (`just rules`)
+  covers.py            playlist covers retained in soma, applied by reconcile
   package.py           one-time rollout package: build, simulate, apply, verify
   soma_flags.py        Soma flag task batches and quiet review rows
   workspaces.py        per-person settings records; spotify_connect.py invites
@@ -36,7 +37,7 @@ scripts/
   spotify_auth.py     mint/re-mint the Spotify refresh token
   preview.py          read-only full dry-run receipt (locally or `--remote`)
   rollout.py          observation import, rollout package build/apply, recognition import
-  rules.py            playlist kind/rule configuration (`just rules`)
+  rules.py            playlist kinds, rules and covers (`just rules`)
   capture_clients.py  issue/revoke capture clients (`just clients`)
   workspace.py        workspace records (`just workspace`)
   backfill_derive.py  enrichment backfill through the hub's derivation API
@@ -63,7 +64,11 @@ Playlists come in three kinds:
   preserves membership independently of likes. Duplicate keepers and
   replacement aliases require review.
 - **smart** - membership = a rule over the pool (every liked song), fully
-  materialized each run; the description is rewritten each run.
+  materialized each run, ordered newest first by when each song came your way
+  (the same time New songs uses; songs without one follow, the most recently
+  catalogued first). New matches are placed at their position, and a playlist
+  already in order is not rewritten. The description is rewritten when the rule
+  changes.
 
 Liking a song makes it eligible for smart rules. Unliking never removes it
 from a curated playlist, and re-liking never restores a removed curated item.
@@ -300,7 +305,7 @@ not a script catalog; one-offs go in `scripts/` and run directly.
 | `just logs` | Stream deployed-app logs |
 | `just sync-secrets` | Push `.env.tpl` -> Modal secret store |
 | `just deploy` | test + sync-secrets + `modal deploy` (CI does this on push) |
-| `just rules <action>` | Playlist kinds and smart rules (see Operating) |
+| `just rules <action>` | Playlist kinds, smart rules and covers (see Operating) |
 | `just clients <action>` | Issue/revoke capture clients |
 | `just workspace <action>` | Workspace records and Connect Spotify links |
 
@@ -423,6 +428,17 @@ smart` change. The worker validates the
 rule against the current catalog and writes the playlists row itself; agents
 no longer write `playlists.rule`, `kind`, `pinned` or `expires_at` directly.
 
+**Playlist covers.** A playlist's cover lives in soma. `just rules cover <id>
+<image.jpg>` retains the image (a JPEG of at most about 192 KB, Spotify's 256 KB
+base64 limit; on macOS `sips -s format jpeg -s formatOptions 80 -Z 640 <image>
+--out <image.jpg>` makes one) and records it on the playlist; the next reconcile uploads it. After that, reconcile uploads again
+only when you set another cover or the cover was changed in the Spotify app (soma
+wins); a playlist without a cover in soma keeps whatever Spotify shows. A cover
+Spotify refuses becomes a flag. `just rules import-covers` lists each owned
+playlist's current custom Spotify image (generated mosaics and album art are not
+covers) and `just rules import-covers --apply` retains them as the playlists'
+covers, recorded as already applied, so nothing is uploaded for them.
+
 **Pending recovery.** A failed run leaves its remaining batches in
 `music-sync/pending-reconcile.json.gz` (see Preservation and recovery). Rerun
 the same operation: reconcile resumes its batches, metadata replay its
@@ -455,7 +471,8 @@ backup and post-write readback keys in its receipt, and the renamed
 
 **Credential renewal.** Spotify refresh tokens expire after 180 days: re-mint
 with `op run --env-file=.env.tpl -- uv run scripts/spotify_auth.py` (default
-workspace) or send a new `just workspace connect-link <id>`. The hub token
+workspace) or send a new `just workspace connect-link <id>`; re-minting is also
+how a token gains a newly requested scope (covers need `ugc-image-upload`). The hub token
 (`music-sync-storage`), the dedicated Notion integration secret and the R2 token
 are fields of `Music Sync ENV`; rotate the credential at its owner, update the
 field, then `just sync-secrets`. The Modal CI token is re-minted by
@@ -518,7 +535,7 @@ recognitions create-only with explicitly estimated dates.
 (`SOMA_HUB_TOKEN`) is this server's own enrollment with a Soma profile
 granting broad `tables:read` and `tables:write` (the catalog read, derive
 requests and `provenance` writes need them) plus read/write file grants for
-`raw/spotify-pull/` and `raw/spotify-capture/`: `soma login --profile <id>
+`raw/spotify-pull/`, `raw/spotify-capture/` and `raw/spotify-covers/`: `soma login --profile <id>
 --start pending.json`, the owner approves the printed link, then
 `soma login --claim pending.json --wait`. Only this app writes the mirrored music catalog;
 agents and the user write Spotify directly (see AGENTS.md).
@@ -642,8 +659,9 @@ or advance the mirror to bypass it.
 
 Recovery checkpoints, capture-client credential hashes and delivery receipts
 use the project-owned `music-sync-state` R2 bucket.
-Retained raw pulls and captures use the soma `/v1/files/` API with
-scoped grants for `raw/spotify-pull/` and `raw/spotify-capture/`.
+Retained raw pulls, captures and playlist covers use the soma `/v1/files/` API
+with scoped grants for `raw/spotify-pull/`, `raw/spotify-capture/` and
+`raw/spotify-covers/`.
 
 Recovery storage uses boto3 against `https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com`.
 The token needs bucket object **read and write** permission, which Cloudflare

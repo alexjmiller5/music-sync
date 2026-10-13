@@ -255,7 +255,7 @@ CAPTURE = {
 }
 CAPTURE_CONFIG = {
     **CONFIG,
-    "columns": {**CONFIG["columns"], "completed_date": "done_on", "ai_completed": "by_agent"},
+    "columns": {**CONFIG["columns"], "ai_completed": "by_agent"},
 }
 
 
@@ -284,7 +284,9 @@ def test_unmatched_capture_opens_one_quiet_task_and_a_later_match_closes_it(setu
 
     assert close_capture_task(settings, http, task_id, "USAAA2600001", "2026-10-13") is True
     row = server.rows[task_id]
-    assert row["state"] == "Completed" and row["done_on"] == "2026-10-13" and row["by_agent"] == 1
+    assert row["state"] == "Completed" and row["by_agent"] == 1
+    # The close date is the task workflow's (Reflex stamps it); the close never writes one.
+    assert not {"completed_date", "closed_date"} & set(server.writes[-1]["values"])
     assert row["body"].endswith(
         "2026-10-13: a later check found it on Spotify (USAAA2600001) and added it to the inbox."
     )

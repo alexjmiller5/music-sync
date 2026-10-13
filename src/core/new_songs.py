@@ -46,6 +46,19 @@ def rank(
     return [isrc for _, isrc in sorted(timed, reverse=True)[:cap]]
 
 
+def order(songs: dict, curated_at: dict[str, str] | None = None) -> list[str]:
+    """Every ISRC in `songs`, newest first by came_at (a smart playlist's order). Songs
+    with no such time follow, newest first_seen first, then by ISRC."""
+    timed, untimed = [], []
+    for isrc, song in songs.items():
+        when = came_at(song, (curated_at or {}).get(isrc))
+        (timed.append((at(when), isrc)) if when else untimed.append(isrc))
+    untimed.sort()
+    # first_seen is a catalog stamp (UTC milliseconds): text order is time order.
+    untimed.sort(key=lambda isrc: songs[isrc].first_seen or "", reverse=True)
+    return [isrc for _, isrc in sorted(timed, reverse=True)] + untimed
+
+
 def edits(current: list[str], desired: list[str]) -> list[tuple]:
     """Playlist operations turning `current` into `desired` (both unique URIs):
     ("remove", uris), then per position top-down ("move", from, before) or

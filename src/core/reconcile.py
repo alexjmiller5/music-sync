@@ -3,7 +3,7 @@
 import dataclasses
 from datetime import datetime, timezone
 
-from core import metadata, new_songs, rules
+from core import covers, metadata, new_songs, rules
 from core.model import Action, Live, LiveItem, Membership, Mirror, Song
 
 ORDER = [
@@ -13,6 +13,7 @@ ORDER = [
     "readd_item",
     "arrange_items",
     "set_description",
+    "set_cover",
     "delete_playlist",
     "upsert_song",
     "upsert_playlist",
@@ -445,6 +446,26 @@ def plan(
                 )
             )
             actual.pop((pid, isrc))
+        # Order: newest first by when each song came your way (core/new_songs.py). One
+        # arrangement from the observed order covers the adds and removes above, placing
+        # each new match at its position instead of appending it.
+        if any(not it.isrc for it in lp.items):
+            flags.append(f"{p.name}: holds an item without an ISRC; its order is left alone")
+        else:
+            final = {isrc: view.songs[isrc] for (q, isrc) in actual if q == pid}
+            uris = [actual[(pid, isrc)].uri for isrc in new_songs.order(final, curated_at)]
+            current, kept = [it.uri for it in lp.items], set(uris)
+            # Removals alone keep the others' order; any add is placed by the arrangement.
+            if uris != [u for u in current if u in kept]:
+                acts.append(
+                    Action(
+                        "arrange_items",
+                        playlist_id=pid,
+                        uris=uris,
+                        current=current,
+                        reason="came your way order",
+                    )
+                )
         text = rules.describe(p.rule, today, {p.id: p.name for p in view.playlists.values()})
         if _strip_synced(text) != _strip_synced(lp.description):
             acts.append(Action("set_description", playlist_id=pid, text=text))
@@ -469,6 +490,28 @@ def plan(
             acts.append(Action("delete_playlist", playlist_id=p.id, reason="ephemeral expired"))
             acts.append(
                 Action("upsert_playlist", playlist_id=p.id, row={"id": p.id, "deleted_at": now_s})
+            )
+
+    # Covers live in soma (core/covers.py); Spotify's current image comes from the listing.
+    for pid, p in sorted(mirror.playlists.items()):
+        lp = live.playlists.get(pid)
+        if lp is None or pid in expired_ids:
+            continue
+        step = covers.decide(p, lp.image_url)
+        if step == "upload":
+            row = {"file": p.cover_file, "sha256": p.cover_sha256, "before": lp.image_url}
+            acts.append(
+                Action(
+                    "set_cover",
+                    playlist_id=pid,
+                    row={**row, "name": p.name},
+                    reason="cover changed",
+                )
+            )
+        elif step == "adopt":
+            seen = {"sha256": p.cover_sha256, "spotify_url": lp.image_url}
+            acts.append(
+                Action("upsert_playlist", playlist_id=pid, row={"id": pid, "cover_applied": seen})
             )
 
     for (pid, isrc), drops in duplicates.items():
@@ -666,3 +709,26 @@ def observe(
         if a.isrc is None or a.isrc in catalogued
     ]
     return metadata.merge_actions(acts, observed)
+
+
+def smart_orders(mirror: Mirror, live: Live, actions: list[Action]) -> dict[str, list[str]]:
+    """The order (URIs) each smart playlist holds once `actions` are applied, where it is
+    known: arranged, or observed and only trimmed. The next run reuses a playlist
+    unchanged since then in this order instead of reading it (mirror.pull_live)."""
+    out = {}
+    for pid, lp in live.playlists.items():
+        p = mirror.playlists.get(pid)
+        if not p or p.kind != "smart" or lp.items is None:
+            continue
+        mine = [a for a in actions if a.playlist_id == pid]
+        arranged = [a.uris for a in mine if a.kind == "arrange_items"]
+        removed = {a.uri for a in mine if a.kind == "remove_item"}
+        if arranged:
+            order = arranged[-1]
+        elif any(a.kind in ("add_item", "readd_item", "delete_playlist") for a in mine):
+            continue
+        else:
+            order = [it.uri for it in lp.items if it.uri not in removed]
+        if None not in order and len(set(order)) == len(order):
+            out[pid] = order
+    return out

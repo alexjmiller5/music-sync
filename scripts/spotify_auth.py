@@ -34,7 +34,7 @@ TOKEN_URL = "https://accounts.spotify.com/api/token"
 SCOPES = (
     "playlist-read-private playlist-read-collaborative "
     "playlist-modify-private playlist-modify-public "
-    "user-library-read user-library-modify user-follow-read"
+    "user-library-read user-library-modify user-follow-read ugc-image-upload"
 )
 DEFAULT_PORT = 43821  # fixed: it is the registered redirect URI; 8080 is often taken (Connect)
 

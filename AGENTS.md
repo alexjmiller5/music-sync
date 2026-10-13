@@ -69,8 +69,9 @@ runs in tests, locally, or on any future platform.
   Soma tasks binding with no project relation, since a capture is not Music Sync
   project work; falls back to `flags_task_config`), records
   its `task_id` on the receipt and in `GET /<capture_id>`; when a later check adds the
-  song, `close_capture_task` appends the outcome and completes a still-open task (an
-  owner-closed one is left alone). The marker stays until that close succeeds. A capture can land while a reconcile is still reading; the
+  song, `close_capture_task` appends the outcome and completes a still-open task
+  (status and `ai_completed` only: Reflex stamps the close date; an owner-closed one is
+  left alone). The marker stays until that close succeeds. A capture can land while a reconcile is still reading; the
   next reconcile observes that membership.
 - `writes=False` selects observation-only planning before enforcement. Import
   actual liked values and full memberships; never persist hypothetical New songs arrangement,
@@ -79,7 +80,7 @@ runs in tests, locally, or on any future platform.
 - Every Spotify mutation flow archives its pre-write pull, including capture
   and resumed reconciliation. Raw pulls belong to Soma and are uploaded
   through `/v1/files/` under `raw/spotify-pull/` and `raw/spotify-capture/`
-  using the scoped hub token. This is an
+  (playlist covers under `raw/spotify-covers/`) using the scoped hub token. This is an
   approved shared-service contract; no Soma R2 credentials reach this app.
   Recovery state belongs to this project's `music-sync-state` R2 bucket.
   Capture-client hashes live at `music-sync/capture-clients.json.gz`; durable
@@ -194,8 +195,29 @@ runs in tests, locally, or on any future platform.
   Spotify directly (the `spotify_player` CLI via the `spotify` skill, or the
   Spotify app itself) - never soma. The reconcile (every 6 hours, 01:40/07:40/13:40/19:40 UTC) is what mirrors
   those Spotify changes into the catalog. Playlist kind/rule/pinned/expiry
-  changes go through `just rules` (`core/smart.py` in the worker); there is no
-  agent write exception for those columns.
+  and cover changes go through `just rules` (`core/smart.py`, `core/covers.py`
+  in the worker); there is no agent write exception for those columns.
+- **Playlist covers** (`core/covers.py`) live in soma: `playlists.cover_file` is
+  a retained JPEG at `raw/spotify-covers/<playlist id>/<sha256>.jpg`,
+  `cover_sha256` its hash (written together by `just rules cover <id>
+  <image.jpg>`, which validates the image and retains it), and `cover_applied`
+  is Music Sync's record `{sha256, spotify_url}` of what it last uploaded and the
+  image Spotify showed right after. Reconcile plans `set_cover` only when the hash
+  differs from `cover_applied.sha256` or the playlist's current image (from the
+  playlist listing, compared by image id, not CDN URL) differs from
+  `cover_applied.spotify_url`; a playlist without `cover_file` is never touched.
+  Applying downloads the file, checks hash, JPEG and Spotify's 256 KB base64 limit,
+  uploads (`PUT /playlists/{id}/images`, scope `ugc-image-upload`) and writes the
+  result onto the run's remaining playlists row, so the per-op checkpoint keeps
+  it. Spotify processes uploads asynchronously: when the image right after is
+  still the old one, `cover_applied` holds `spotify_url: null` and the replaced
+  URL, and the next run adopts the new image (a hub patch only) or uploads again
+  if it never showed. A bad file, a file the hub token may not read (a 4xx: the
+  `files:read:raw/spotify-covers/` grant) or a 4xx from Spotify is a flag, never a
+  run failure (Spotify 401/403 means re-consent for the scope); 429 and 5xx stop
+  the run and the upload resumes. `just rules import-covers [--apply]` seeds `cover_file`
+  from each owned, classified playlist's current custom Spotify image (not a
+  mosaic or album art), recorded as already applied.
 - `archive` playlists are preserved backups: reconciliation, metadata replay and
   rollout packages leave their contents untouched and exclude their observations
   from active reviews. Configure the role through `just rules archive <id>`.
@@ -229,14 +251,33 @@ runs in tests, locally, or on any future platform.
   comes your way at the latest of `shazam_last_at`, `liked_at` (while liked) and
   `found_at`; likes and Shazams interleave by time, and unliking drops the like
   time. Reconcile always reads the inbox and plans one `arrange_items` op: applied,
-  it re-reads the playlist and edits it into order (remove, move, positioned add;
-  more than 10 edits replace it in one write), so a resumed op simply continues.
+  it re-reads the playlist and edits it into order (see Arrangements), so a resumed
+  op simply continues.
   `found_at` is the songs you found yourself: Music Sync sets it to the Spotify add
   time when you first add a song new to the catalog to a curated playlist or New
   songs, and moves it later when you add a known song to New songs by hand. A song
   removed from New songs (tombstoned inbox membership) stays out until it comes
   your way after that. A capture inserts at its listening-time position and trims
   by time; the next reconcile settles the exact order.
+- **Smart playlist order**: every smart playlist is ordered newest first by the
+  same came-your-way time as New songs (`new_songs.order`, curated_at applied);
+  songs without one follow, newest `first_seen` first, then ISRC. Membership
+  (rule, pinned/expiry, duplicate guard) is decided exactly as before. When the
+  final order differs from the observed one (removals alone never do), the plan
+  adds one `arrange_items` op carrying the observed order as `current`; it covers
+  that playlist's `add_item`/`remove_item` (still planned and reported), so new
+  matches land at their positions instead of being appended. A playlist holding an
+  item without an ISRC is materialized by plain adds/removes and flagged instead.
+  The order each smart playlist holds after a run is kept as `smart_orders` in the
+  curation state (`reconcile.smart_orders`) and lets the next run reuse it unread.
+- **Arrangements** (`actions._arrange`): a first attempt with a planned `current`
+  edits from it without reading (marked `attempted` and checkpointed first); the
+  inbox op and any resumed op re-read the playlist. Edits are a URI removal, single
+  moves and positioned adds (consecutive ones coalesced, 100 per request). When
+  they take more requests than both 10 and a full rewrite (one request per 100
+  items), the playlist is replaced instead: one replacing write of the first 100,
+  then the rest added at their positions, so an interrupted rewrite leaves a
+  prefix the resumed op simply appends to.
 - **Agents add songs through soma, never Spotify, with exactly these columns**:
   `id` (ISRC), `spotify_ids` ([track id]), `liked` 0, `first_seen` (now) and either
   `found_at` (a song Alex found himself) or `resolves_capture` (the version picked
@@ -265,9 +306,11 @@ runs in tests, locally, or on any future platform.
   pending. Worker hub clients retry transient page-read failures twice.
 - Spotify reads are budgeted (Development Mode quota): the scheduled reconcile
   reads every owned playlist except a smart playlist whose Spotify snapshot equals
-  the one recorded after Music Sync's own last write; its items come from the
-  catalog membership (marked unobserved, listed under `raw["reused"]`, history
-  fingerprint carried over). Writes record the returned snapshot on the playlists
+  the one recorded after Music Sync's own last write and whose recorded order
+  (`smart_orders`) holds exactly its catalog membership; its items come from the
+  catalog membership in that order (marked unobserved, listed under `raw["reused"]`
+  and `raw["reused_order"]`, history fingerprint carried over). Without a matching
+  recorded order it is read. Writes record the returned snapshot on the playlists
   row (unknown after a description change, which forces one re-read). An add batch
   re-reads its playlist only when resuming an attempted batch. Package apply and
   recovery keep complete reads.
@@ -360,6 +403,7 @@ src/core/
   history.py                  occurrence evidence for changed playlist contents
   recognition.py              recognition events and the songs Shazam summary
   smart.py                    supported playlist kind/rule configuration
+  covers.py                   playlist covers retained in soma, applied by reconcile
   package.py                  one-time rollout package: build, simulate, apply, verify
   workspaces.py               per-person Settings overrides in the R2 registry
   spotify_connect.py          Connect Spotify invites + OAuth code exchange
@@ -372,7 +416,7 @@ scripts/
   sync_secrets.py             push .env.tpl -> Modal secret store
   spotify_auth.py             mint/re-mint the default workspace's Spotify refresh token (local loopback)
   workspace.py                operator CLI for workspaces (`just workspace ...`)
-  rules.py                    playlist kind/rule configuration (`just rules ...`)
+  rules.py                    playlist kinds, rules and covers (`just rules ...`)
   preview.py                  read-only dry-run receipt (local or `--remote`, optional `--package`)
   rollout.py                  observe / package build+apply / recognition import (receipts stay private)
   capture_clients.py          capture client issue/revoke (`just clients ...`)
@@ -400,7 +444,7 @@ not a script catalog; one-offs go in `scripts/` and run directly.
 | `just logs` | Stream deployed-app logs |
 | `just sync-secrets` | Push `.env.tpl` → Modal secret store |
 | `just deploy` | test + sync-secrets + `modal deploy` (CI deploys on push to main) |
-| `just rules <action>` | Playlist kinds and smart rules through the worker |
+| `just rules <action>` | Playlist kinds, smart rules and covers through the worker |
 | `just clients` / `just workspace` | Capture clients / workspace records |
 
 ## TDD

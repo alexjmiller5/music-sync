@@ -583,11 +583,12 @@ def _package(body: dict):
 
 
 def _rules(body: dict):
+    import base64
     from datetime import date
 
     from fastapi.responses import JSONResponse
 
-    from core import mirror, smart
+    from core import covers, mirror, smart
     from core.hub import Hub, with_read_retries
     from core.spotify_client import SpotifyClient
 
@@ -600,12 +601,20 @@ def _rules(body: dict):
         return JSONResponse({"ok": False, "message": "pending recovery"}, status_code=409)
     spotify = SpotifyClient(settings)
     me = spotify.me()["id"]
-    owned = {
-        p["id"]: p["name"]
-        for p in spotify.get_playlists()
-        if (p.get("owner") or {}).get("id") == me
-    }
+    listing = spotify.get_playlists()
+    owned = {p["id"]: p["name"] for p in listing if (p.get("owner") or {}).get("id") == me}
     try:
+        if body.get("action") == "cover":  # the cover in soma; reconcile uploads it
+            if body.get("playlist_id") not in owned:
+                raise covers.CoverError("unknown or unowned playlist id")
+            image = base64.b64decode(body["image_b64"], validate=True)
+            return covers.set_cover(hub, m, body["playlist_id"], image)
+        if body.get("action") == "import_covers":
+
+            def fetch(url):  # Spotify's image CDN, not the Web API
+                return httpx.get(url, timeout=30).raise_for_status().content
+
+            return covers.seed(hub, m, listing, me, fetch, apply=body.get("apply") is True)
         return smart.configure(
             body,
             hub=hub,
@@ -614,7 +623,7 @@ def _rules(body: dict):
             today=date.today().isoformat(),
             spotify=spotify,
         )
-    except smart.ConfigError as exc:
+    except (smart.ConfigError, covers.CoverError) as exc:
         return JSONResponse({"ok": False, "message": str(exc)}, status_code=422)
 
 

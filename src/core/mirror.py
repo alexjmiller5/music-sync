@@ -39,6 +39,9 @@ PLAYLIST_COLS = [
     "snapshot_id",
     "pinned",
     "expires_at",
+    "cover_file",
+    "cover_sha256",
+    "cover_applied",
     "deleted_at",
 ]
 MEMBER_COLS = ["id", "playlist_id", "isrc", "spotify_track_id", "added_at", "deleted_at"]
@@ -100,23 +103,26 @@ def _j(v, default):
     return json.loads(v) if isinstance(v, str) else v
 
 
+def _playlist(r: dict) -> Playlist:
+    return Playlist(
+        r["id"],
+        r["name"],
+        r["kind"],
+        _j(r["rule"], None),
+        r["description"],
+        r["snapshot_id"],
+        int(r["pinned"] or 0),
+        r["expires_at"],
+        r.get("cover_file"),
+        r.get("cover_sha256"),
+        _j(r.get("cover_applied"), None),
+    )
+
+
 def load_playlists(hub) -> Mirror:
     """Playlists only: enough for kind/rule configuration, without songs or provenance."""
     rows = hub.pull("playlists", [*PLAYLIST_COLS, "updated_at", "hub_at"])
-    playlists = {
-        r["id"]: Playlist(
-            r["id"],
-            r["name"],
-            r["kind"],
-            _j(r["rule"], None),
-            r["description"],
-            r["snapshot_id"],
-            int(r["pinned"] or 0),
-            r["expires_at"],
-        )
-        for r in rows
-        if not r.get("deleted_at")
-    }
+    playlists = {r["id"]: _playlist(r) for r in rows if not r.get("deleted_at")}
     return Mirror({}, playlists, {}, [], set())
 
 
@@ -212,20 +218,7 @@ def load_mirror(
         for r in rows["songs"]
         if not r.get("deleted_at")
     }
-    playlists = {
-        r["id"]: Playlist(
-            r["id"],
-            r["name"],
-            r["kind"],
-            _j(r["rule"], None),
-            r["description"],
-            r["snapshot_id"],
-            int(r["pinned"] or 0),
-            r["expires_at"],
-        )
-        for r in rows["playlists"]
-        if not r.get("deleted_at")
-    }
+    playlists = {r["id"]: _playlist(r) for r in rows["playlists"] if not r.get("deleted_at")}
     memberships, deleted = {}, []
     for r in rows["playlist_songs"]:
         m = Membership(
@@ -288,25 +281,35 @@ def validate_recording_aliases(items: list[LiveItem]) -> None:
 
 
 def pull_live(
-    spotify, market: str, me_id: str, mirror: Mirror, full: bool = False, reuse_smart: bool = False
+    spotify,
+    market: str,
+    me_id: str,
+    mirror: Mirror,
+    full: bool = False,
+    smart_orders: dict[str, list[str]] | None = None,
 ) -> Live:
-    """`reuse_smart`: a smart playlist whose Spotify snapshot equals the one the catalog
-    recorded after Music Sync's own last write is not read again; its items come from
-    the catalog membership (listed under raw["reused"]). Any other change re-reads it."""
+    """`smart_orders`: the order (URIs) Music Sync left each smart playlist in. A smart
+    playlist whose Spotify snapshot equals the one the catalog recorded after Music
+    Sync's own last write, and whose recorded order holds exactly its catalog membership,
+    is not read again: its items come from the catalog membership in that order (listed
+    under raw["reused"] and raw["reused_order"]). Anything else re-reads it."""
     raw = {"playlists": [], "items": {}, "liked": []}
     for p in spotify.get_playlists():
         raw["playlists"].append(p)
         if (p.get("owner") or {}).get("id") != me_id:
             continue
         known = mirror.playlists.get(p["id"])
+        order = (smart_orders or {}).get(p["id"])
         if (
-            reuse_smart
+            order is not None
             and known
             and known.kind == "smart"
             and known.snapshot_id
             and known.snapshot_id == p.get("snapshot_id")
+            and sorted(order) == sorted(it.uri for it in _catalog_items(mirror, p["id"]))
         ):
             raw.setdefault("reused", {})[p["id"]] = p["snapshot_id"]
+            raw.setdefault("reused_order", {})[p["id"]] = order
             continue
         # smart playlists get rewritten by rule materialization without moving their snapshot
         # (a heart/un-heart elsewhere never bumps them), so always re-fetch those; the
@@ -351,9 +354,15 @@ def live_from_raw(raw: dict, me_id: str, mirror: Mirror) -> Live:
         body = raw["items"].get(p["id"])
         items = None if body is None else [item_from_raw(i) for i in body]
         if body is None and p["id"] in raw.get("reused", {}):
-            items = _catalog_items(mirror, p["id"])
+            rank = {uri: i for i, uri in enumerate(raw.get("reused_order", {}).get(p["id"], []))}
+            items = sorted(_catalog_items(mirror, p["id"]), key=lambda it: rank.get(it.uri, -1))
         playlists[p["id"]] = LivePlaylist(
-            p["id"], p["name"], p.get("description"), p.get("snapshot_id"), items
+            p["id"],
+            p["name"],
+            p.get("description"),
+            p.get("snapshot_id"),
+            items,
+            ((p.get("images") or [{}])[0]).get("url"),
         )
     liked = {}
     observations = []
