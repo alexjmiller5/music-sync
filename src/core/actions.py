@@ -11,6 +11,7 @@ import httpx
 import structlog
 
 from core import covers, new_songs
+from core.hub import HubError
 from core.model import Action
 
 log = structlog.get_logger()
@@ -270,13 +271,20 @@ def _cover(spotify, hub, op, later, flags) -> bool:
     """Upload a playlist's cover from soma and record what Spotify shows right after on
     the run's remaining playlists write. A cover Spotify cannot take is a flag."""
     pid, name = op["playlist_id"], op.get("name") or op["playlist_id"]
-    data = hub.get_file(op["file"])
-    if data is None:
-        problem = "is missing from soma"
-    elif hashlib.sha256(data).hexdigest() != op["sha256"]:
-        problem = "does not match its cover_sha256"
-    else:
-        problem = covers.validate(data)
+    try:
+        data = hub.get_file(op["file"])
+        problem = (
+            "is missing from soma"
+            if data is None
+            else "does not match its cover_sha256"
+            if hashlib.sha256(data).hexdigest() != op["sha256"]
+            else covers.validate(data)
+        )
+    except HubError as exc:
+        status = exc.diagnostic.get("status") or 500
+        if status >= 500 or status == 429:
+            raise  # transient: the run stops and resumes
+        problem = f"cannot be read (HTTP {status}; needs files:read:{covers.PREFIX})"
     if problem:
         flags.append(f"{name}: cover {op['file']} {problem}; not uploaded")
         return False

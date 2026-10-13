@@ -506,6 +506,7 @@ def test_a_cover_upload_records_what_spotify_shows_right_after():
     ("files", "sha", "problem"),
     [
         ({}, JPEG_SHA, "missing"),
+        (None, JPEG_SHA, "files:read:raw/spotify-covers/"),
         ({"raw/spotify-covers/P/c.jpg": JPEG}, "0" * 64, "does not match"),
         ({"raw/spotify-covers/P/c.jpg": b"GIF89a"}, None, "JPEG"),
     ],
@@ -514,6 +515,14 @@ def test_a_cover_that_cannot_be_uploaded_is_flagged_not_failed(files, sha, probl
     if sha is None:
         sha = __import__("hashlib").sha256(b"GIF89a").hexdigest()
     sp, hub = CoverSpotify(), FileHub(files)
+    if files is None:  # the hub token lacks the covers file grant
+
+        def refuse(key):
+            from core.hub import HubError
+
+            raise HubError("hub HTTP 403: insufficient scope", category="http", status=403)
+
+        hub.get_file = refuse
     log = actions.apply(cover_plan(sha), sp, hub, dry_run=False)
     assert not log.errors and sp.calls == []
     assert len(log.flags) == 1 and "mood" in log.flags[0] and problem in log.flags[0]

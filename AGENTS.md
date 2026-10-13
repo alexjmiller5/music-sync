@@ -212,9 +212,10 @@ runs in tests, locally, or on any future platform.
   it. Spotify processes uploads asynchronously: when the image right after is
   still the old one, `cover_applied` holds `spotify_url: null` and the replaced
   URL, and the next run adopts the new image (a hub patch only) or uploads again
-  if it never showed. A bad file or a 4xx from Spotify is a flag, never a run
-  failure (a 401/403 means re-consent for the scope); 429 and 5xx stop the run
-  and the upload resumes. `just rules import-covers [--apply]` seeds `cover_file`
+  if it never showed. A bad file, a file the hub token may not read (a 4xx: the
+  `files:read:raw/spotify-covers/` grant) or a 4xx from Spotify is a flag, never a
+  run failure (Spotify 401/403 means re-consent for the scope); 429 and 5xx stop
+  the run and the upload resumes. `just rules import-covers [--apply]` seeds `cover_file`
   from each owned, classified playlist's current custom Spotify image (not a
   mosaic or album art), recorded as already applied.
 - Smart rules reference playlists by stable ID and are validated against the
