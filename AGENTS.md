@@ -69,8 +69,9 @@ runs in tests, locally, or on any future platform.
   Soma tasks binding with no project relation, since a capture is not Music Sync
   project work; falls back to `flags_task_config`), records
   its `task_id` on the receipt and in `GET /<capture_id>`; when a later check adds the
-  song, `close_capture_task` appends the outcome and completes a still-open task (an
-  owner-closed one is left alone). The marker stays until that close succeeds. A capture can land while a reconcile is still reading; the
+  song, `close_capture_task` appends the outcome and completes a still-open task
+  (status and `ai_completed` only: Reflex stamps the close date; an owner-closed one is
+  left alone). The marker stays until that close succeeds. A capture can land while a reconcile is still reading; the
   next reconcile observes that membership.
 - `writes=False` selects observation-only planning before enforcement. Import
   actual liked values and full memberships; never persist hypothetical New songs arrangement,
