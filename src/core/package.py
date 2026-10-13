@@ -142,6 +142,10 @@ def build(live, mirror: Mirror, decisions: dict, spec: dict, *, observed_at: str
     frozen = {s["replaces"] for s in spec["smart"] if s.get("replaces")}
     classify = spec.get("classify", {})
     kinds = {pid: p.kind for pid, p in mirror.playlists.items()}
+    archived = {pid for pid, kind in kinds.items() if kind == "archive"}
+    if archived & (frozen | set(classify)):
+        raise PackageError("a package cannot repurpose an archive playlist")
+    frozen |= archived
     kinds.update(classify)
     curated = {pid for pid, kind in kinds.items() if kind == "curated" and pid in live.playlists}
     tracks: dict[str, dict] = {}
@@ -182,6 +186,15 @@ def build(live, mirror: Mirror, decisions: dict, spec: dict, *, observed_at: str
     ]
     for family, group in groups:
         label = f"{group.get('title')} / {', '.join(group.get('artists') or [])}"
+        if group.get("playlist_id") in archived:
+            skipped_frozen.append(
+                {
+                    "group": label,
+                    "playlist_id": group["playlist_id"],
+                    "occurrences": len(group.get("remove", [])),
+                }
+            )
+            continue
         if group.get("status") == "keep_all":
             continue
         if not _status_ok(group):
@@ -224,6 +237,9 @@ def build(live, mirror: Mirror, decisions: dict, spec: dict, *, observed_at: str
 
     for rep in decisions.get("unavailable_replacements", []):
         label = f"{rep.get('title')} / {', '.join(rep.get('artists') or [])}"
+        occurrences = [o for o in rep["occurrences"] if o["playlist_id"] not in archived]
+        if not occurrences:
+            continue
         target = spec.get("replacement_targets", {}).get(rep["isrc"]) or (
             rep.get("keeper") or {}
         ).get("spotify_id")
@@ -236,7 +252,7 @@ def build(live, mirror: Mirror, decisions: dict, spec: dict, *, observed_at: str
             rep.get("artists"),
         )
         alias_target[rep["isrc"]] = target
-        for occurrence in rep["occurrences"]:
+        for occurrence in occurrences:
             pid = occurrence["playlist_id"]
             items = _items(live, pid)
             index = None if items is None else _locate(items, occurrence)
@@ -264,7 +280,7 @@ def build(live, mirror: Mirror, decisions: dict, spec: dict, *, observed_at: str
     unavailable = {e["isrc"] for e in exceptions if e["kind"] == "unavailable_exceptions"}
     asked = set()
     for group in decisions.get("variant_groups", []):
-        if group.get("status") == "ask":
+        if group.get("status") == "ask" and group.get("playlist_id") not in archived:
             asked |= set(group["isrc"] if isinstance(group["isrc"], list) else [group["isrc"]])
 
     playlists = []

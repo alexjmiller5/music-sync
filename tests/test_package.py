@@ -696,3 +696,38 @@ def test_rate_limit_during_readback_hands_over_nothing(settings, mocker, store):
     assert stopped["rate_limited"]["retry_after"] == "70000"
     left = stopped["remaining"]
     assert not any(left[k] for k in ("renames", "creations", "playlist_edits", "likes", "unlikes"))
+
+
+def test_archived_decisions_cannot_change_active_likes_or_edit_the_backup():
+    m = mirror_rows()
+    m.playlists[G].kind = "archive"
+    settings = spec()
+    settings["smart"] = []
+    out = package.build(
+        live_from_raw(raw_observation(), ME, m),
+        m,
+        decisions(),
+        settings,
+        observed_at=NOW.isoformat(),
+    )["package"]
+    assert not any(p["playlist_id"] == G for p in out["playlists"])
+    assert not any(p["uri"] == uri("remaster") for p in out["unlikes"])
+    assert not any(p["uri"] == uri("orig") for p in out["likes"])
+
+
+@pytest.mark.parametrize("change", ["replace", "classify"])
+def test_package_cannot_repurpose_an_archive(change):
+    m = mirror_rows()
+    m.playlists[G].kind = "archive"
+    config = spec()
+    if change == "classify":
+        config["smart"] = []
+        config["classify"][G] = "curated"
+    with pytest.raises(package.PackageError, match="archive"):
+        package.build(
+            live_from_raw(raw_observation(), ME, m),
+            m,
+            decisions(),
+            config,
+            observed_at=NOW.isoformat(),
+        )

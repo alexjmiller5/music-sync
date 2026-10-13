@@ -54,6 +54,8 @@ def test_playlist_items_uses_items_path_market_and_fields(settings, mocker):
     assert "external_ids" in seen[0].params["fields"]
     assert "duration_ms" in seen[0].params["fields"]
     assert "linked_from(id)" in seen[0].params["fields"]
+    assert "album_type" in seen[0].params["fields"]
+    assert "release_date_precision" in seen[0].params["fields"]
 
 
 @pytest.mark.parametrize(

@@ -829,3 +829,73 @@ def test_music_sync_liking_a_curated_song_does_not_bring_it_into_new_songs():
         {},
     )
     assert arranged(reconcile.plan(m, live, NOW)) is None
+
+
+@pytest.mark.parametrize("observation_only", [False, True])
+def test_archive_duplicates_and_missing_ids_never_block_active_curation(observation_only):
+    m = Mirror(
+        {"A": song("A", liked=0)},
+        {"B": pl("B", "Backup", "archive"), "C": pl("C", "Active", "curated")},
+        {},
+        [],
+        set(),
+    )
+    live = Live(
+        {
+            "B": live_pl("B", "Backup", [item("A", playable=False), item("A"), item(None)]),
+            "C": live_pl("C", "Active", [item("A")]),
+        },
+        {},
+        {},
+    )
+    actions = reconcile.plan(m, live, NOW, observation_only=observation_only, curation_likes={"A"})
+    assert not kinds(actions, "flag")
+    assert not [
+        a
+        for a in actions
+        if a.playlist_id == "B"
+        and a.kind in ("add_item", "remove_item", "readd_item", "delete_playlist")
+    ]
+    if not observation_only:
+        assert any(a.kind == "like" and a.isrc == "A" for a in actions)
+
+
+def test_new_smart_membership_uses_the_original_album_not_lexical_track_id():
+    from core.mirror import item_from_raw
+    from tests.test_metadata import raw, ISRC
+
+    original = item_from_raw(
+        raw(
+            "zz-original", album={"name": "Original", "album_type": "album", "release_date": "1986"}
+        )
+    )
+    compilation = item_from_raw(
+        raw(
+            "a-compilation",
+            album={"name": "Collection", "album_type": "compilation", "release_date": "2020"},
+        )
+    )
+    m = Mirror(
+        {ISRC: song(ISRC, year=1986)},
+        {
+            "C": pl("C", "Curated", "curated"),
+            "D": pl("D", "Other", "curated"),
+            "S": pl("S", "Smart", "smart", {"v": 1}),
+        },
+        {},
+        [],
+        set(),
+    )
+    live = Live(
+        {
+            "C": live_pl("C", "Curated", [original]),
+            "D": live_pl("D", "Other", [compilation]),
+            "S": live_pl("S", "Smart", []),
+        },
+        {ISRC: original},
+        {},
+    )
+    actions = reconcile.plan(m, live, NOW)
+    assert [a.uri for a in actions if a.kind == "add_item" and a.playlist_id == "S"] == [
+        "spotify:track:zz-original"
+    ]

@@ -4,6 +4,7 @@
     uv run scripts/rules.py create "<name>" '<rule json>'     # new private smart playlist
     uv run scripts/rules.py smart <playlist_id> '<rule json>'  # convert an owned playlist
     uv run scripts/rules.py curated <playlist_id>              # classify a playlist as curated
+    uv run scripts/rules.py archive <playlist_id>              # preserve a read-only backup
     uv run scripts/rules.py clear <playlist_id>                # smart -> curated
 
 Rules are JSON v1 (see src/core/rules.py) and reference other playlists by stable ID
@@ -28,7 +29,7 @@ def main(argv: list[str]) -> int:
             body = {"action": "create", "name": name, "rule": json.loads(rule)}
         case ["smart", pid, rule]:
             body = {"action": "smart", "playlist_id": pid, "rule": json.loads(rule)}
-        case [("curated" | "clear") as action, pid]:
+        case [("curated" | "clear" | "archive") as action, pid]:
             body = {"action": action, "playlist_id": pid}
         case _:
             print(__doc__, file=sys.stderr)

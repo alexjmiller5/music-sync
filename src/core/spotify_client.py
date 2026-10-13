@@ -20,7 +20,7 @@ TOKEN_URL = "https://accounts.spotify.com/api/token"
 API = "https://api.spotify.com"
 ITEM_FIELDS = (
     "next,total,offset,items(added_at,item(id,uri,name,is_local,is_playable,external_ids,"
-    "duration_ms,linked_from(id),artists(name),album(name,release_date)))"
+    "duration_ms,linked_from(id),artists(name),album(name,album_type,release_date,release_date_precision)))"
 )
 MAX_429_RETRIES = 5
 # A throttled Spotify can ask for minutes or hours; the single worker must not

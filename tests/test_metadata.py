@@ -344,3 +344,65 @@ def test_retained_partial_album_never_combines_with_another_observation(fill_onl
         k: v for r in rows(complete) for k, v in r.items() if k in {"album", "album_year"}
     }
     assert album_patch == ({} if fill_only else {"album": "Complete release", "album_year": 2025})
+
+
+def test_original_album_profile_wins_and_retains_exact_release_evidence():
+    original = raw(
+        "original",
+        album={
+            "name": "Original album",
+            "album_type": "album",
+            "release_date": "1986-06-16",
+            "release_date_precision": "day",
+        },
+    )
+    single = raw(
+        "single",
+        album={
+            "name": "Single",
+            "album_type": "single",
+            "release_date": "1986",
+            "release_date_precision": "year",
+        },
+    )
+    compilation = raw(
+        "compilation",
+        album={
+            "name": "Collection",
+            "album_type": "compilation",
+            "release_date": "2020",
+            "release_date_precision": "year",
+        },
+    )
+    remaster = raw(
+        "remaster",
+        name="Observed title - 2011 Remaster",
+        album={
+            "name": "Original album (2011 Remaster)",
+            "album_type": "album",
+            "release_date": "2011",
+            "release_date_precision": "year",
+        },
+    )
+    acts = observe(state=live(single, compilation, remaster, original))
+    assert rows(acts)[0]["album"] == "Original album"
+    assert rows(acts)[0]["album_year"] == 1986
+    assert not any(a.kind == "flag" for a in acts)
+    assert evidence(acts, "album")[0]["detail"]["release_date"] == "1986-06-16"
+    assert evidence(acts, "album")[0]["detail"]["release_date_precision"] == "day"
+    assert observe(state=live(original, remaster, compilation, single)) == acts
+
+
+@pytest.mark.parametrize("delta, flagged", [(2000, False), (2001, True)])
+def test_duration_rounding_is_not_a_metadata_conflict(delta, flagged):
+    acts = observe(state=live(raw("a"), raw("b", duration_ms=123456 + delta)))
+    assert any(a.kind == "flag" for a in acts) is flagged
+
+
+def test_original_album_preference_never_resolves_conflicting_artists_or_tied_albums():
+    a = raw("a", album={"name": "Album one", "album_type": "album", "release_date": "1986"})
+    b = raw("b", album={"name": "Album two", "album_type": "album", "release_date": "1986"})
+    assert any(x.kind == "flag" for x in observe(state=live(a, b)))
+    b["track"]["album"]["release_date"] = "2020"
+    b["track"]["artists"] = [{"name": "Other artist"}]
+    assert any(x.kind == "flag" for x in observe(state=live(a, b)))
