@@ -85,7 +85,18 @@ def worker(operation: str, body: dict | None = None):
     if operation == "workspace_admin":
         return _workspace_admin(body)
     if operation in ROLLOUT:
-        return ROLLOUT[operation](body)
+        from fastapi.responses import JSONResponse
+
+        try:
+            return ROLLOUT[operation](body)
+        except httpx.HTTPStatusError as exc:
+            # HTTPStatusError cannot round-trip through Modal's exception transport.
+            retry = exc.response.headers.get("Retry-After")
+            return JSONResponse(
+                {"ok": False, "message": "upstream unavailable"},
+                status_code=503,
+                headers={"Retry-After": retry} if retry else None,
+            )
     if operation != "reconcile":
         raise ValueError("unknown operation")
     if "metadata_replay" in body:
