@@ -1161,3 +1161,26 @@ def test_the_rules_worker_sets_and_seeds_covers(settings, monkeypatch):
     assert cover("P", b"bad").status_code == 422
     assert worker("rules", {"action": "import_covers"}) == {"apply": False, "me": "me"}
     assert worker("rules", {"action": "import_covers", "apply": True})["apply"] is True
+
+
+@pytest.mark.parametrize("status", [429, 503])
+def test_operator_http_failure_survives_worker_transport(monkeypatch, status):
+    import json
+    import pickle
+
+    import httpx
+
+    def unavailable(body):
+        response = httpx.Response(
+            status,
+            headers={"Retry-After": "120"},
+            request=httpx.Request("GET", "https://example.test/private"),
+            text="private upstream response",
+        )
+        response.raise_for_status()
+
+    monkeypatch.setitem(app.ROLLOUT, "rules", unavailable)
+    response = pickle.loads(pickle.dumps(app.worker.get_raw_f()("rules", {})))
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "120"
+    assert json.loads(response.body) == {"ok": False, "message": "upstream unavailable"}
