@@ -116,3 +116,5 @@ class Action:
     playlist_name: str | None = None
     title: str | None = None
     uris: list[str] | None = None  # arrange_items: the playlist's complete order
+    # arrange_items: the order it was planned from (None: read the playlist when applying)
+    current: list[str] | None = None

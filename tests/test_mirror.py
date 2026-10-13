@@ -355,13 +355,15 @@ def test_pull_live_reuses_a_smart_playlist_unchanged_since_its_last_write():
         captures=set(),
     )
     sp = FakeSpotify()
-    live = mirror.pull_live(sp, "US", "alexmiller", m, full=True, reuse_smart=True)
+    orders = {"P1": ["spotify:track:t1"]}  # the order Music Sync left it in
+    live = mirror.pull_live(sp, "US", "alexmiller", m, full=True, smart_orders=orders)
     assert "P1" not in sp.item_calls and "P2" in sp.item_calls  # others are still read
     items = live.playlists["P1"].items
     assert [(i.isrc, i.track_id, i.uri, i.added_at, i.observed) for i in items] == [
         ("USZZZ2600099", "t1", "spotify:track:t1", "2026-01-01T00:00:00.000Z", False)
     ]
     assert live.raw["reused"] == {"P1": snap} and "P1" not in live.raw["items"]
+    assert live.raw["reused_order"] == orders
     # Rebuilt from the catalog, never a fresh Spotify observation of its metadata.
     assert "USZZZ2600099" not in metadata.observations(live)
     # A retained pull with reused playlists reads back the same way.
@@ -370,8 +372,34 @@ def test_pull_live_reuses_a_smart_playlist_unchanged_since_its_last_write():
     # Only smart playlists are reused; a curated one with the same snapshot is read.
     m.playlists["P1"].kind, m.playlists["P1"].rule = "curated", None
     sp = FakeSpotify()
-    live = mirror.pull_live(sp, "US", "alexmiller", m, full=True, reuse_smart=True)
+    live = mirror.pull_live(sp, "US", "alexmiller", m, full=True, smart_orders=orders)
     assert "P1" in sp.item_calls and "reused" not in live.raw
+
+
+def test_a_reused_smart_playlist_holds_its_recorded_order_and_needs_one():
+    from core.model import Membership, Mirror
+
+    snap = PLAYLISTS[0]["snapshot_id"]
+    m = Mirror(
+        songs={},
+        playlists={"P1": Playlist("P1", "a", "smart", {"v": 1}, None, snap, 1, None)},
+        memberships={
+            ("P1", i): Membership("P1", i, "t" + i, "2026-01-01T00:00:00.000Z") for i in "AB"
+        },
+        deleted_memberships=[],
+        captures=set(),
+    )
+    order = ["spotify:track:tB", "spotify:track:tA"]
+    live = mirror.pull_live(FakeSpotify(), "US", "alexmiller", m, smart_orders={"P1": order})
+    assert [it.uri for it in live.playlists["P1"].items] == order
+    assert [
+        it.uri for it in mirror.live_from_raw(live.raw, "alexmiller", m).playlists["P1"].items
+    ] == order
+    # Without a recorded order, or one that no longer matches the catalog, it is read.
+    for orders in ({}, {"P1": order[:1]}, {"P1": [*order, "spotify:track:tC"]}):
+        sp = FakeSpotify()
+        live = mirror.pull_live(sp, "US", "alexmiller", m, smart_orders=orders)
+        assert "P1" in sp.item_calls and "reused" not in live.raw
 
 
 def test_pull_live_rereads_a_smart_playlist_changed_outside_music_sync():
@@ -385,7 +413,8 @@ def test_pull_live_rereads_a_smart_playlist_changed_outside_music_sync():
         captures=set(),
     )
     sp = FakeSpotify()
-    live = mirror.pull_live(sp, "US", "alexmiller", m, full=True, reuse_smart=True)
+    orders = {"P1": ["spotify:track:t9"]}
+    live = mirror.pull_live(sp, "US", "alexmiller", m, full=True, smart_orders=orders)
     assert "P1" in sp.item_calls and "reused" not in live.raw
     assert all(it.observed for it in live.playlists["P1"].items)
     assert "spotify:track:t9" not in [it.uri for it in live.playlists["P1"].items]

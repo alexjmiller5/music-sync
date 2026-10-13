@@ -285,25 +285,35 @@ def validate_recording_aliases(items: list[LiveItem]) -> None:
 
 
 def pull_live(
-    spotify, market: str, me_id: str, mirror: Mirror, full: bool = False, reuse_smart: bool = False
+    spotify,
+    market: str,
+    me_id: str,
+    mirror: Mirror,
+    full: bool = False,
+    smart_orders: dict[str, list[str]] | None = None,
 ) -> Live:
-    """`reuse_smart`: a smart playlist whose Spotify snapshot equals the one the catalog
-    recorded after Music Sync's own last write is not read again; its items come from
-    the catalog membership (listed under raw["reused"]). Any other change re-reads it."""
+    """`smart_orders`: the order (URIs) Music Sync left each smart playlist in. A smart
+    playlist whose Spotify snapshot equals the one the catalog recorded after Music
+    Sync's own last write, and whose recorded order holds exactly its catalog membership,
+    is not read again: its items come from the catalog membership in that order (listed
+    under raw["reused"] and raw["reused_order"]). Anything else re-reads it."""
     raw = {"playlists": [], "items": {}, "liked": []}
     for p in spotify.get_playlists():
         raw["playlists"].append(p)
         if (p.get("owner") or {}).get("id") != me_id:
             continue
         known = mirror.playlists.get(p["id"])
+        order = (smart_orders or {}).get(p["id"])
         if (
-            reuse_smart
+            order is not None
             and known
             and known.kind == "smart"
             and known.snapshot_id
             and known.snapshot_id == p.get("snapshot_id")
+            and sorted(order) == sorted(it.uri for it in _catalog_items(mirror, p["id"]))
         ):
             raw.setdefault("reused", {})[p["id"]] = p["snapshot_id"]
+            raw.setdefault("reused_order", {})[p["id"]] = order
             continue
         # smart playlists get rewritten by rule materialization without moving their snapshot
         # (a heart/un-heart elsewhere never bumps them), so always re-fetch those; the
@@ -348,7 +358,8 @@ def live_from_raw(raw: dict, me_id: str, mirror: Mirror) -> Live:
         body = raw["items"].get(p["id"])
         items = None if body is None else [item_from_raw(i) for i in body]
         if body is None and p["id"] in raw.get("reused", {}):
-            items = _catalog_items(mirror, p["id"])
+            rank = {uri: i for i, uri in enumerate(raw.get("reused_order", {}).get(p["id"], []))}
+            items = sorted(_catalog_items(mirror, p["id"]), key=lambda it: rank.get(it.uri, -1))
         playlists[p["id"]] = LivePlaylist(
             p["id"], p["name"], p.get("description"), p.get("snapshot_id"), items
         )

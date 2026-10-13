@@ -1006,3 +1006,69 @@ def test_direct_imports_keep_hub_timestamp_fallback(settings, archive_store, flo
             "provenance",
             "playlist_songs",
         ]
+
+
+class OrderingSpotify(Spotify):
+    """Writes report the new snapshot and descriptions stick, like Spotify; reads count."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.reads, self.description = 0, None
+
+    def get_playlists(self):
+        return [{**p, "description": self.description} for p in super().get_playlists()]
+
+    def get_playlist_items(self, pid, market):
+        self.reads += 1
+        return super().get_playlist_items(pid, market)
+
+    def add_items(self, pid, uris, position=None):
+        super().add_items(pid, uris, position)
+        self.calls[-1] = ("add", list(uris), position)
+        return str(self.snapshot)
+
+    def remove_items(self, pid, uris):
+        super().remove_items(pid, uris)
+        return str(self.snapshot)
+
+    def reorder_items(self, pid, start, before):
+        self._call("move", [start, before])
+        self.items.insert(before, self.items.pop(start))
+        self.snapshot += 1
+        return str(self.snapshot)
+
+    def set_description(self, pid, text):
+        super().set_description(pid, text)
+        self.description = text
+
+
+def test_a_smart_playlist_stays_newest_first_without_rereading_or_rewriting_it(
+    settings, archive_store
+):
+    later = "2026-09-07T06:00:00.000Z"
+    hub = Store(kind="smart")
+    hub.tables["playlists"]["P"]["rule"] = {"v": 1}
+    sp = OrderingSpotify(items=[raw(A, "a"), raw(B, "b", added=later)])
+    sp.liked.append(raw(B, "b", added=later))
+
+    # First run: read it, move the newer like to the top, describe it.
+    assert not execute(settings, sp, hub).errors
+    assert [r["item"]["id"] for r in sp.items] == ["b", "a"]
+    assert sp.calls == [("move", [1, 0]), ("describe", [])]
+    # A description change leaves the snapshot unknown, so the next run reads it once
+    # and finds nothing to do; after that the recorded order stands in for a read.
+    sp.calls.clear()
+    assert not execute(settings, sp, hub).errors
+    assert sp.calls == [] and sp.reads == 2
+    assert not execute(settings, sp, hub).errors
+    assert sp.calls == [] and sp.reads == 2
+
+    # A new like lands on top with one positioned add, still without a read.
+    newest = "2026-09-08T00:00:00.000Z"
+    sp.liked.append(raw("USAAA2600003", "c", added=newest))
+    assert not execute(settings, sp, hub).errors
+    assert sp.calls == [("add", ["spotify:track:c"], 0)] and sp.reads == 2
+    assert [r["item"]["id"] for r in sp.items] == ["c", "b", "a"]
+    sp.calls.clear()
+    assert not execute(settings, sp, hub).errors
+    assert sp.calls == [] and sp.reads == 2

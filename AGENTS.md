@@ -221,14 +221,33 @@ runs in tests, locally, or on any future platform.
   comes your way at the latest of `shazam_last_at`, `liked_at` (while liked) and
   `found_at`; likes and Shazams interleave by time, and unliking drops the like
   time. Reconcile always reads the inbox and plans one `arrange_items` op: applied,
-  it re-reads the playlist and edits it into order (remove, move, positioned add;
-  more than 10 edits replace it in one write), so a resumed op simply continues.
+  it re-reads the playlist and edits it into order (see Arrangements), so a resumed
+  op simply continues.
   `found_at` is the songs you found yourself: Music Sync sets it to the Spotify add
   time when you first add a song new to the catalog to a curated playlist or New
   songs, and moves it later when you add a known song to New songs by hand. A song
   removed from New songs (tombstoned inbox membership) stays out until it comes
   your way after that. A capture inserts at its listening-time position and trims
   by time; the next reconcile settles the exact order.
+- **Smart playlist order**: every smart playlist is ordered newest first by the
+  same came-your-way time as New songs (`new_songs.order`, curated_at applied);
+  songs without one follow, newest `first_seen` first, then ISRC. Membership
+  (rule, pinned/expiry, duplicate guard) is decided exactly as before. When the
+  final order differs from the observed one (removals alone never do), the plan
+  adds one `arrange_items` op carrying the observed order as `current`; it covers
+  that playlist's `add_item`/`remove_item` (still planned and reported), so new
+  matches land at their positions instead of being appended. A playlist holding an
+  item without an ISRC is materialized by plain adds/removes and flagged instead.
+  The order each smart playlist holds after a run is kept as `smart_orders` in the
+  curation state (`reconcile.smart_orders`) and lets the next run reuse it unread.
+- **Arrangements** (`actions._arrange`): a first attempt with a planned `current`
+  edits from it without reading (marked `attempted` and checkpointed first); the
+  inbox op and any resumed op re-read the playlist. Edits are a URI removal, single
+  moves and positioned adds (consecutive ones coalesced, 100 per request). When
+  they take more requests than both 10 and a full rewrite (one request per 100
+  items), the playlist is replaced instead: one replacing write of the first 100,
+  then the rest added at their positions, so an interrupted rewrite leaves a
+  prefix the resumed op simply appends to.
 - **Agents add songs through soma, never Spotify, with exactly these columns**:
   `id` (ISRC), `spotify_ids` ([track id]), `liked` 0, `first_seen` (now) and either
   `found_at` (a song Alex found himself) or `resolves_capture` (the version picked
@@ -257,9 +276,11 @@ runs in tests, locally, or on any future platform.
   pending. Worker hub clients retry transient page-read failures twice.
 - Spotify reads are budgeted (Development Mode quota): the scheduled reconcile
   reads every owned playlist except a smart playlist whose Spotify snapshot equals
-  the one recorded after Music Sync's own last write; its items come from the
-  catalog membership (marked unobserved, listed under `raw["reused"]`, history
-  fingerprint carried over). Writes record the returned snapshot on the playlists
+  the one recorded after Music Sync's own last write and whose recorded order
+  (`smart_orders`) holds exactly its catalog membership; its items come from the
+  catalog membership in that order (marked unobserved, listed under `raw["reused"]`
+  and `raw["reused_order"]`, history fingerprint carried over). Without a matching
+  recorded order it is read. Writes record the returned snapshot on the playlists
   row (unknown after a description change, which forces one re-read). An add batch
   re-reads its playlist only when resuming an attempted batch. Package apply and
   recovery keep complete reads.
