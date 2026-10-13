@@ -1072,3 +1072,50 @@ def test_a_smart_playlist_stays_newest_first_without_rereading_or_rewriting_it(
     sp.calls.clear()
     assert not execute(settings, sp, hub).errors
     assert sp.calls == [] and sp.reads == 2
+
+
+def test_a_cover_set_in_soma_is_uploaded_once_and_restored_if_changed_in_spotify(
+    settings, archive_store
+):
+    import hashlib
+
+    from core import covers
+
+    jpeg = b"\xff\xd8\xff\xe0cover"
+    old = "https://i.scdn.co/image/ab67706c0000bebb" + "1" * 24
+    new = "https://i.scdn.co/image/ab67706c0000bebb" + "2" * 24
+
+    class CoverSpotify(OrderingSpotify):
+        image = old
+
+        def get_playlists(self):
+            return [{**p, "images": [{"url": self.image}]} for p in super().get_playlists()]
+
+        def upload_cover(self, pid, data):
+            self._call("cover", [data])
+            self.image = new
+
+        def get_cover(self, pid):
+            return self.image
+
+    hub, sp = Store(), CoverSpotify()
+    hub.get_file = lambda key: hub.files.get(key)
+    hub.put_file = lambda key, data, content_type: hub.files.__setitem__(key, data)
+    hub.files = {}
+    from core.model import Mirror, Playlist
+
+    mirror_now = Mirror(
+        {}, {"P": Playlist("P", "Playlist", "curated", None, None, None, 1, None)}, {}, [], set()
+    )
+    covers.set_cover(hub, mirror_now, "P", jpeg)
+    sha = hashlib.sha256(jpeg).hexdigest()
+
+    assert not execute(settings, sp, hub).errors
+    assert sp.calls == [("cover", [jpeg])]
+    assert hub.tables["playlists"]["P"]["cover_applied"] == {"sha256": sha, "spotify_url": new}
+    sp.calls.clear()
+    assert not execute(settings, sp, hub).errors
+    assert sp.calls == []  # unchanged: never rewritten
+    sp.image = old  # someone changed it in the Spotify app: soma's cover wins
+    assert not execute(settings, sp, hub).errors
+    assert sp.calls == [("cover", [jpeg])]

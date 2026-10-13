@@ -1,3 +1,5 @@
+import pytest
+
 from core import actions
 from core.model import Action
 
@@ -433,3 +435,97 @@ def test_reordering_a_big_playlist_replaces_it_when_that_takes_fewer_requests():
     log = actions.apply(smart_arrange(held, moved), sp, FakeHub(), dry_run=False)
     assert not log.errors and sp.items == moved
     assert [c[0] for c in sp.calls] == ["move"] * 20
+
+
+JPEG = b"\xff\xd8\xff\xe0cover"
+JPEG_SHA = __import__("hashlib").sha256(JPEG).hexdigest()
+
+
+class CoverSpotify(FakeSpotify):
+    def __init__(self, shows_after="https://i.scdn.co/image/new", refuse=None):
+        super().__init__()
+        self.shows_after, self.refuse = shows_after, refuse
+
+    def upload_cover(self, pid, data):
+        if self.refuse:
+            import httpx
+
+            request = httpx.Request("PUT", f"https://api.spotify.com/v1/playlists/{pid}/images")
+            response = httpx.Response(self.refuse, request=request)
+            raise httpx.HTTPStatusError("refused", request=request, response=response)
+        self.calls.append(("cover", pid, data))
+
+    def get_cover(self, pid):
+        self.calls.append(("read cover", pid))
+        return self.shows_after
+
+
+class FileHub(FakeHub):
+    def __init__(self, files):
+        super().__init__()
+        self.files = files
+
+    def get_file(self, key):
+        return self.files.get(key)
+
+
+def cover_plan(sha=JPEG_SHA):
+    return [
+        Action(
+            "set_cover",
+            playlist_id="P",
+            row={
+                "file": "raw/spotify-covers/P/c.jpg",
+                "sha256": sha,
+                "before": "old",
+                "name": "mood",
+            },
+        ),
+        Action("upsert_playlist", playlist_id="P", row={"id": "P", "name": "mood"}),
+        Action("upsert_playlist", playlist_id="Q", row={"id": "Q", "name": "other"}),
+    ]
+
+
+def test_a_cover_upload_records_what_spotify_shows_right_after():
+    sp, hub = CoverSpotify(), FileHub({"raw/spotify-covers/P/c.jpg": JPEG})
+    checkpoints = []
+    log = actions.apply(cover_plan(), sp, hub, dry_run=False, checkpoint=checkpoints.append)
+    assert not log.errors and not log.flags and log.applied["set_cover"] == 1
+    assert sp.calls == [("cover", "P", JPEG), ("read cover", "P")]
+    rows = {r["id"]: r for t, rs in hub.pushed if t == "playlists" for r in rs}
+    assert rows["P"]["cover_applied"] == {
+        "sha256": JPEG_SHA,
+        "spotify_url": "https://i.scdn.co/image/new",
+    }
+    assert "cover_applied" not in rows["Q"]
+    # The result is checkpointed with the remaining playlists write, so a resume keeps it.
+    assert checkpoints[1][0]["rows"][0]["cover_applied"]["sha256"] == JPEG_SHA
+
+
+@pytest.mark.parametrize(
+    ("files", "sha", "problem"),
+    [
+        ({}, JPEG_SHA, "missing"),
+        ({"raw/spotify-covers/P/c.jpg": JPEG}, "0" * 64, "does not match"),
+        ({"raw/spotify-covers/P/c.jpg": b"GIF89a"}, None, "JPEG"),
+    ],
+)
+def test_a_cover_that_cannot_be_uploaded_is_flagged_not_failed(files, sha, problem):
+    if sha is None:
+        sha = __import__("hashlib").sha256(b"GIF89a").hexdigest()
+    sp, hub = CoverSpotify(), FileHub(files)
+    log = actions.apply(cover_plan(sha), sp, hub, dry_run=False)
+    assert not log.errors and sp.calls == []
+    assert len(log.flags) == 1 and "mood" in log.flags[0] and problem in log.flags[0]
+    rows = {r["id"]: r for t, rs in hub.pushed if t == "playlists" for r in rs}
+    assert "cover_applied" not in rows["P"]  # the next run tries again
+
+
+def test_spotify_refusing_a_cover_is_a_flag_and_a_server_error_stops_the_run():
+    hub = FileHub({"raw/spotify-covers/P/c.jpg": JPEG})
+    log = actions.apply(cover_plan(), CoverSpotify(refuse=403), hub, dry_run=False)
+    assert not log.errors and "ugc-image-upload" in log.flags[0]
+    assert {t for t, _ in hub.pushed} == {"playlists"}  # the rest of the run went on
+    hub = FileHub({"raw/spotify-covers/P/c.jpg": JPEG})
+    log = actions.apply(cover_plan(), CoverSpotify(refuse=502), hub, dry_run=False)
+    assert log.errors and hub.pushed == []

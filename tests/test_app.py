@@ -1107,3 +1107,57 @@ def test_replan_discards_only_an_observation_only_import(settings, monkeypatch, 
     else:
         assert out["errors"] and not calls
         assert json.loads(gzip.decompress(store[key])) == pending
+
+
+def test_the_rules_worker_sets_and_seeds_covers(settings, monkeypatch):
+    import base64
+
+    from core import config, covers, mirror
+    from core.model import Mirror, Playlist
+
+    monkeypatch.setattr(config, "Settings", lambda: settings)
+    monkeypatch.setattr("core.archive.get", lambda s, k: None)
+    monkeypatch.setattr("core.hub.Hub", lambda *a, **k: type("Hub", (), {})())
+    m = Mirror(
+        {}, {"P": Playlist("P", "mood", "curated", None, None, None, 1, None)}, {}, [], set()
+    )
+    monkeypatch.setattr(mirror, "load_playlists", lambda hub: m)
+    listing = [
+        {"id": "P", "name": "mood", "owner": {"id": "me"}, "images": None},
+        {"id": "T", "name": "theirs", "owner": {"id": "else"}, "images": None},
+    ]
+
+    class Spotify:
+        def __init__(self, s):
+            pass
+
+        def me(self):
+            return {"id": "me"}
+
+        def get_playlists(self):
+            return listing
+
+    monkeypatch.setattr("core.spotify_client.SpotifyClient", Spotify)
+    calls = []
+
+    def set_cover(hub, mirror, pid, data):
+        if data == b"bad":
+            raise covers.CoverError("Spotify takes a JPEG cover")
+        calls.append((pid, data))
+        return {"id": pid}
+
+    monkeypatch.setattr(covers, "set_cover", set_cover)
+    monkeypatch.setattr(
+        covers, "seed", lambda hub, m, rows, me, fetch, apply=False: {"apply": apply, "me": me}
+    )
+    worker = app.worker.get_raw_f()
+
+    def cover(pid, data):
+        body = {"action": "cover", "playlist_id": pid, "image_b64": base64.b64encode(data).decode()}
+        return worker("rules", body)
+
+    assert cover("P", b"jpg") == {"id": "P"} and calls == [("P", b"jpg")]
+    assert cover("T", b"jpg").status_code == 422  # not an owned playlist
+    assert cover("P", b"bad").status_code == 422
+    assert worker("rules", {"action": "import_covers"}) == {"apply": False, "me": "me"}
+    assert worker("rules", {"action": "import_covers", "apply": True})["apply"] is True

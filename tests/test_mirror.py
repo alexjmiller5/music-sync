@@ -99,6 +99,9 @@ def test_load_mirror_splits_deleted_memberships_and_parses_json():
                     "pinned": 1,
                     "expires_at": None,
                     "deleted_at": None,
+                    "cover_file": "raw/spotify-covers/P/x.jpg",
+                    "cover_sha256": "x",
+                    "cover_applied": '{"sha256":"x","spotify_url":"u"}',
                 }
             ],
             "playlist_songs": [
@@ -142,6 +145,9 @@ def test_load_mirror_splits_deleted_memberships_and_parses_json():
     m = mirror.load_mirror(hub)
     assert m.songs["USUM71703861"].spotify_ids == ["a", "b"]
     assert m.playlists["P"].rule == {"v": 1}
+    p = m.playlists["P"]
+    assert (p.cover_file, p.cover_sha256) == ("raw/spotify-covers/P/x.jpg", "x")
+    assert p.cover_applied == {"sha256": "x", "spotify_url": "u"}
     assert list(m.memberships) == [("P", "USUM71703861")]
     assert m.deleted_memberships[0].isrc == "GBBTV1101287"
     assert m.captures == {("USUM71703861", "shazam")}
@@ -554,3 +560,19 @@ def test_provenance_slice_never_skips_an_edge_committed_behind_the_walk():
     hub.on_page = None
     third = mirror.load_mirror(hub, cache=cache, now=2)
     assert {("USAAA2600000", "shazam"), ("USAAA2600009", "shazam")} <= third.captures
+
+
+def test_a_playlists_current_image_comes_from_the_listing_without_another_request():
+    from core.model import Mirror
+
+    raw = {
+        "playlists": [
+            {**PLAYLISTS[0], "images": [{"url": "https://i.scdn.co/image/big"}, {"url": "small"}]},
+            {**PLAYLISTS[1], "images": None},
+        ],
+        "items": {PLAYLISTS[0]["id"]: [], PLAYLISTS[1]["id"]: []},
+        "liked": [],
+    }
+    live = mirror.live_from_raw(raw, "alexmiller", Mirror({}, {}, {}, [], set()))
+    assert live.playlists[PLAYLISTS[0]["id"]].image_url == "https://i.scdn.co/image/big"
+    assert live.playlists[PLAYLISTS[1]["id"]].image_url is None

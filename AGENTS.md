@@ -80,7 +80,7 @@ runs in tests, locally, or on any future platform.
 - Every Spotify mutation flow archives its pre-write pull, including capture
   and resumed reconciliation. Raw pulls belong to Soma and are uploaded
   through `/v1/files/` under `raw/spotify-pull/` and `raw/spotify-capture/`
-  using the scoped hub token. This is an
+  (playlist covers under `raw/spotify-covers/`) using the scoped hub token. This is an
   approved shared-service contract; no Soma R2 credentials reach this app.
   Recovery state belongs to this project's `music-sync-state` R2 bucket.
   Capture-client hashes live at `music-sync/capture-clients.json.gz`; durable
@@ -195,8 +195,28 @@ runs in tests, locally, or on any future platform.
   Spotify directly (the `spotify_player` CLI via the `spotify` skill, or the
   Spotify app itself) - never soma. The reconcile (every 6 hours, 01:40/07:40/13:40/19:40 UTC) is what mirrors
   those Spotify changes into the catalog. Playlist kind/rule/pinned/expiry
-  changes go through `just rules` (`core/smart.py` in the worker); there is no
-  agent write exception for those columns.
+  and cover changes go through `just rules` (`core/smart.py`, `core/covers.py`
+  in the worker); there is no agent write exception for those columns.
+- **Playlist covers** (`core/covers.py`) live in soma: `playlists.cover_file` is
+  a retained JPEG at `raw/spotify-covers/<playlist id>/<sha256>.jpg`,
+  `cover_sha256` its hash (written together by `just rules cover <id>
+  <image.jpg>`, which validates the image and retains it), and `cover_applied`
+  is Music Sync's record `{sha256, spotify_url}` of what it last uploaded and the
+  image Spotify showed right after. Reconcile plans `set_cover` only when the hash
+  differs from `cover_applied.sha256` or the playlist's current image (from the
+  playlist listing, compared by image id, not CDN URL) differs from
+  `cover_applied.spotify_url`; a playlist without `cover_file` is never touched.
+  Applying downloads the file, checks hash, JPEG and Spotify's 256 KB base64 limit,
+  uploads (`PUT /playlists/{id}/images`, scope `ugc-image-upload`) and writes the
+  result onto the run's remaining playlists row, so the per-op checkpoint keeps
+  it. Spotify processes uploads asynchronously: when the image right after is
+  still the old one, `cover_applied` holds `spotify_url: null` and the replaced
+  URL, and the next run adopts the new image (a hub patch only) or uploads again
+  if it never showed. A bad file or a 4xx from Spotify is a flag, never a run
+  failure (a 401/403 means re-consent for the scope); 429 and 5xx stop the run
+  and the upload resumes. `just rules import-covers [--apply]` seeds `cover_file`
+  from each owned, classified playlist's current custom Spotify image (not a
+  mosaic or album art), recorded as already applied.
 - Smart rules reference playlists by stable ID and are validated against the
   current catalog before the worker writes the row; the hub's
   `playlists-rule-iff-smart` invariant is the only installed catalog rule for
@@ -373,6 +393,7 @@ src/core/
   history.py                  occurrence evidence for changed playlist contents
   recognition.py              recognition events and the songs Shazam summary
   smart.py                    supported playlist kind/rule configuration
+  covers.py                   playlist covers retained in soma, applied by reconcile
   package.py                  one-time rollout package: build, simulate, apply, verify
   workspaces.py               per-person Settings overrides in the R2 registry
   spotify_connect.py          Connect Spotify invites + OAuth code exchange
@@ -385,7 +406,7 @@ scripts/
   sync_secrets.py             push .env.tpl -> Modal secret store
   spotify_auth.py             mint/re-mint the default workspace's Spotify refresh token (local loopback)
   workspace.py                operator CLI for workspaces (`just workspace ...`)
-  rules.py                    playlist kind/rule configuration (`just rules ...`)
+  rules.py                    playlist kinds, rules and covers (`just rules ...`)
   preview.py                  read-only dry-run receipt (local or `--remote`, optional `--package`)
   rollout.py                  observe / package build+apply / recognition import (receipts stay private)
   capture_clients.py          capture client issue/revoke (`just clients ...`)
@@ -413,7 +434,7 @@ not a script catalog; one-offs go in `scripts/` and run directly.
 | `just logs` | Stream deployed-app logs |
 | `just sync-secrets` | Push `.env.tpl` → Modal secret store |
 | `just deploy` | test + sync-secrets + `modal deploy` (CI deploys on push to main) |
-| `just rules <action>` | Playlist kinds and smart rules through the worker |
+| `just rules <action>` | Playlist kinds, smart rules and covers through the worker |
 | `just clients` / `just workspace` | Capture clients / workspace records |
 
 ## TDD

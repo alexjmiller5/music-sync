@@ -3,7 +3,7 @@
 import dataclasses
 from datetime import datetime, timezone
 
-from core import metadata, new_songs, rules
+from core import covers, metadata, new_songs, rules
 from core.model import Action, Live, LiveItem, Membership, Mirror, Song
 
 ORDER = [
@@ -13,6 +13,7 @@ ORDER = [
     "readd_item",
     "arrange_items",
     "set_description",
+    "set_cover",
     "delete_playlist",
     "upsert_song",
     "upsert_playlist",
@@ -476,6 +477,28 @@ def plan(
             acts.append(Action("delete_playlist", playlist_id=p.id, reason="ephemeral expired"))
             acts.append(
                 Action("upsert_playlist", playlist_id=p.id, row={"id": p.id, "deleted_at": now_s})
+            )
+
+    # Covers live in soma (core/covers.py); Spotify's current image comes from the listing.
+    for pid, p in sorted(mirror.playlists.items()):
+        lp = live.playlists.get(pid)
+        if lp is None or pid in expired_ids:
+            continue
+        step = covers.decide(p, lp.image_url)
+        if step == "upload":
+            row = {"file": p.cover_file, "sha256": p.cover_sha256, "before": lp.image_url}
+            acts.append(
+                Action(
+                    "set_cover",
+                    playlist_id=pid,
+                    row={**row, "name": p.name},
+                    reason="cover changed",
+                )
+            )
+        elif step == "adopt":
+            seen = {"sha256": p.cover_sha256, "spotify_url": lp.image_url}
+            acts.append(
+                Action("upsert_playlist", playlist_id=pid, row={"id": pid, "cover_applied": seen})
             )
 
     for (pid, isrc), drops in duplicates.items():
