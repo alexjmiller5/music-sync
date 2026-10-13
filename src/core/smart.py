@@ -97,7 +97,7 @@ def configure(body: dict, *, hub, mirror: Mirror, live_names: dict, today: str, 
                 body.get("pinned", 1),
                 body.get("expires_at"),
             )
-        elif action in ("curated", "clear"):
+        elif action in ("curated", "clear", "archive"):
             existing = mirror.playlists.get(pid)
             if action == "clear" and (existing is None or existing.kind != "smart"):
                 raise ConfigError("only a smart playlist can be cleared")
@@ -110,13 +110,13 @@ def configure(body: dict, *, hub, mirror: Mirror, live_names: dict, today: str, 
             out = {
                 "id": pid,
                 "name": live_names[pid],
-                "kind": "curated",
+                "kind": "archive" if action == "archive" else "curated",
                 "rule": None,
                 "pinned": 1,
                 "expires_at": None,
                 "deleted_at": None,
             }
         else:
-            raise ConfigError("action must be create, smart, curated or clear")
+            raise ConfigError("action must be create, smart, curated, archive or clear")
     hub.push("playlists", [out])
     return out

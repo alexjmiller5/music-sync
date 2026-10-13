@@ -75,7 +75,7 @@ def validate_request(archive_key, observed_at, dry_run=True) -> datetime:
     return observed_time.astimezone(timezone.utc)
 
 
-def _read_live(settings, key):
+def _read_live(settings, key, archived=frozenset()):
     saved = archive.get(settings, key)
     if saved is None:
         raise FileNotFoundError(f"Retained archive not found: {key}")
@@ -92,7 +92,7 @@ def _read_live(settings, key):
         if capture
         else [
             *body["liked"],
-            *(row for items in body["items"].values() for row in items),
+            *(row for pid, items in body["items"].items() if pid not in archived for row in items),
         ]
     )
     if capture and "resolved_track" in body:
@@ -199,10 +199,13 @@ def run(settings, archive_key: str, observed_at: str, *, dry_run: bool = True, h
         plan = [Action(**a) for a in pending["planned"]]
         outcomes = pending["outcomes"]
     else:
-        live = _read_live(settings, archive_key)
+        m = mirror.load_mirror(hub)
+        live = _read_live(
+            settings, archive_key, {pid for pid, p in m.playlists.items() if p.kind == "archive"}
+        )
         hub = hub or with_read_retries(Hub(settings.soma_hub_url, settings.soma_hub_token))
         plan, outcomes = _plan(
-            mirror.load_mirror(hub),
+            m,
             live,
             observed_time,
             archive_key,

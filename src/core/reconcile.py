@@ -57,6 +57,14 @@ def plan(
     market: str | None = None,
     curation_likes: set[str] | frozenset[str] = frozenset(),
 ) -> list[Action]:
+    live = dataclasses.replace(
+        live,
+        playlists={
+            pid: p
+            for pid, p in live.playlists.items()
+            if not (mirror.playlists.get(pid) and mirror.playlists[pid].kind == "archive")
+        },
+    )
     if observation_only:
         return observe(mirror, live, now, source_ref=source_ref, market=market)
     today = today or now.date().isoformat()
@@ -274,6 +282,11 @@ def plan(
         nonlocal member_ids
         verified = sorted(tid for tid, ok in available.get(isrc, {}).items() if ok)
         live_ids = sorted({it.track_id for it in observed.get(isrc, []) if it.track_id})
+        source = metadata.original_album(
+            observed.get(isrc, []), view.songs.get(isrc).first_year if isrc in view.songs else None
+        )
+        if source and available.get(isrc, {}).get(source.track_id) is True:
+            return f"spotify:track:{source.track_id}"
         ids = verified or live_ids or ([fallback] if fallback else [])
         if ids:
             return f"spotify:track:{ids[0]}"
@@ -549,6 +562,14 @@ def observe(
     market: str | None = None,
 ) -> list[Action]:
     """Import observations only. Never run enforcement against the review baseline."""
+    live = dataclasses.replace(
+        live,
+        playlists={
+            pid: p
+            for pid, p in live.playlists.items()
+            if not (mirror.playlists.get(pid) and mirror.playlists[pid].kind == "archive")
+        },
+    )
     stamp = _iso(now)
     acts = []
     seen = dict(live.liked)

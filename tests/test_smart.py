@@ -174,3 +174,17 @@ def test_shared_predicate_cannot_dangle_or_cycle(body):
             body, hub=hub, mirror=mirror_with_shared_genre(), live_names=SHARED_LIVE, today=TODAY
         )
     assert hub.pushed == []
+
+
+def test_archive_configuration_preserves_the_spotify_playlist():
+    hub, spotify = Hub(), Spotify()
+    row = smart.configure(
+        {"action": "archive", "playlist_id": "C"},
+        mirror=mirror(),
+        live_names=LIVE,
+        spotify=spotify,
+        hub=hub,
+        today=TODAY,
+    )
+    assert row["kind"] == "archive" and row["rule"] is None and row["pinned"] == 1
+    assert not spotify.created

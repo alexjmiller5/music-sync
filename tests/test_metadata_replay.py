@@ -407,3 +407,22 @@ def test_checkpoint_failure_stops_before_hub_mutations(settings, replay_env, mon
     assert out["failed"] == 1 and out["recovered"] == 0
     assert "checkpoint" in out["errors"][0]["message"]
     assert not hub.pushes and hub.tables == before
+
+
+def test_archive_only_profiles_do_not_reenter_metadata_replay(settings, replay_env):
+    from core import metadata_replay
+
+    hub = replay_env[2]
+    hub.tables["playlists"]["P"] = {
+        "id": "P",
+        "name": "Backup",
+        "kind": "archive",
+        "rule": None,
+        "pinned": 1,
+    }
+    hub.objects[KEY] = gzip.compress(
+        json.dumps({"playlists": [], "items": {"P": [raw()]}, "liked": []}).encode()
+    )
+    before = deepcopy(hub.songs)
+    result = metadata_replay.run(settings, KEY, STAMP, dry_run=True, hub=hub)
+    assert result["recovered"] == 0 and hub.songs == before and not hub.pushes

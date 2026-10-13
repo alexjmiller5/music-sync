@@ -1,6 +1,7 @@
 """Pure observation patches and field evidence, independent of enrichment and gestures."""
 
 import json
+import re
 from collections import defaultdict
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
@@ -66,6 +67,41 @@ def availability(
     return known | current
 
 
+def original_album(items, first_year=None):
+    """Choose only an unambiguous album profile for the same recording identity."""
+    titles = {
+        re.sub(
+            r"(?:\s+-\s+|\s*\()(?:\d{4}\s+)?remaster(?:ed)?(?:\s+\d{4})?\)?$",
+            "",
+            it.name or "",
+            flags=re.I,
+        ).casefold()
+        for it in items
+    }
+    if len(titles) != 1 or len({tuple(it.artists) for it in items}) != 1:
+        return None
+    candidates = [
+        it
+        for it in items
+        if it.album_type == "album"
+        and it.album_year
+        and not re.search(
+            r"\b(remaster(?:ed)?|deluxe|expanded|anniversary|reissue|rerelease)\b",
+            (it.album or "") + " " + (it.name or ""),
+            re.I,
+        )
+    ]
+    if not candidates:
+        return None
+    year = min(it.album_year for it in candidates)
+    if first_year and first_year < year:
+        return None
+    earliest = [it for it in candidates if it.album_year == year]
+    if len({it.album for it in earliest}) != 1:
+        return None
+    return min(earliest, key=lambda it: (it.playable is not True, it.track_id or ""))
+
+
 def observation_actions(
     mirror: Mirror,
     live: Live,
@@ -98,6 +134,8 @@ def observation_actions(
                 json.dumps(asdict(it), sort_keys=True),
             ),
         )
+        original = original_album(items, song.first_year if song else None)
+        chosen = original or chosen
         observed = {
             "title": chosen.name,
             "artists": chosen.artists,
@@ -121,6 +159,12 @@ def observation_actions(
                 for item in items
                 if present(getattr(item, attribute))
             }
+            if field == "duration_ms":
+                durations = [it.duration_ms for it in items if isinstance(it.duration_ms, int)]
+                if durations and max(durations) - min(durations) <= 2000:
+                    continue
+            if original and field in ("album", "album_year", "title"):
+                continue
             if len(values) > 1:
                 conflicts.add(field)
         if conflicts & {"album", "album_year"}:
@@ -194,12 +238,24 @@ def observation_actions(
                     "market": market,
                 },
             }
+            if field in ("album", "album_year") and chosen.release_date_precision:
+                row["detail"].update(
+                    release_date=chosen.release_date,
+                    release_date_precision=chosen.release_date_precision,
+                )
             old = prior.get(row["id"])
             # The archive that first observed the current value stays its evidence;
             # re-pointing every run would rewrite tens of thousands of rows hourly.
             unchanged = old is not None and all(
-                (old.get("detail") or {}).get(k) == row["detail"][k]
-                for k in ("field", "value", "track_id", "market")
+                (old.get("detail") or {}).get(k) == row["detail"].get(k)
+                for k in (
+                    "field",
+                    "value",
+                    "track_id",
+                    "market",
+                    "release_date",
+                    "release_date_precision",
+                )
             )
             if (fill_only and old) or unchanged:
                 return

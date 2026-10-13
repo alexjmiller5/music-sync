@@ -196,6 +196,15 @@ runs in tests, locally, or on any future platform.
   those Spotify changes into the catalog. Playlist kind/rule/pinned/expiry
   changes go through `just rules` (`core/smart.py` in the worker); there is no
   agent write exception for those columns.
+- `archive` playlists are preserved backups: reconciliation, metadata replay and
+  rollout packages leave their contents untouched and exclude their observations
+  from active reviews. Configure the role through `just rules archive <id>`.
+- Observed metadata chooses an unambiguous original album profile when recording
+  title/artist identity agrees; marked remasters, deluxe/expanded editions,
+  compilations and singles do not override it. Tied album profiles and identity
+  conflicts remain reviewable. Duration variations up to two seconds are tolerated.
+  Spotify album release dates and their precision are retained in album evidence,
+  separately from `first_year`. Playlist pulls request album type and date precision.
 - Smart rules reference playlists by stable ID and are validated against the
   current catalog before the worker writes the row; the hub's
   `playlists-rule-iff-smart` invariant is the only installed catalog rule for
