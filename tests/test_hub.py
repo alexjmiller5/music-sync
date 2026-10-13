@@ -246,3 +246,22 @@ def test_insert_stamps_the_writer_clock_the_hub_requires():
         minutes=1
     )
     assert sent[0]["columns"] == ["id", "title", "updated_at"]
+
+
+def test_retained_files_go_through_the_file_api_with_their_type():
+    seen = []
+
+    def handler(req):
+        seen.append((req.method, req.url.path, req.headers.get("Content-Type"), req.content))
+        assert req.headers["Authorization"] == "Bearer tok"
+        if req.method == "GET":
+            return httpx.Response(200 if "a.jpg" in req.url.path else 404, content=b"img")
+        return httpx.Response(200, json={"ok": True})
+
+    hub = make(handler)
+    hub.put_file("raw/spotify-covers/P/a.jpg", b"img", "image/jpeg")
+    assert hub.get_file("raw/spotify-covers/P/a.jpg") == b"img"
+    assert hub.get_file("raw/spotify-covers/P/gone.jpg") is None
+    assert seen[0] == ("PUT", "/v1/files/raw/spotify-covers/P/a.jpg", "image/jpeg", b"img")
+    with pytest.raises(HubError, match="403"):
+        make(lambda req: httpx.Response(403, text="insufficient scope")).get_file("raw/x")

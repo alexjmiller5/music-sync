@@ -3,6 +3,7 @@
 import time
 from collections import defaultdict
 from datetime import datetime, timezone
+from urllib.parse import quote
 
 import httpx
 
@@ -152,6 +153,32 @@ class Hub:
         if r.status_code >= 400:
             raise HubError(f"hub HTTP {r.status_code}: {r.text[:300]}")
         return r.json()
+
+    def get_file(self, key: str) -> bytes | None:
+        """A retained file's bytes, or None when the hub has no such object."""
+        return self._file("GET", key)
+
+    def put_file(self, key: str, data: bytes, content_type: str) -> None:
+        self._file("PUT", key, data, content_type)
+
+    def _file(self, method, key, data=None, content_type=None):
+        headers = {**self._headers, **({"Content-Type": content_type} if content_type else {})}
+        try:
+            r = self._http.request(
+                method,
+                f"{self.base}/v1/files/{quote(key, safe='/')}",
+                headers=headers,
+                content=data,
+            )
+        except httpx.HTTPError as e:
+            raise HubError(f"hub unreachable: {type(e).__name__}", category="transport") from e
+        if method == "GET" and r.status_code == 404:
+            return None
+        if r.status_code >= 400:
+            raise HubError(
+                f"hub HTTP {r.status_code}: {r.text[:300]}", category="http", status=r.status_code
+            )
+        return r.content
 
     def pull_page(self, table: str, columns: list[str], after=None) -> dict:
         body = {"table": table, "columns": columns, "since": "", "limit": 200}

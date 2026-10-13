@@ -6,6 +6,7 @@ Token refresh, 401 refresh-retry, 429 Retry-After, and next-url pagination
 are unit-tested with mocks.
 """
 
+import base64
 import time
 from urllib.parse import urlsplit
 
@@ -50,14 +51,17 @@ class SpotifyClient:
         resp.raise_for_status()
         self._token = resp.json()["access_token"]
 
-    def _request(self, method: str, url: str, **kwargs):
+    def _request(self, method: str, url: str, headers: dict | None = None, **kwargs):
         if self._token is None:
             self._refresh_token()
         refreshed = False
         consecutive_429s = 0
         while True:
             resp = self._http.request(
-                method, url, headers={"Authorization": f"Bearer {self._token}"}, **kwargs
+                method,
+                url,
+                headers={**(headers or {}), "Authorization": f"Bearer {self._token}"},
+                **kwargs,
             )
             if resp.status_code == 401 and not refreshed:
                 self._refresh_token()
@@ -219,6 +223,20 @@ class SpotifyClient:
             "PUT", f"{API}/v1/playlists/{playlist_id}/items", json={"uris": uris[:100]}
         ).get("snapshot_id")
         return self.add_items(playlist_id, uris[100:], position=100) if uris[100:] else snapshot
+
+    def upload_cover(self, playlist_id: str, jpeg: bytes) -> None:
+        """Sets a custom cover (ugc-image-upload scope). Spotify takes the JPEG base64
+        encoded, at most 256 KB, and processes it asynchronously (202)."""
+        self._request(
+            "PUT",
+            f"{API}/v1/playlists/{playlist_id}/images",
+            headers={"Content-Type": "image/jpeg"},
+            content=base64.b64encode(jpeg),
+        )
+
+    def get_cover(self, playlist_id: str) -> str | None:
+        images = self._get(f"{API}/v1/playlists/{playlist_id}/images")
+        return (images[0] or {}).get("url") if isinstance(images, list) and images else None
 
     def create_playlist(self, name: str, description: str, public: bool = False) -> dict:
         # Spotify may still list the playlist as public: neither this flag nor a later

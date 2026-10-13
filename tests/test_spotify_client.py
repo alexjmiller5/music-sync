@@ -386,3 +386,28 @@ def test_replacing_more_than_100_items_writes_the_rest_at_their_positions(settin
         ("POST", {"uris": uris[100:200], "position": 100}),
         ("POST", {"uris": uris[200:], "position": 200}),
     ]
+
+
+def test_a_cover_is_uploaded_as_base64_jpeg_and_read_back(settings, mocker):
+    import base64
+
+    calls = []
+
+    def handler(req):
+        if req.url.host == "accounts.spotify.com":
+            return token_resp()
+        calls.append((req.method, req.url.path, req.headers.get("Content-Type"), req.content))
+        if req.method == "PUT":
+            return httpx.Response(202)
+        return httpx.Response(200, json=[{"url": "https://i.scdn.co/image/x", "height": None}])
+
+    c = make(handler, settings, mocker)
+    c.upload_cover("P", b"\xff\xd8\xffjpeg")
+    assert c.get_cover("P") == "https://i.scdn.co/image/x"
+    assert calls[0] == (
+        "PUT",
+        "/v1/playlists/P/images",
+        "image/jpeg",
+        base64.b64encode(b"\xff\xd8\xffjpeg"),
+    )
+    assert calls[1][:2] == ("GET", "/v1/playlists/P/images")

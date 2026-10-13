@@ -931,3 +931,56 @@ def test_smart_orders_record_what_each_smart_playlist_holds_after_the_plan():
     assert reconcile.smart_orders(m, live, acts) == {"SM": [uri + "A", uri + "C"]}
     acts.append(reconcile.Action("arrange_items", playlist_id="S2", uris=[uri + "C", uri + "A"]))
     assert reconcile.smart_orders(m, live, acts)["S2"] == [uri + "C", uri + "A"]
+
+
+SHA = "a" * 64
+COVER = "https://i.scdn.co/image/ab67706c0000bebb" + "1" * 24
+OLD_COVER = "https://i.scdn.co/image/ab67706c0000bebb" + "2" * 24
+
+
+def covered_mirror(applied):
+    m = Mirror({}, {"CU": pl("CU", "mood", "curated")}, {}, [], set())
+    m.playlists["CU"].cover_file = f"raw/spotify-covers/CU/{SHA}.jpg"
+    m.playlists["CU"].cover_sha256 = SHA
+    m.playlists["CU"].cover_applied = applied
+    return m
+
+
+def covered_live(url):
+    lp = live_pl("CU", "mood", [])
+    lp.image_url = url
+    return Live({"CU": lp}, {}, {})
+
+
+def test_a_changed_cover_is_planned_for_upload_with_what_spotify_shows_now():
+    m = covered_mirror({"sha256": "b" * 64, "spotify_url": OLD_COVER})
+    acts = reconcile.plan(m, covered_live(OLD_COVER), NOW)
+    [upload] = kinds(acts, "set_cover")
+    assert upload.playlist_id == "CU" and upload.reason == "cover changed"
+    assert upload.row == {
+        "file": f"raw/spotify-covers/CU/{SHA}.jpg",
+        "sha256": SHA,
+        "before": OLD_COVER,
+        "name": "mood",
+    }
+    # The upload's result lands on the playlists row mirror upkeep writes for it.
+    assert any(a.row["id"] == "CU" for a in kinds(acts, "upsert_playlist"))
+    # A playlist expiring this run is deleted, not given a cover.
+    m.playlists["CU"].kind, m.playlists["CU"].rule = "smart", {"v": 1}
+    m.playlists["CU"].pinned, m.playlists["CU"].expires_at = 0, "2026-01-01T00:00:00.000Z"
+    acts = reconcile.plan(m, covered_live(OLD_COVER), NOW)
+    assert kinds(acts, "delete_playlist") and not kinds(acts, "set_cover")
+    # Observation imports never write Spotify.
+    assert not kinds(
+        reconcile.plan(m, covered_live(OLD_COVER), NOW, observation_only=True), "set_cover"
+    )
+
+
+def test_an_applied_cover_is_left_alone_and_a_late_one_is_adopted():
+    applied = {"sha256": SHA, "spotify_url": COVER}
+    assert not kinds(reconcile.plan(covered_mirror(applied), covered_live(COVER), NOW), "set_cover")
+    pending = {"sha256": SHA, "spotify_url": None, "replaced_url": OLD_COVER}
+    acts = reconcile.plan(covered_mirror(pending), covered_live(COVER), NOW)
+    assert not kinds(acts, "set_cover")
+    rows = [a.row for a in kinds(acts, "upsert_playlist") if "cover_applied" in a.row]
+    assert rows == [{"id": "CU", "cover_applied": {"sha256": SHA, "spotify_url": COVER}}]

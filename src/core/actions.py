@@ -1,14 +1,16 @@
 """Apply a plan in ordered batches, stopping at the first failed checkpoint."""
 
+import hashlib
 import json
 import time
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 
+import httpx
 import structlog
 
-from core import new_songs
+from core import covers, new_songs
 from core.model import Action
 
 log = structlog.get_logger()
@@ -32,6 +34,7 @@ SPOTIFY_WRITE_KINDS = {
     "remove_item",
     "arrange_items",
     "set_description",
+    "set_cover",
     "delete_playlist",
 }
 
@@ -75,6 +78,7 @@ def _batches(actions: list[Action], writes: bool) -> list[dict]:
         "readd_item",
         "arrange_items",
         "set_description",
+        "set_cover",
         "delete_playlist",
     ):
         groups = defaultdict(list)
@@ -89,6 +93,9 @@ def _batches(actions: list[Action], writes: bool) -> list[dict]:
                 ops.append(op)
                 continue
             if kind in ("add_item", "remove_item") and pid in arranged:
+                continue
+            if kind == "set_cover":
+                ops.append({"kind": kind, "playlist_id": pid, **group[-1].row, "count": 1})
                 continue
             ops.append(
                 {
@@ -183,6 +190,9 @@ def apply(
             if kind == "hub_insert":
                 hub.insert_rows(op["table"], op["rows"])
                 out.applied["insert_edge"] += len(op["rows"])
+            elif kind == "set_cover":
+                if _cover(spotify, hub, op, ops[index + 1 :], out.flags):
+                    out.applied[kind] += 1
             elif kind == "hub":
                 if op["table"] == "playlists":
                     for row in op["rows"]:
@@ -254,6 +264,38 @@ def apply(
         # continue dependent writes, or clear pending intent on an uncertain outcome.
         out.errors.append(f"{operation}: {e}")
     return out
+
+
+def _cover(spotify, hub, op, later, flags) -> bool:
+    """Upload a playlist's cover from soma and record what Spotify shows right after on
+    the run's remaining playlists write. A cover Spotify cannot take is a flag."""
+    pid, name = op["playlist_id"], op.get("name") or op["playlist_id"]
+    data = hub.get_file(op["file"])
+    if data is None:
+        problem = "is missing from soma"
+    elif hashlib.sha256(data).hexdigest() != op["sha256"]:
+        problem = "does not match its cover_sha256"
+    else:
+        problem = covers.validate(data)
+    if problem:
+        flags.append(f"{name}: cover {op['file']} {problem}; not uploaded")
+        return False
+    try:
+        spotify.upload_cover(pid, data)
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        if status >= 500 or status == 429:
+            raise  # transient: the run stops and the upload resumes from its checkpoint
+        hint = " (re-consent with the ugc-image-upload scope)" if status in (401, 403) else ""
+        flags.append(f"{name}: Spotify refused the cover upload, HTTP {status}{hint}")
+        return False
+    seen = covers.applied(op["sha256"], op.get("before"), spotify.get_cover(pid))
+    for step in later:
+        if step["kind"] == "hub" and step["table"] == "playlists":
+            for row in step["rows"]:
+                if row["id"] == pid:
+                    row["cover_applied"] = seen
+    return True
 
 
 def _arrange(spotify, pid, desired, market, current=None):
