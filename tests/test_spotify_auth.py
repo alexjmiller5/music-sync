@@ -28,6 +28,7 @@ SCOPES = [
     "user-library-read",
     "user-library-modify",
     "user-follow-read",
+    "ugc-image-upload",
 ]
 
 

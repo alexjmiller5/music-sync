@@ -1,3 +1,5 @@
+import pytest
+
 from core import actions
 from core.model import Action
 
@@ -369,3 +371,170 @@ def test_arranging_without_a_market_stops_before_writing():
     sp = ArrangingSpotify(["b"])
     log = actions.apply(arrange(["a", "b"]), sp, FakeHub(), dry_run=False)
     assert log.errors and sp.items == ["b"]
+
+
+def smart_arrange(current, desired, *extra):
+    return [
+        *extra,
+        Action("arrange_items", playlist_id="SM", uris=desired, current=current, reason="order"),
+    ]
+
+
+def test_a_planned_arrangement_edits_from_its_planned_order_without_reading():
+    sp = ArrangingSpotify(["c", "x", "d"])
+    adds = [Action("add_item", playlist_id="SM", uri=u) for u in ("a", "b")]
+    removal = Action("remove_item", playlist_id="SM", uri="x")
+    acts = smart_arrange(["c", "x", "d"], ["a", "b", "c", "d"], *adds, removal)
+    checkpoints = []
+    log = actions.apply(
+        acts, sp, FakeHub(), dry_run=False, market="US", checkpoint=checkpoints.append
+    )
+    assert not log.errors and sp.items == ["a", "b", "c", "d"]
+    # The arrangement covers the adds and removes: placed, never appended, in one add.
+    assert sp.calls == [("remove", "SM", ("x",)), ("add", "SM", ("a", "b"), 0)]
+    # Marked attempted before its first write, so a resumed run re-reads instead.
+    assert checkpoints[1][0]["attempted"] is True
+
+
+def test_a_resumed_planned_arrangement_reads_what_the_playlist_holds_now():
+    sp = ArrangingSpotify(["a", "c", "d"])  # the removal and part of the add landed
+    op = {
+        "kind": "arrange_items",
+        "playlist_id": "SM",
+        "uris": ["a", "b", "c", "d"],
+        "current": ["c", "x", "d"],
+        "count": 1,
+        "attempted": True,
+    }
+    log = actions.apply([], sp, FakeHub(), dry_run=False, market="US", pending=[op])
+    assert not log.errors and sp.items == ["a", "b", "c", "d"]
+    assert sp.calls == [("read", "SM"), ("add", "SM", ("b",), 1)]
+
+
+def test_new_songs_on_top_of_a_big_playlist_are_one_positioned_add():
+    held = [f"s{i}" for i in range(4100)]
+    sp = ArrangingSpotify(held)
+    log = actions.apply(
+        smart_arrange(held, ["n1", "n2", "n3", *held]), sp, FakeHub(), dry_run=False
+    )
+    assert not log.errors and sp.items[:4] == ["n1", "n2", "n3", "s0"]
+    assert sp.calls == [("add", "SM", ("n1", "n2", "n3"), 0)]
+
+
+def test_reordering_a_big_playlist_replaces_it_when_that_takes_fewer_requests():
+    held = [f"s{i}" for i in range(4100)]
+    desired = list(reversed(held))
+    sp = ArrangingSpotify(held)
+    log = actions.apply(smart_arrange(held, desired), sp, FakeHub(), dry_run=False)
+    assert not log.errors and sp.items == desired
+    assert [c[0] for c in sp.calls] == ["replace"]
+    # Twenty songs that came your way again stay moves: 20 requests beat rewriting 41.
+    sp = ArrangingSpotify(held)
+    up = [f"s{i}" for i in range(4000, 4100, 5)]
+    moved = [*up, *[u for u in held if u not in up]]
+    log = actions.apply(smart_arrange(held, moved), sp, FakeHub(), dry_run=False)
+    assert not log.errors and sp.items == moved
+    assert [c[0] for c in sp.calls] == ["move"] * 20
+
+
+JPEG = b"\xff\xd8\xff\xe0cover"
+JPEG_SHA = __import__("hashlib").sha256(JPEG).hexdigest()
+
+
+class CoverSpotify(FakeSpotify):
+    def __init__(self, shows_after="https://i.scdn.co/image/new", refuse=None):
+        super().__init__()
+        self.shows_after, self.refuse = shows_after, refuse
+
+    def upload_cover(self, pid, data):
+        if self.refuse:
+            import httpx
+
+            request = httpx.Request("PUT", f"https://api.spotify.com/v1/playlists/{pid}/images")
+            response = httpx.Response(self.refuse, request=request)
+            raise httpx.HTTPStatusError("refused", request=request, response=response)
+        self.calls.append(("cover", pid, data))
+
+    def get_cover(self, pid):
+        self.calls.append(("read cover", pid))
+        return self.shows_after
+
+
+class FileHub(FakeHub):
+    def __init__(self, files):
+        super().__init__()
+        self.files = files
+
+    def get_file(self, key):
+        return self.files.get(key)
+
+
+def cover_plan(sha=JPEG_SHA):
+    return [
+        Action(
+            "set_cover",
+            playlist_id="P",
+            row={
+                "file": "raw/spotify-covers/P/c.jpg",
+                "sha256": sha,
+                "before": "old",
+                "name": "mood",
+            },
+        ),
+        Action("upsert_playlist", playlist_id="P", row={"id": "P", "name": "mood"}),
+        Action("upsert_playlist", playlist_id="Q", row={"id": "Q", "name": "other"}),
+    ]
+
+
+def test_a_cover_upload_records_what_spotify_shows_right_after():
+    sp, hub = CoverSpotify(), FileHub({"raw/spotify-covers/P/c.jpg": JPEG})
+    checkpoints = []
+    log = actions.apply(cover_plan(), sp, hub, dry_run=False, checkpoint=checkpoints.append)
+    assert not log.errors and not log.flags and log.applied["set_cover"] == 1
+    assert sp.calls == [("cover", "P", JPEG), ("read cover", "P")]
+    rows = {r["id"]: r for t, rs in hub.pushed if t == "playlists" for r in rs}
+    assert rows["P"]["cover_applied"] == {
+        "sha256": JPEG_SHA,
+        "spotify_url": "https://i.scdn.co/image/new",
+    }
+    assert "cover_applied" not in rows["Q"]
+    # The result is checkpointed with the remaining playlists write, so a resume keeps it.
+    assert checkpoints[1][0]["rows"][0]["cover_applied"]["sha256"] == JPEG_SHA
+
+
+@pytest.mark.parametrize(
+    ("files", "sha", "problem"),
+    [
+        ({}, JPEG_SHA, "missing"),
+        (None, JPEG_SHA, "files:read:raw/spotify-covers/"),
+        ({"raw/spotify-covers/P/c.jpg": JPEG}, "0" * 64, "does not match"),
+        ({"raw/spotify-covers/P/c.jpg": b"GIF89a"}, None, "JPEG"),
+    ],
+)
+def test_a_cover_that_cannot_be_uploaded_is_flagged_not_failed(files, sha, problem):
+    if sha is None:
+        sha = __import__("hashlib").sha256(b"GIF89a").hexdigest()
+    sp, hub = CoverSpotify(), FileHub(files)
+    if files is None:  # the hub token lacks the covers file grant
+
+        def refuse(key):
+            from core.hub import HubError
+
+            raise HubError("hub HTTP 403: insufficient scope", category="http", status=403)
+
+        hub.get_file = refuse
+    log = actions.apply(cover_plan(sha), sp, hub, dry_run=False)
+    assert not log.errors and sp.calls == []
+    assert len(log.flags) == 1 and "mood" in log.flags[0] and problem in log.flags[0]
+    rows = {r["id"]: r for t, rs in hub.pushed if t == "playlists" for r in rs}
+    assert "cover_applied" not in rows["P"]  # the next run tries again
+
+
+def test_spotify_refusing_a_cover_is_a_flag_and_a_server_error_stops_the_run():
+    hub = FileHub({"raw/spotify-covers/P/c.jpg": JPEG})
+    log = actions.apply(cover_plan(), CoverSpotify(refuse=403), hub, dry_run=False)
+    assert not log.errors and "ugc-image-upload" in log.flags[0]
+    assert {t for t, _ in hub.pushed} == {"playlists"}  # the rest of the run went on
+    hub = FileHub({"raw/spotify-covers/P/c.jpg": JPEG})
+    log = actions.apply(cover_plan(), CoverSpotify(refuse=502), hub, dry_run=False)
+    assert log.errors and hub.pushed == []

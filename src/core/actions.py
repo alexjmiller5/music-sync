@@ -1,19 +1,23 @@
 """Apply a plan in ordered batches, stopping at the first failed checkpoint."""
 
+import hashlib
 import json
 import time
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 
+import httpx
 import structlog
 
-from core import new_songs
+from core import covers, new_songs
+from core.hub import HubError
 from core.model import Action
 
 log = structlog.get_logger()
 CHUNK = 500  # hub rows per checkpointed operation
-# An arrangement needing more single edits than this replaces the playlist in one write.
+# An arrangement replaces its playlist when its edits take more requests than this and than
+# rewriting it (one request per 100 items).
 REPLACE_AFTER = 10
 
 HUB_TABLE = {
@@ -31,6 +35,7 @@ SPOTIFY_WRITE_KINDS = {
     "remove_item",
     "arrange_items",
     "set_description",
+    "set_cover",
     "delete_playlist",
 }
 
@@ -62,6 +67,11 @@ class RunLog:
 
 def _batches(actions: list[Action], writes: bool) -> list[dict]:
     ops = []
+    # An arrangement planned from an observed order places its playlist's adds and
+    # removes itself (core/reconcile.py smart materialization).
+    arranged = {
+        a.playlist_id for a in actions if a.kind == "arrange_items" and a.current is not None
+    }
     for kind in (
         "like",
         "add_item",
@@ -69,6 +79,7 @@ def _batches(actions: list[Action], writes: bool) -> list[dict]:
         "readd_item",
         "arrange_items",
         "set_description",
+        "set_cover",
         "delete_playlist",
     ):
         groups = defaultdict(list)
@@ -77,7 +88,15 @@ def _batches(actions: list[Action], writes: bool) -> list[dict]:
                 groups[a.playlist_id].append(a)
         for pid, group in groups.items():
             if kind == "arrange_items":
-                ops.append({"kind": kind, "playlist_id": pid, "uris": group[-1].uris, "count": 1})
+                op = {"kind": kind, "playlist_id": pid, "uris": group[-1].uris, "count": 1}
+                if group[-1].current is not None:
+                    op["current"] = group[-1].current
+                ops.append(op)
+                continue
+            if kind in ("add_item", "remove_item") and pid in arranged:
+                continue
+            if kind == "set_cover":
+                ops.append({"kind": kind, "playlist_id": pid, **group[-1].row, "count": 1})
                 continue
             ops.append(
                 {
@@ -172,6 +191,9 @@ def apply(
             if kind == "hub_insert":
                 hub.insert_rows(op["table"], op["rows"])
                 out.applied["insert_edge"] += len(op["rows"])
+            elif kind == "set_cover":
+                if _cover(spotify, hub, op, ops[index + 1 :], out.flags):
+                    out.applied[kind] += 1
             elif kind == "hub":
                 if op["table"] == "playlists":
                     for row in op["rows"]:
@@ -217,7 +239,12 @@ def apply(
                 elif kind == "remove_item":
                     written[pid] = spotify.remove_items(pid, uris)
                 elif kind == "arrange_items":
-                    written[pid] = _arrange(spotify, pid, uris, market)
+                    current = None if op.get("attempted") else op.get("current")
+                    if current is not None:
+                        op["attempted"] = True  # a resumed attempt re-reads the playlist
+                        if checkpoint:
+                            checkpoint(ops[index:])
+                    written[pid] = _arrange(spotify, pid, uris, market, current)
                 elif kind == "set_description":
                     spotify.set_description(pid, op["text"])
                     written[pid] = None
@@ -240,19 +267,68 @@ def apply(
     return out
 
 
-def _arrange(spotify, pid, desired, market):
-    """Edit a playlist into `desired` order from what it holds now, so a resumed
-    attempt simply continues. Many edits become one replacing write."""
-    if market is None:
-        raise RuntimeError("Arranging a playlist requires a complete current observation")
-    current = [
-        (row.get("item") or row.get("track") or {}).get("uri")
-        for row in spotify.get_playlist_items(pid, market)
-    ]
+def _cover(spotify, hub, op, later, flags) -> bool:
+    """Upload a playlist's cover from soma and record what Spotify shows right after on
+    the run's remaining playlists write. A cover Spotify cannot take is a flag."""
+    pid, name = op["playlist_id"], op.get("name") or op["playlist_id"]
+    try:
+        data = hub.get_file(op["file"])
+        problem = (
+            "is missing from soma"
+            if data is None
+            else "does not match its cover_sha256"
+            if hashlib.sha256(data).hexdigest() != op["sha256"]
+            else covers.validate(data)
+        )
+    except HubError as exc:
+        status = exc.diagnostic.get("status") or 500
+        if status >= 500 or status == 429:
+            raise  # transient: the run stops and resumes
+        problem = f"cannot be read (HTTP {status}; needs files:read:{covers.PREFIX})"
+    if problem:
+        flags.append(f"{name}: cover {op['file']} {problem}; not uploaded")
+        return False
+    try:
+        spotify.upload_cover(pid, data)
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        if status >= 500 or status == 429:
+            raise  # transient: the run stops and the upload resumes from its checkpoint
+        hint = " (re-consent with the ugc-image-upload scope)" if status in (401, 403) else ""
+        flags.append(f"{name}: Spotify refused the cover upload, HTTP {status}{hint}")
+        return False
+    seen = covers.applied(op["sha256"], op.get("before"), spotify.get_cover(pid))
+    for step in later:
+        if step["kind"] == "hub" and step["table"] == "playlists":
+            for row in step["rows"]:
+                if row["id"] == pid:
+                    row["cover_applied"] = seen
+    return True
+
+
+def _arrange(spotify, pid, desired, market, current=None):
+    """Edit a playlist into `desired` order from `current` (the planned order on a first
+    attempt) or else from what it holds now, so a resumed attempt simply continues.
+    When the edits take more requests than rewriting the playlist, it is replaced."""
+    if current is None:
+        if market is None:
+            raise RuntimeError("Arranging a playlist requires a complete current observation")
+        current = [
+            (row.get("item") or row.get("track") or {}).get("uri")
+            for row in spotify.get_playlist_items(pid, market)
+        ]
     if len(set(current)) != len(current) or None in current:
         raise RuntimeError("Playlist holds duplicate or unidentified items; arrangement held")
-    ops = new_songs.edits(current, desired)
-    if len(ops) > REPLACE_AFTER:
+    ops = []
+    for op in new_songs.edits(current, desired):
+        last = ops[-1] if ops else None
+        if op[0] == "add" and last and last[0] == "add" and last[2] + len(last[1]) == op[2]:
+            last[1].append(op[1])  # consecutive positions: one positioned add
+        else:
+            ops.append((op[0], [op[1]], op[2]) if op[0] == "add" else op)
+    pages = -(-len(desired) // 100)
+    requests = sum(-(-len(op[1]) // 100) if op[0] != "move" else 1 for op in ops)
+    if requests > max(REPLACE_AFTER, pages):
         return spotify.replace_items(pid, desired)
     snapshot = None
     for op in ops:
@@ -261,5 +337,5 @@ def _arrange(spotify, pid, desired, market):
         elif op[0] == "move":
             snapshot = spotify.reorder_items(pid, op[1], op[2])
         else:
-            snapshot = spotify.add_items(pid, [op[1]], position=op[2])
+            snapshot = spotify.add_items(pid, op[1], position=op[2])
     return snapshot

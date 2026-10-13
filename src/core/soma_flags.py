@@ -294,8 +294,8 @@ def close_capture_task(settings, http, task_id, isrc, today, picked=False):
         )
         values = {
             col["notes"]: (row.get(col["notes"]) or "") + "\n" + note,
+            # The task workflow (Reflex) stamps the close date on Completed.
             col["status"]: binding.get("completed_status", "Completed"),
-            col.get("completed_date", "completed_date"): today,
             col.get("ai_completed", "ai_completed"): 1,
         }
         try:

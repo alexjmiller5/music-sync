@@ -38,6 +38,11 @@ class Playlist:
     snapshot_id: str | None
     pinned: int
     expires_at: str | None
+    # The cover in soma (core/covers.py): retained file key and its hash, and what
+    # Music Sync last uploaded ({sha256, spotify_url}).
+    cover_file: str | None = None
+    cover_sha256: str | None = None
+    cover_applied: dict | None = None
 
 
 @dataclass
@@ -97,6 +102,7 @@ class LivePlaylist:
     description: str | None
     snapshot_id: str | None
     items: list[LiveItem] | None
+    image_url: str | None = None  # the cover Spotify shows now (from the playlist listing)
 
 
 @dataclass
@@ -119,3 +125,5 @@ class Action:
     playlist_name: str | None = None
     title: str | None = None
     uris: list[str] | None = None  # arrange_items: the playlist's complete order
+    # arrange_items: the order it was planned from (None: read the playlist when applying)
+    current: list[str] | None = None

@@ -370,3 +370,46 @@ def test_reorder_and_replace_items_json_bodies(settings, mocker):
         ("PUT", "/v1/playlists/P/items", {"range_start": 5, "insert_before": 1, "range_length": 1}),
         ("PUT", "/v1/playlists/P/items", {"uris": ["spotify:track:1", "spotify:track:2"]}),
     ]
+
+
+def test_replacing_more_than_100_items_writes_the_rest_at_their_positions(settings, mocker):
+    calls = []
+
+    def handler(req):
+        if req.url.host == "accounts.spotify.com":
+            return token_resp()
+        calls.append((req.method, json.loads(req.content)))
+        return httpx.Response(200, json={"snapshot_id": f"s{len(calls)}"})
+
+    uris = [f"spotify:track:{i}" for i in range(250)]
+    assert make(handler, settings, mocker).replace_items("P", uris) == "s3"
+    assert calls == [
+        ("PUT", {"uris": uris[:100]}),
+        ("POST", {"uris": uris[100:200], "position": 100}),
+        ("POST", {"uris": uris[200:], "position": 200}),
+    ]
+
+
+def test_a_cover_is_uploaded_as_base64_jpeg_and_read_back(settings, mocker):
+    import base64
+
+    calls = []
+
+    def handler(req):
+        if req.url.host == "accounts.spotify.com":
+            return token_resp()
+        calls.append((req.method, req.url.path, req.headers.get("Content-Type"), req.content))
+        if req.method == "PUT":
+            return httpx.Response(202)
+        return httpx.Response(200, json=[{"url": "https://i.scdn.co/image/x", "height": None}])
+
+    c = make(handler, settings, mocker)
+    c.upload_cover("P", b"\xff\xd8\xffjpeg")
+    assert c.get_cover("P") == "https://i.scdn.co/image/x"
+    assert calls[0] == (
+        "PUT",
+        "/v1/playlists/P/images",
+        "image/jpeg",
+        base64.b64encode(b"\xff\xd8\xffjpeg"),
+    )
+    assert calls[1][:2] == ("GET", "/v1/playlists/P/images")

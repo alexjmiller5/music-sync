@@ -123,3 +123,23 @@ def test_a_like_of_a_song_already_in_a_curated_playlist_is_not_when_it_came_your
     assert new_songs.came_at(s) == T3
     songs = {"A": s, "B": song("B", shazam_last_at=T2)}
     assert new_songs.rank(songs, cap=10, curated_at={"A": T2}) == ["B", "A"]
+
+
+def test_a_smart_playlist_orders_every_song_newest_first_untimed_last():
+    songs = {
+        "LIKED": song("LIKED", liked=1, liked_at=T2),
+        "SHAZAM": song("SHAZAM", shazam_last_at=T3),
+        "CURATED": song("CURATED", liked=1, liked_at=T4),  # liked by Music Sync: untimed
+        "NEWER": Song("NEWER", 1, None, T2),
+        "OLDER_B": Song("OLDER_B", 1, None, T1),
+        "OLDER_A": Song("OLDER_A", 1, None, T1),
+    }
+    # Untimed songs follow, newest first_seen first, then ISRC: a stable order.
+    assert new_songs.order(songs, {"CURATED": T0}) == [
+        "SHAZAM",
+        "LIKED",
+        "NEWER",
+        "CURATED",
+        "OLDER_A",
+        "OLDER_B",
+    ]

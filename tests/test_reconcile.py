@@ -418,8 +418,9 @@ def test_new_songs_cap_and_exemption():
     # Songs new to the catalog you put in New songs count from their add time; B's
     # like (2026-09-01) is newer, so it leads and the oldest hand-add falls off. A was
     # already curated when liked, so that like is Music Sync's, not A coming your way.
-    assert [a.uri for a in kinds(acts, "arrange_items")] == [None]
-    assert kinds(acts, "arrange_items")[0].uris == [
+    inbox = [a for a in kinds(acts, "arrange_items") if a.playlist_id == "IN"]
+    assert [a.uri for a in inbox] == [None]
+    assert inbox[0].uris == [
         "spotify:track:tB",
         "spotify:track:tZ02",
         "spotify:track:tZ01",
@@ -829,6 +830,160 @@ def test_music_sync_liking_a_curated_song_does_not_bring_it_into_new_songs():
         {},
     )
     assert arranged(reconcile.plan(m, live, NOW)) is None
+
+
+def smart_mirror(songs, members=()):
+    memberships = {("SM", i): Membership("SM", i, "t" + i, T0) for i in members}
+    return Mirror(
+        {s.id: s for s in songs},
+        {"SM": pl("SM", "pool", "smart", {"v": 1})},
+        memberships,
+        [],
+        set(),
+    )
+
+
+def smart_arrangement(acts):
+    out = [a for a in kinds(acts, "arrange_items") if a.playlist_id == "SM"]
+    assert len(out) <= 1
+    return out[0] if out else None
+
+
+def test_a_smart_playlist_is_arranged_newest_first_by_when_songs_came_your_way():
+    songs = [
+        timed("OLD", liked=1, liked_at=T0),
+        timed("SHAZ", liked=1, liked_at=T1, shazam_last_at=T3),
+        timed("NEW", liked=1, liked_at=T2),
+    ]
+    m = smart_mirror(songs, members=["OLD", "SHAZ"])
+    live = Live(
+        {"SM": live_pl("SM", "pool", [item("OLD"), item("SHAZ")])},
+        {s.id: item(s.id, added=s.liked_at) for s in songs},
+        {},
+    )
+    acts = reconcile.plan(m, live, NOW)
+    # Membership is still the rule's: one add, recorded as before.
+    assert [a.isrc for a in kinds(acts, "add_item")] == ["NEW"]
+    assert {a.isrc for a in kinds(acts, "upsert_membership") if a.playlist_id == "SM"} == {"NEW"}
+    arrangement = smart_arrangement(acts)
+    assert arrangement.uris == ["spotify:track:tSHAZ", "spotify:track:tNEW", "spotify:track:tOLD"]
+    assert arrangement.current == ["spotify:track:tOLD", "spotify:track:tSHAZ"]
+
+
+def test_no_smart_arrangement_when_the_playlist_already_holds_the_order():
+    songs = [timed("A", liked=1, liked_at=T2), timed("B", liked=1, liked_at=T1)]
+    m = smart_mirror(songs, members=["A", "B"])
+    live = Live(
+        {"SM": live_pl("SM", "pool", [item("A"), item("B")])},
+        {s.id: item(s.id, added=s.liked_at) for s in songs},
+        {},
+    )
+    assert smart_arrangement(reconcile.plan(m, live, NOW)) is None
+
+
+def test_a_removed_smart_member_leaves_the_rest_in_order_without_an_arrangement():
+    songs = [timed("A", liked=1, liked_at=T2), timed("B", liked=1, liked_at=T1)]
+    m = smart_mirror(songs, members=["A", "B"])
+    live = Live(
+        {"SM": live_pl("SM", "pool", [item("A"), item("B")])},
+        {"B": item("B", added=T1)},  # A was unliked
+        {},
+    )
+    acts = reconcile.plan(m, live, NOW)
+    assert [a.isrc for a in kinds(acts, "remove_item")] == ["A"]
+    assert smart_arrangement(acts) is None  # a removal keeps the others' order
+
+
+def test_an_item_without_an_isrc_leaves_a_smart_playlist_unarranged_but_materialized():
+    songs = [timed("A", liked=1, liked_at=T1), timed("B", liked=1, liked_at=T2)]
+    m = smart_mirror(songs, members=["A"])
+    live = Live(
+        {"SM": live_pl("SM", "pool", [item("A"), item(None)])},
+        {s.id: item(s.id, added=s.liked_at) for s in songs},
+        {},
+    )
+    acts = reconcile.plan(m, live, NOW)
+    assert smart_arrangement(acts) is None
+    assert [a.isrc for a in kinds(acts, "add_item")] == ["B"]
+    assert any("pool: holds an item without an ISRC" in a.text for a in kinds(acts, "flag"))
+
+
+def test_smart_orders_record_what_each_smart_playlist_holds_after_the_plan():
+    m = smart_mirror([timed(i, liked=1, liked_at=T1) for i in "ABC"], members="ABC")
+    m.playlists["CU"] = pl("CU", "mood", "curated")
+    m.playlists["S2"] = pl("S2", "two", "smart", {"v": 1})
+    m.playlists["S3"] = pl("S3", "three", "smart", {"v": 1})
+    live = Live(
+        {
+            "SM": live_pl("SM", "pool", [item("A"), item("B"), item("C")]),
+            "S2": live_pl("S2", "two", [item("A"), item("B")]),
+            "S3": live_pl("S3", "three", [item("A"), item("A")]),
+            "CU": live_pl("CU", "mood", [item("A")]),
+        },
+        {},
+        {},
+    )
+    uri = "spotify:track:t"
+    acts = [
+        reconcile.Action("remove_item", playlist_id="SM", uri=uri + "B"),
+        reconcile.Action("add_item", playlist_id="S2", uri=uri + "C"),
+    ]
+    assert reconcile.smart_orders(m, live, acts) == {"SM": [uri + "A", uri + "C"]}
+    acts.append(reconcile.Action("arrange_items", playlist_id="S2", uris=[uri + "C", uri + "A"]))
+    assert reconcile.smart_orders(m, live, acts)["S2"] == [uri + "C", uri + "A"]
+
+
+SHA = "a" * 64
+COVER = "https://i.scdn.co/image/ab67706c0000bebb" + "1" * 24
+OLD_COVER = "https://i.scdn.co/image/ab67706c0000bebb" + "2" * 24
+
+
+def covered_mirror(applied):
+    m = Mirror({}, {"CU": pl("CU", "mood", "curated")}, {}, [], set())
+    m.playlists["CU"].cover_file = f"raw/spotify-covers/CU/{SHA}.jpg"
+    m.playlists["CU"].cover_sha256 = SHA
+    m.playlists["CU"].cover_applied = applied
+    return m
+
+
+def covered_live(url):
+    lp = live_pl("CU", "mood", [])
+    lp.image_url = url
+    return Live({"CU": lp}, {}, {})
+
+
+def test_a_changed_cover_is_planned_for_upload_with_what_spotify_shows_now():
+    m = covered_mirror({"sha256": "b" * 64, "spotify_url": OLD_COVER})
+    acts = reconcile.plan(m, covered_live(OLD_COVER), NOW)
+    [upload] = kinds(acts, "set_cover")
+    assert upload.playlist_id == "CU" and upload.reason == "cover changed"
+    assert upload.row == {
+        "file": f"raw/spotify-covers/CU/{SHA}.jpg",
+        "sha256": SHA,
+        "before": OLD_COVER,
+        "name": "mood",
+    }
+    # The upload's result lands on the playlists row mirror upkeep writes for it.
+    assert any(a.row["id"] == "CU" for a in kinds(acts, "upsert_playlist"))
+    # A playlist expiring this run is deleted, not given a cover.
+    m.playlists["CU"].kind, m.playlists["CU"].rule = "smart", {"v": 1}
+    m.playlists["CU"].pinned, m.playlists["CU"].expires_at = 0, "2026-01-01T00:00:00.000Z"
+    acts = reconcile.plan(m, covered_live(OLD_COVER), NOW)
+    assert kinds(acts, "delete_playlist") and not kinds(acts, "set_cover")
+    # Observation imports never write Spotify.
+    assert not kinds(
+        reconcile.plan(m, covered_live(OLD_COVER), NOW, observation_only=True), "set_cover"
+    )
+
+
+def test_an_applied_cover_is_left_alone_and_a_late_one_is_adopted():
+    applied = {"sha256": SHA, "spotify_url": COVER}
+    assert not kinds(reconcile.plan(covered_mirror(applied), covered_live(COVER), NOW), "set_cover")
+    pending = {"sha256": SHA, "spotify_url": None, "replaced_url": OLD_COVER}
+    acts = reconcile.plan(covered_mirror(pending), covered_live(COVER), NOW)
+    assert not kinds(acts, "set_cover")
+    rows = [a.row for a in kinds(acts, "upsert_playlist") if "cover_applied" in a.row]
+    assert rows == [{"id": "CU", "cover_applied": {"sha256": SHA, "spotify_url": COVER}}]
 
 
 @pytest.mark.parametrize("observation_only", [False, True])
