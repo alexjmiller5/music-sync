@@ -299,4 +299,4 @@ def test_the_scheduled_run_reuses_unchanged_smart_playlists(settings, mocker):
         spotify=LiveSpotify(),
         hub=FailingHub(),
     )
-    assert pulled.call_args.kwargs == {"full": True, "reuse_smart": True}
+    assert pulled.call_args.kwargs == {"full": True, "smart_orders": {}}

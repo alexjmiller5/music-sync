@@ -212,12 +212,13 @@ class SpotifyClient:
         ).get("snapshot_id")
 
     def replace_items(self, playlist_id: str, uris: list[str]) -> str | None:
-        """Replaces the playlist's whole contents with these (at most 100) URIs, in order."""
-        if len(uris) > 100:
-            raise ValueError("replace_items takes at most 100 URIs")
-        return self._request(
-            "PUT", f"{API}/v1/playlists/{playlist_id}/items", json={"uris": uris}
+        """Replaces the playlist's whole contents with these URIs, in order: one write of
+        the first 100, then the rest added at their positions 100 at a time. Interrupted,
+        the playlist holds a prefix of `uris`."""
+        snapshot = self._request(
+            "PUT", f"{API}/v1/playlists/{playlist_id}/items", json={"uris": uris[:100]}
         ).get("snapshot_id")
+        return self.add_items(playlist_id, uris[100:], position=100) if uris[100:] else snapshot
 
     def create_playlist(self, name: str, description: str, public: bool = False) -> dict:
         # Spotify may still list the playlist as public: neither this flag nor a later

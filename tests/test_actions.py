@@ -369,3 +369,67 @@ def test_arranging_without_a_market_stops_before_writing():
     sp = ArrangingSpotify(["b"])
     log = actions.apply(arrange(["a", "b"]), sp, FakeHub(), dry_run=False)
     assert log.errors and sp.items == ["b"]
+
+
+def smart_arrange(current, desired, *extra):
+    return [
+        *extra,
+        Action("arrange_items", playlist_id="SM", uris=desired, current=current, reason="order"),
+    ]
+
+
+def test_a_planned_arrangement_edits_from_its_planned_order_without_reading():
+    sp = ArrangingSpotify(["c", "x", "d"])
+    adds = [Action("add_item", playlist_id="SM", uri=u) for u in ("a", "b")]
+    removal = Action("remove_item", playlist_id="SM", uri="x")
+    acts = smart_arrange(["c", "x", "d"], ["a", "b", "c", "d"], *adds, removal)
+    checkpoints = []
+    log = actions.apply(
+        acts, sp, FakeHub(), dry_run=False, market="US", checkpoint=checkpoints.append
+    )
+    assert not log.errors and sp.items == ["a", "b", "c", "d"]
+    # The arrangement covers the adds and removes: placed, never appended, in one add.
+    assert sp.calls == [("remove", "SM", ("x",)), ("add", "SM", ("a", "b"), 0)]
+    # Marked attempted before its first write, so a resumed run re-reads instead.
+    assert checkpoints[1][0]["attempted"] is True
+
+
+def test_a_resumed_planned_arrangement_reads_what_the_playlist_holds_now():
+    sp = ArrangingSpotify(["a", "c", "d"])  # the removal and part of the add landed
+    op = {
+        "kind": "arrange_items",
+        "playlist_id": "SM",
+        "uris": ["a", "b", "c", "d"],
+        "current": ["c", "x", "d"],
+        "count": 1,
+        "attempted": True,
+    }
+    log = actions.apply([], sp, FakeHub(), dry_run=False, market="US", pending=[op])
+    assert not log.errors and sp.items == ["a", "b", "c", "d"]
+    assert sp.calls == [("read", "SM"), ("add", "SM", ("b",), 1)]
+
+
+def test_new_songs_on_top_of_a_big_playlist_are_one_positioned_add():
+    held = [f"s{i}" for i in range(4100)]
+    sp = ArrangingSpotify(held)
+    log = actions.apply(
+        smart_arrange(held, ["n1", "n2", "n3", *held]), sp, FakeHub(), dry_run=False
+    )
+    assert not log.errors and sp.items[:4] == ["n1", "n2", "n3", "s0"]
+    assert sp.calls == [("add", "SM", ("n1", "n2", "n3"), 0)]
+
+
+def test_reordering_a_big_playlist_replaces_it_when_that_takes_fewer_requests():
+    held = [f"s{i}" for i in range(4100)]
+    desired = list(reversed(held))
+    sp = ArrangingSpotify(held)
+    log = actions.apply(smart_arrange(held, desired), sp, FakeHub(), dry_run=False)
+    assert not log.errors and sp.items == desired
+    assert [c[0] for c in sp.calls] == ["replace"]
+    # Twenty songs that came your way again stay moves: 20 requests beat rewriting 41.
+    sp = ArrangingSpotify(held)
+    up = [f"s{i}" for i in range(4000, 4100, 5)]
+    moved = [*up, *[u for u in held if u not in up]]
+    log = actions.apply(smart_arrange(held, moved), sp, FakeHub(), dry_run=False)
+    assert not log.errors and sp.items == moved
+    assert [c[0] for c in sp.calls] == ["move"] * 20

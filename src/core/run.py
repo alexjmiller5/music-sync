@@ -105,6 +105,8 @@ def reconcile_run(
             cache=cache,
             checkpoint=None if dry_run else lambda: mirror.save_cache(settings, cache),
         )
+        retained = archive.get(settings, curation.state_key(settings.workspace))
+        previous = json.loads(gzip.decompress(retained)) if retained else None
         if observation_key:
             retained = archive.get(settings, observation_key)
             if retained is None:
@@ -115,13 +117,16 @@ def reconcile_run(
             live = mirror.live_from_raw(raw, me, m)
         else:
             live = mirror.pull_live(
-                spotify, settings.spotify_market, me, m, full=True, reuse_smart=True
+                spotify,
+                settings.spotify_market,
+                me,
+                m,
+                full=True,
+                smart_orders=(previous or {}).get("smart_orders", {}),
             )
         source_ref = observation_key or archive.key_for(now)
         if not dry_run:
             archive.put(settings, source_ref, gzip.compress(json.dumps(live.raw).encode()))
-        retained = archive.get(settings, curation.state_key(settings.workspace))
-        previous = json.loads(gzip.decompress(retained)) if retained else None
         observed_raw = live.raw
         if package is not None:
             from core import package as package_mod
@@ -160,6 +165,7 @@ def reconcile_run(
         )
         plan = [*plan, *occurrence_actions]
         next_curation["occurrence_fingerprints"] = fingerprints
+        next_curation["smart_orders"] = reconcile_mod.smart_orders(m, live, plan)
         confirmed_on_success = {a.isrc for a in plan if a.kind == "like"} if writes else set()
         next_curation["baseline"]["own_likes"] = sorted(confirmed_on_success)
         next_curation["pending_likes"] = sorted(

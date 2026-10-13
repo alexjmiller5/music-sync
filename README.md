@@ -63,7 +63,11 @@ Playlists come in three kinds:
   preserves membership independently of likes. Duplicate keepers and
   replacement aliases require review.
 - **smart** - membership = a rule over the pool (every liked song), fully
-  materialized each run; the description is rewritten each run.
+  materialized each run, ordered newest first by when each song came your way
+  (the same time New songs uses; songs without one follow, the most recently
+  catalogued first). New matches are placed at their position, and a playlist
+  already in order is not rewritten. The description is rewritten when the rule
+  changes.
 
 Liking a song makes it eligible for smart rules. Unliking never removes it
 from a curated playlist, and re-liking never restores a removed curated item.
