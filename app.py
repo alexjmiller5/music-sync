@@ -214,6 +214,20 @@ class _CaptureTasks:
                 picked=self.resolved(client_id, state),
             )
 
+    def unavailable(self, client_id: str, state: dict) -> None:
+        from datetime import date
+        from core import soma_flags
+
+        with httpx.Client(timeout=30) as http:
+            soma_flags.close_capture_task(
+                self._settings(client_id),
+                http,
+                state["task_id"],
+                None,
+                date.today().isoformat(),
+                unavailable=True,
+            )
+
 
 CAPTURE_TASKS = _CaptureTasks()
 
@@ -258,9 +272,11 @@ def _capture_api():
         return {"Retry-After": str(max(0, ceil((due - now).total_seconds())))}
 
     def due(view: dict, now: datetime) -> bool:
-        return view["status"] in ("queued", "not_added") and not retry_after(view, now).get(
-            "Retry-After", "0"
-        ).strip("0")
+        return (
+            view.get("reason") != "unavailable"
+            and view["status"] in ("queued", "not_added")
+            and not retry_after(view, now).get("Retry-After", "0").strip("0")
+        )
 
     @api.post("/")
     def accept(

@@ -360,3 +360,16 @@ def test_a_capture_task_resolved_by_a_picked_version_says_so(setup):
         "2026-10-13: the version picked for it (USAAA2600002) was added to New songs at the"
         " capture's listening time."
     )
+
+
+def test_exhausted_capture_is_canceled_with_original_notes_retained(setup):
+    from core.soma_flags import close_capture_task, open_capture_task
+
+    settings, server, http, _ = setup
+    settings = settings.model_copy(update={"capture_task_config": CAPTURE_CONFIG})
+    task_id = open_capture_task(settings, http, CAPTURE, "2026-10-11")
+    notes = server.rows[task_id]["body"]
+    assert close_capture_task(settings, http, task_id, None, "2026-10-20", unavailable=True)
+    row = server.rows[task_id]
+    assert row["state"] == "Canceled" and row["body"].startswith(notes)
+    assert "retained" in row["body"] and "closed_date" not in server.writes[-1]["values"]

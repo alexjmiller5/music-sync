@@ -68,9 +68,105 @@ def plan(
     )
     if observation_only:
         return observe(mirror, live, now, source_ref=source_ref, market=market)
+    # A retained pull includes fresh candidates, so recovery repeats the same decision.
+    from core.mirror import item_from_raw
+
+    replacements = {}
+    candidates = [
+        item_from_raw(row)
+        for row in [
+            *live.raw.get("replacement_candidates", []),
+            *live.raw.get("availability_checks", []),
+        ]
+    ]
+    for isrc, song in mirror.songs.items():
+        selected = metadata.replacement(song, candidates)
+        if selected:
+            replacements[isrc] = selected
+    holds = {(pid, isrc) for pid, isrc in live.raw.get("availability_holds", [])}
+    replacement_actions = [
+        Action(
+            "like",
+            isrc=isrc,
+            uri=replacements[isrc].uri,
+            reason="restored Spotify availability; preserved like",
+        )
+        for isrc in live.raw.get("availability_likes", [])
+        if isrc in replacements
+    ]
+    playlists = {}
+    replaced_orders = {}
+    for pid, playlist in live.playlists.items():
+        start = len(replacement_actions)
+        prior_holds = {(q, i) for q, i in holds if q == pid}
+        items = None if playlist.items is None else list(playlist.items)
+        if items is not None:
+            for isrc, selected in replacements.items():
+                prior = [it for it in items if it.isrc == isrc]
+                missing = (pid, isrc) in holds
+                # Duplicate occurrences and unidentified slots require an owner decision.
+                if len(prior) > 1 or any(not it.isrc for it in items):
+                    continue
+                old = prior[0] if prior else None
+                if not (
+                    missing or (old and old.playable is False and old.track_id != selected.track_id)
+                ):
+                    continue
+                member = mirror.memberships.get((pid, isrc))
+                stamp = member.added_at if member else old.added_at
+                chosen = dataclasses.replace(selected, added_at=stamp)
+                replacement_actions.append(
+                    Action(
+                        "add_item",
+                        playlist_id=pid,
+                        isrc=isrc,
+                        uri=chosen.uri,
+                        reason="verified playable recording alias",
+                    )
+                )
+                if old:
+                    replacement_actions.append(
+                        Action(
+                            "remove_item",
+                            playlist_id=pid,
+                            isrc=isrc,
+                            uri=old.uri,
+                            reason="unavailable recording alias",
+                        )
+                    )
+                    items[items.index(old)] = chosen
+                else:
+                    items.append(chosen)
+                holds.discard((pid, isrc))
+        blocked = any(q == pid for q, _ in holds) or any(
+            it.playable is False or not it.isrc for it in items or []
+        )
+        if blocked:
+            del replacement_actions[start:]
+            holds.update(prior_holds)
+            items = playlist.items
+        elif len(replacement_actions) > start:
+            current = [it.uri for it in playlist.items]
+            replaced_orders[pid] = current
+            replacement_actions.append(
+                Action(
+                    "arrange_items",
+                    playlist_id=pid,
+                    uris=[it.uri for it in items],
+                    current=current,
+                    reason="preserve order while replacing unavailable alias",
+                )
+            )
+        playlists[pid] = dataclasses.replace(playlist, items=items)
+    live = dataclasses.replace(
+        live,
+        playlists=playlists,
+        raw={**live.raw, "availability_holds": sorted(holds)},
+        observations=[*live.observations, *candidates],
+    )
     today = today or now.date().isoformat()
     now_s = _iso(now)
-    acts: list[Action] = []
+    acts: list[Action] = replacement_actions
     current_names = {p.id: p.name for p in mirror.playlists.values()}
     current_names.update({p.id: p.name for p in live.playlists.values()})
     names = {}
@@ -81,7 +177,14 @@ def plan(
     liked_now = set(live.liked)
     liked_before = {s.id for s in mirror.songs.values() if s.liked}
     no_isrc: list[str] = []
-    flags: list[str] = []
+    paused = {pid for pid, _ in live.raw.get("availability_holds", [])}
+    paused.update(
+        p.id for p in live.playlists.values() if any(it.playable is False for it in p.items or [])
+    )
+    flags: list[str] = [
+        f"{pid}: Spotify availability uncertain or unavailable; catalog membership retained and playlist writes paused"
+        for pid in sorted(paused)
+    ]
     rule_flags: list[str] = []
     observed = metadata.observations(live)
     evidence = metadata.evidence_by_song(mirror)
@@ -321,7 +424,7 @@ def plan(
     curated_at = new_songs.first_curated(
         [*view.memberships.values(), *mirror.deleted_memberships], kind_of
     )
-    for pid in inbox_ids:
+    for pid in inbox_ids - paused:
         lp = live.playlists.get(pid)
         if not lp or lp.items is None:
             continue
@@ -390,6 +493,8 @@ def plan(
         name = mirror.playlists[pid].name if pid in mirror.playlists else pid
         rule_flags.append(f"{name}: rule error: {msg}")
     for pid, want in desired.items():
+        if pid in paused:
+            continue
         lp = live.playlists.get(pid)
         p = mirror.playlists[pid]
         if lp is None or lp.items is None:
@@ -567,7 +672,7 @@ def plan(
         }
         already = {a.row["id"] for a in acts if a.kind == "delete_membership"}
         for isrc in sorted(gone):
-            if f"{lp.id}:{isrc}" not in already:
+            if lp.id not in paused and f"{lp.id}:{isrc}" not in already:
                 acts.append(
                     Action(
                         "delete_membership",
@@ -589,9 +694,28 @@ def plan(
         acts.append(Action("flag", text=f, reason="attention"))
     for f in rule_flags:
         acts.append(Action("flag", text=f, reason="rule"))
+    for action in acts:
+        if action.kind == "arrange_items" and action.playlist_id in replaced_orders:
+            action.current = replaced_orders[action.playlist_id]
     rank = {k: i for i, k in enumerate(ORDER)}
     return sorted(
-        (a for a in acts if not (a.kind == "upsert_membership" and a.playlist_id in expired_ids)),
+        (
+            a
+            for a in acts
+            if not (a.kind == "upsert_membership" and a.playlist_id in expired_ids)
+            and not (
+                a.playlist_id in paused
+                and a.kind
+                in {
+                    "add_item",
+                    "remove_item",
+                    "readd_item",
+                    "arrange_items",
+                    "delete_playlist",
+                    "delete_membership",
+                }
+            )
+        ),
         key=lambda a: rank[a.kind],
     )
 
@@ -614,7 +738,14 @@ def observe(
         },
     )
     stamp = _iso(now)
-    acts = []
+    holds = {(pid, isrc) for pid, isrc in live.raw.get("availability_holds", [])}
+    acts = [
+        Action(
+            "flag",
+            text=f"{pid}: Spotify availability uncertain or unavailable; catalog membership retained",
+        )
+        for pid in sorted({pid for pid, _ in holds})
+    ]
     seen = dict(live.liked)
     sources = {isrc: ("like", "liked") for isrc in live.liked}
     for lp in live.playlists.values():
@@ -666,7 +797,7 @@ def observe(
             )
         if lp.items is not None:
             for pid, isrc in mirror.memberships:
-                if pid == lp.id and isrc not in members:
+                if pid == lp.id and isrc not in members and (pid, isrc) not in holds:
                     acts.append(
                         Action(
                             "delete_membership",

@@ -106,6 +106,15 @@ class Spotify:
         self.partial_add = False
         self.snapshot = 0
 
+    def get_track(self, tid, market):
+        return next(
+            (r["item"] for r in [*self.items, *self.liked] if r["item"]["id"] == tid),
+            raw(tid=tid)["item"],
+        )
+
+    def search_isrc(self, *args):
+        return []
+
     def me(self):
         return {"id": "owner"}
 
@@ -1119,3 +1128,33 @@ def test_a_cover_set_in_soma_is_uploaded_once_and_restored_if_changed_in_spotify
     sp.image = old  # someone changed it in the Spotify app: soma's cover wins
     assert not execute(settings, sp, hub).errors
     assert sp.calls == [("cover", [jpeg])]
+
+
+def test_outage_preserves_catalog_across_runs_and_restores_delivery(settings, archive_store):
+    from datetime import timedelta
+
+    hub, sp = Store(), Spotify()
+    hub.tables["songs"][A].update(title="Song", artists=["Artist"], duration_ms=180000)
+    sp.items[0]["item"]["duration_ms"] = 180000
+    sp.liked[0]["item"]["duration_ms"] = 180000
+    assert not execute(settings, sp, hub).errors
+    sp.items, sp.liked = [], []
+    available = False
+
+    def lookup(*args):
+        return {**raw(playable=available)["item"], "duration_ms": 180000}
+
+    sp.get_track = lookup
+    assert not run.reconcile(settings, spotify=sp, hub=hub, now=NOW + timedelta(days=1)).errors
+    assert hub.tables["songs"][A]["liked"] == 1
+    assert not hub.tables["playlist_songs"][f"P:{A}"]["deleted_at"]
+    assert sp.calls == []
+    # Another outage observation keeps the original membership and first-seen time.
+    assert not run.reconcile(settings, spotify=sp, hub=hub, now=NOW + timedelta(days=2)).errors
+    available = True
+    recovered = run.reconcile(settings, spotify=sp, hub=hub, now=NOW + timedelta(days=3))
+    assert not recovered.errors
+    assert any(c[0] == "add" for c in sp.calls) and any(c[0] == "like" for c in sp.calls)
+    assert hub.tables["songs"][A]["first_seen"] == T
+    assert hub.tables["playlist_songs"][f"P:{A}"]["added_at"] == T
+    assert not hub.tables["playlist_songs"][f"P:{A}"]["deleted_at"]

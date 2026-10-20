@@ -406,3 +406,11 @@ def test_original_album_preference_never_resolves_conflicting_artists_or_tied_al
     b["track"]["album"]["release_date"] = "2020"
     b["track"]["artists"] = [{"name": "Other artist"}]
     assert any(x.kind == "flag" for x in observe(state=live(a, b)))
+
+
+def test_small_duration_difference_is_not_suppressed_for_conflicting_recording_identity():
+    acts = observe(
+        state=live(raw(), raw(tid="other", name="Different recording", duration_ms=124000))
+    )
+    flags = [a.text for a in acts if a.kind == "flag"]
+    assert any("duration_ms" in flag for flag in flags)

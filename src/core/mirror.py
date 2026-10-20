@@ -5,6 +5,8 @@ import hashlib
 import json
 import re
 import time
+
+import httpx
 from collections import defaultdict
 
 from core import table_pull
@@ -287,6 +289,10 @@ def pull_live(
     mirror: Mirror,
     full: bool = False,
     smart_orders: dict[str, list[str]] | None = None,
+    availability_audit: bool = False,
+    preserve_unavailable: bool = True,
+    previous_holds: list | None = None,
+    previous_likes: list | None = None,
 ) -> Live:
     """`smart_orders`: the order (URIs) Music Sync left each smart playlist in. A smart
     playlist whose Spotify snapshot equals the one the catalog recorded after Music
@@ -301,7 +307,8 @@ def pull_live(
         known = mirror.playlists.get(p["id"])
         order = (smart_orders or {}).get(p["id"])
         if (
-            order is not None
+            not availability_audit
+            and order is not None
             and known
             and known.kind == "smart"
             and known.snapshot_id
@@ -323,7 +330,91 @@ def pull_live(
         ):
             raw["items"][p["id"]] = spotify.get_playlist_items(p["id"], market)
     raw["liked"] = spotify.get_liked(market)
+    live = live_from_raw(raw, me_id, mirror)
+    if preserve_unavailable:
+        _check_missing(spotify, market, mirror, live, previous_holds or [], previous_likes or [])
+    if availability_audit:
+        from core import metadata
+
+        unavailable = {isrc for _, isrc in live.raw.get("availability_holds", [])}
+        unavailable.update(
+            it.isrc
+            for p in live.playlists.values()
+            for it in p.items or []
+            if it.isrc and it.playable is False
+        )
+        candidates = []
+        for isrc in sorted(unavailable):
+            song = mirror.songs.get(isrc)
+            if song is None:
+                continue
+            results = [
+                item_from_raw({"item": body, "added_at": ""})
+                for body in spotify.search_isrc(isrc, market)
+            ]
+            selected = metadata.replacement(song, results)
+            if selected:
+                body = spotify.get_track(selected.track_id, market)
+                verified = item_from_raw({"item": body, "added_at": ""})
+                if metadata.replacement(song, [verified]):
+                    candidates.append({"item": body, "added_at": ""})
+        live.raw["replacement_candidates"] = candidates
     return live_from_raw(raw, me_id, mirror)
+
+
+def _check_missing(spotify, market, mirror, live, previous_holds, previous_likes):
+    """A missing item is a user removal only when its identity is freshly playable."""
+    checks = {}
+    held = []
+    liked = []
+
+    def playable(isrc, track_id):
+        if not track_id:
+            return False
+        if track_id not in checks:
+            try:
+                body = spotify.get_track(track_id, market)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != 404:
+                    raise  # Retry-After and service failures abort the whole observation.
+                body = {
+                    "id": track_id,
+                    "uri": f"spotify:track:{track_id}",
+                    "external_ids": {"isrc": isrc},
+                    "is_playable": False,
+                }
+            item = item_from_raw({"item": body, "added_at": ""})
+            if item.isrc and item.isrc != isrc:
+                raise ValueError("Missing recording identity changed; review required")
+            checks[track_id] = {"item": body, "added_at": ""}
+        it = item_from_raw(checks[track_id])
+        return it.isrc == isrc and it.playable is True
+
+    for (pid, isrc), member in mirror.memberships.items():
+        playlist = live.playlists.get(pid)
+        known = mirror.playlists.get(pid)
+        if not playlist or playlist.items is None or (known and known.kind == "archive"):
+            continue
+        if any(it.isrc == isrc for it in playlist.items):
+            continue
+        confirmed = playable(isrc, member.spotify_track_id)
+        if (
+            [pid, isrc] in previous_holds
+            or not confirmed
+            or any(not it.isrc for it in playlist.items)
+        ):
+            held.append([pid, isrc])
+    for isrc, song in mirror.songs.items():
+        if song.liked and isrc not in live.liked:
+            confirmed = bool(song.spotify_ids) and any(
+                playable(isrc, tid) for tid in song.spotify_ids
+            )
+            if isrc in previous_likes or not confirmed:
+                liked.append(isrc)
+    if checks or held or liked:
+        live.raw["availability_checks"] = list(checks.values())
+        live.raw["availability_holds"] = held
+        live.raw["availability_likes"] = liked
 
 
 def _catalog_items(mirror: Mirror, pid: str) -> list[LiveItem]:
@@ -378,6 +469,25 @@ def live_from_raw(raw: dict, me_id: str, mirror: Mirror) -> Live:
         observations.append(it)
         if it.isrc and it.isrc not in liked:
             liked[it.isrc] = it
+    observations.extend(item_from_raw(row) for row in raw.get("availability_checks", []))
+    observations.extend(item_from_raw(row) for row in raw.get("replacement_candidates", []))
+    for isrc in raw.get("availability_likes", []):
+        song = mirror.songs.get(isrc)
+        if song and song.liked:
+            liked.setdefault(
+                isrc,
+                LiveItem(
+                    isrc,
+                    None,
+                    None,
+                    song.liked_at or song.first_seen,
+                    None,
+                    False,
+                    None,
+                    [],
+                    observed=False,
+                ),
+            )
     validate_recording_aliases(
         [*observations, *(item for p in playlists.values() for item in p.items or [])]
     )

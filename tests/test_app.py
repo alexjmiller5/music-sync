@@ -1184,3 +1184,22 @@ def test_operator_http_failure_survives_worker_transport(monkeypatch, status):
     assert response.status_code == 503
     assert response.headers["retry-after"] == "120"
     assert json.loads(response.body) == {"ok": False, "message": "upstream unavailable"}
+
+
+def test_exhausted_capture_http_receipt_never_restarts_delivery(capture_api, monkeypatch):
+    from core import capture as cap
+
+    post, _ = capture_api
+    token = issue_capture_token(post)["token"]
+    searches = []
+    monkeypatch.setattr(cap, "resolve_track", lambda *args: searches.append(1))
+    monkeypatch.setattr(soma_flags, "open_capture_task", lambda *a: None)
+    post("/capture-consumer", CONSUMER_BODY, token)
+    for day in range(8):
+        post.drain(later(86400 * day + 60))
+    assert len(searches) == 7
+    count = len(post.spawned)
+    assert status_of(post, token)["reason"] == "unavailable"
+    repeat = post("/capture-consumer", CONSUMER_BODY, token)
+    assert repeat.status_code == 422 and repeat.json()["reason"] == "unavailable"
+    assert repeat.json()["retry_at"] is None and len(post.spawned) == count
