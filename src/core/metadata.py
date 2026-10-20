@@ -102,6 +102,47 @@ def original_album(items, first_year=None):
     return min(earliest, key=lambda it: (it.playable is not True, it.track_id or ""))
 
 
+def replacement(song, items):
+    """Only complete, fresh, consistent same-ISRC identities authorize replacement."""
+
+    def title(value):
+        return (
+            re.sub(
+                r"(?:\s+-\s+|\s*\()(?:\d{4}\s+)?remaster(?:ed)?(?:\s+\d{4})?\)?$",
+                "",
+                value or "",
+                flags=re.I,
+            )
+            .strip()
+            .casefold()
+        )
+
+    if not song.title or not song.artists or not song.duration_ms:
+        return None
+    candidates = {
+        it.track_id: it
+        for it in items
+        if it.observed
+        and it.playable is True
+        and it.isrc == song.id
+        and it.track_id
+        and it.uri == f"spotify:track:{it.track_id}"
+        and title(it.name) == title(song.title)
+        and tuple(a.casefold() for a in it.artists) == tuple(a.casefold() for a in song.artists)
+        and isinstance(it.duration_ms, int)
+        and abs(it.duration_ms - song.duration_ms) <= 2000
+    }
+    if not candidates:
+        return None
+    original = original_album(list(candidates.values()), song.first_year)
+    if original:
+        return original
+    for tid in song.spotify_ids:
+        if tid in candidates:
+            return candidates[tid]
+    return next(iter(candidates.values())) if len(candidates) == 1 else None
+
+
 def observation_actions(
     mirror: Mirror,
     live: Live,
@@ -161,7 +202,13 @@ def observation_actions(
             }
             if field == "duration_ms":
                 durations = [it.duration_ms for it in items if isinstance(it.duration_ms, int)]
-                if durations and max(durations) - min(durations) <= 2000:
+                if (
+                    durations
+                    and max(durations) - min(durations) <= 2000
+                    and all(it.name and it.artists for it in items)
+                    and len({it.name.casefold() for it in items}) == 1
+                    and len({tuple(a.casefold() for a in it.artists) for it in items}) == 1
+                ):
                     continue
             if original and field in ("album", "album_year", "title"):
                 continue

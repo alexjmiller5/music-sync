@@ -686,7 +686,7 @@ def _apply(package, spotify, hub, settings, now, state, save) -> dict:
     market = settings.spotify_market
     me = spotify.me()["id"]
     m = mirror_mod.load_mirror(hub, cache=mirror_mod.load_cache(settings))
-    live = mirror_mod.pull_live(spotify, market, me, m, full=True)
+    live = mirror_mod.pull_live(spotify, market, me, m, full=True, preserve_unavailable=False)
     if not state.get("backup"):
         key = archive.key_for(now)
         archive.put(settings, key, gzip.compress(json.dumps(live.raw).encode()))
@@ -810,7 +810,7 @@ def _apply(package, spotify, hub, settings, now, state, save) -> dict:
             spotify.unlike(chunk)
             unliked.extend(chunk)
             save()
-    after = mirror_mod.pull_live(spotify, market, me, m, full=True)
+    after = mirror_mod.pull_live(spotify, market, me, m, full=True, preserve_unavailable=False)
     key = archive.key_for(datetime.now(timezone.utc))
     archive.put(settings, key, gzip.compress(json.dumps(after.raw).encode()))
     saved_after = {

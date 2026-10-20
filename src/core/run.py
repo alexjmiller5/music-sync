@@ -123,6 +123,9 @@ def reconcile_run(
                 m,
                 full=True,
                 smart_orders=(previous or {}).get("smart_orders", {}),
+                availability_audit=(previous or {}).get("availability_checked_on") != today,
+                previous_holds=(previous or {}).get("availability_holds", []),
+                previous_likes=(previous or {}).get("availability_likes", []),
             )
         source_ref = observation_key or archive.key_for(now)
         if not dry_run:
@@ -164,6 +167,11 @@ def reconcile_run(
             live.raw, source_ref, (previous or {}).get("occurrence_fingerprints", {})
         )
         plan = [*plan, *occurrence_actions]
+        next_curation["availability_checked_on"] = (
+            (previous or {}).get("availability_checked_on") if observation_key else today
+        )
+        next_curation["availability_holds"] = live.raw.get("availability_holds", [])
+        next_curation["availability_likes"] = live.raw.get("availability_likes", [])
         next_curation["occurrence_fingerprints"] = fingerprints
         next_curation["smart_orders"] = reconcile_mod.smart_orders(m, live, plan)
         confirmed_on_success = {a.isrc for a in plan if a.kind == "like"} if writes else set()
@@ -287,7 +295,12 @@ def reconcile_run(
 
 
 def _curated(m: Mirror, live) -> set[tuple[str, str]]:
-    return {
+    held = {
+        (pid, isrc)
+        for pid, isrc in live.raw.get("availability_holds", [])
+        if pid in m.playlists and m.playlists[pid].kind == "curated"
+    }
+    return held | {
         (pid, item.isrc)
         for pid, playlist in live.playlists.items()
         if pid in m.playlists and m.playlists[pid].kind == "curated"

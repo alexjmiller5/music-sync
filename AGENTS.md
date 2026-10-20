@@ -62,7 +62,10 @@ runs in tests, locally, or on any future platform.
   writer could leave its cursor ahead of its rows), waits while pending intent (reconcile, replay or package checkpoint)
   exists without any Spotify call, gates the whole queue on Spotify's
   429 Retry-After (`music-sync/capture-spotify-gate.json.gz`), rechecks a
-  `no_match` daily and backs other failures off from 1 minute to 1 hour (honoring
+  `no_match` daily for at most seven completed checks, then retains reason
+  `unavailable` with no retry, cancels its still-open task and removes the queue marker
+  after task retirement succeeds. Repeated capture POSTs cannot requeue it. Rate limits
+  and transport errors do not count as no-match checks. It backs other failures off from 1 minute to 1 hour (honoring
   any Retry-After). A `no_match` files one create-only "Reconcile capture: TITLE -
   ARTIST" Soma task (`soma_flags.open_capture_task`, ID from workspace/client/capture,
   no reminder) through `capture_task_config` (env `CAPTURE_TASK_CONFIG`, the ENV item's own
@@ -467,3 +470,18 @@ for the Modal CI pair and saves both fields through JSON stdin. The operator
 opens the stderr approval URL in the configured remote browser session and
 approves the displayed code. No local browser opens or token cache is written.
 R2 provisioning retains its `--field` interface and manifest order.
+
+## Spotify availability preservation
+
+Soma owns durable music identity and intended membership; Spotify is its playback
+projection. Missing known items require fresh market availability checks before
+being interpreted as user removals. Unknown/unavailable items retain membership
+and likes, and pause playlist content writes. Retained curation state carries
+availability holds between runs, so restored tracks can restore preserved intent.
+Smart snapshots are audited fresh once per UTC day. Same-ISRC replacements require
+fresh playable evidence plus consistent title, artists and known duration within
+two seconds; ambiguous/different recordings require a chosen recording. Original
+album preference never uses Apple Music or Shazam IDs. Raw availability checks and
+replacement candidates are archived with the observation for deterministic replay.
+Preview/digest-guarded packages verify actual Spotify state, including their
+intentional unlikes/removals. No local-file/downloader fallback is part of the app.

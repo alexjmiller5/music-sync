@@ -23,6 +23,7 @@ RECEIPTS_PREFIX = "music-sync/capture-receipts"
 QUEUE_PREFIX = "music-sync/capture-queue"
 SPOTIFY_GATE_KEY = "music-sync/capture-spotify-gate.json.gz"
 NO_MATCH_RECHECK = timedelta(days=1)
+NO_MATCH_LIMIT = 7
 _REQUIRED_PAYLOAD_FIELDS = {"capture_id", "title", "artist", "apple_music_id", "shazam_url"}
 _PAYLOAD_FIELDS = _REQUIRED_PAYLOAD_FIELDS | {"isrc", "recognized_at"}
 _ISRC = re.compile(r"[A-Z]{2}[A-Z0-9]{3}\d{7}")
@@ -280,7 +281,11 @@ def accept(settings: Settings, client_id: str, payload: dict, now: datetime) -> 
             raise Conflict("capture_id was already used with a different payload")
         if "payload" in state or "isrc" in state:
             current = view(state)
-            if current["status"] in ("queued", "not_added") and "isrc" not in state:
+            if (
+                current["status"] in ("queued", "not_added")
+                and current["reason"] != "unavailable"
+                and "isrc" not in state
+            ):
                 # Idempotent: restores the queue entry if its first write failed.
                 archive.put(settings, _queue_key(client_id, capture_id), gzip.compress(b"{}"))
             return current
@@ -383,6 +388,32 @@ def _drain_one(settings, step, client_id, capture_id, now, summary, tasks=None) 
         status = fields.pop("status", "added" if outcome == "added" else "queued")
         _save(settings, key, {**latest, "status": status, **fields})
 
+    def retire():
+        record(status="not_added", reason="unavailable", retry_at=None)
+        latest = _load(settings, key)
+        if tasks is not None and _task_open(latest):
+            try:
+                tasks.unavailable(client_id, latest)
+            except Exception as exc:
+                _log_task_failure("unavailable", exc)
+                record(
+                    status="not_added",
+                    retry_at=_iso(now + _backoff(attempts)),
+                    attempts=attempts + 1,
+                )
+                return False
+            record(status="not_added", task_closed=True)
+        archive.delete(settings, _queue_key(client_id, capture_id))
+        return False
+
+    if "isrc" not in state and (
+        state.get("reason") == "unavailable"
+        or len(state.get("no_match_checks", [])) >= NO_MATCH_LIMIT
+    ):
+        resolved = getattr(tasks, "resolved", None)
+        if not (resolved and resolved(client_id, state)):
+            return retire()
+
     try:
         result = step(client_id, state["payload"], state["received_at"])
     except Unauthorized:
@@ -423,6 +454,8 @@ def _drain_one(settings, step, client_id, capture_id, now, summary, tasks=None) 
             retry_at=_iso(now + NO_MATCH_RECHECK),
             no_match_checks=checks,
         )
+        if len(checks) >= NO_MATCH_LIMIT:
+            return retire()
         latest = _load(settings, key)
         if tasks is not None and not latest.get("task_id"):
             try:

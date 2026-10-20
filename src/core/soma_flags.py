@@ -240,7 +240,7 @@ def open_capture_task(settings, http, capture, today):
     recognized = payload.get("recognized_at")
     notes = [
         "Shazam recognized this capture, but Music Sync found no exact Spotify recording for "
-        "it, so it was not added. Music Sync checks again daily and closes this task when a "
+        "it, so it was not added. Music Sync checks daily up to seven times, then retains it as unavailable. It closes this task when a "
         "check finds it. To finish sooner, have an agent add the version you pick as a songs "
         "row (id = its ISRC, spotify_ids = [its track id], liked 0, first_seen now) with "
         "resolves_capture = the Capture ID below: Music Sync then adds it to New songs at this "
@@ -270,7 +270,7 @@ def open_capture_task(settings, http, capture, today):
     return row_id
 
 
-def close_capture_task(settings, http, task_id, isrc, today, picked=False):
+def close_capture_task(settings, http, task_id, isrc, today, picked=False, unavailable=False):
     """Append the resolution and complete a still-open capture task; True when closed now.
     `picked`: the recording was the version someone picked for the capture."""
     binding = _capture_binding(settings)
@@ -292,10 +292,14 @@ def close_capture_task(settings, http, task_id, isrc, today, picked=False):
             if picked
             else f"{today}: a later check found it on Spotify ({isrc}) and added it to the inbox."
         )
+        if unavailable:
+            note = f"{today}: unavailable after seven daily no-match checks; automatic retries stopped. Original capture metadata and search receipts are retained. No recording was fabricated."
         values = {
             col["notes"]: (row.get(col["notes"]) or "") + "\n" + note,
             # The task workflow (Reflex) stamps the close date on Completed.
-            col["status"]: binding.get("completed_status", "Completed"),
+            col["status"]: "Canceled"
+            if unavailable
+            else binding.get("completed_status", "Completed"),
             col.get("ai_completed", "ai_completed"): 1,
         }
         try:

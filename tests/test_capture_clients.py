@@ -586,3 +586,52 @@ def test_a_capture_someone_picked_a_version_for_is_checked_now_not_tomorrow(sett
     capture_clients.drain(settings, step, NOW.replace(hour=23, minute=30), tasks=tasks)
     assert selections == [1, 1]
     assert capture_clients.status(settings, "client-id", CAPTURE_ID)["status"] == "added"
+
+
+def test_unavailable_capture_stops_after_seven_daily_checks_without_losing_metadata(
+    settings, objects
+):
+    from datetime import timedelta
+
+    capture_clients.accept(settings, "client-id", PAYLOAD, NOW)
+    calls = []
+    for day in range(9):
+        capture_clients.drain(
+            settings,
+            lambda *args: calls.append(day) or {"ok": False, "reason": "no_match"},
+            NOW + timedelta(days=day),
+        )
+    state = receipt(objects)
+    assert calls == list(range(7))
+    assert state["reason"] == "unavailable" and state["retry_at"] is None
+    assert state["payload"] == PAYLOAD and len(state["no_match_checks"]) == 7
+    assert "isrc" not in state and queued(objects) == []
+    assert capture_clients.accept(settings, "client-id", PAYLOAD, NOW)["reason"] == "unavailable"
+    assert queued(objects) == [], "a repeated client POST must not restart exhausted searches"
+
+
+def test_existing_exhausted_capture_retries_task_retirement_without_spotify(settings, objects):
+    capture_clients.accept(settings, "client-id", PAYLOAD, NOW)
+    key = capture_clients._receipt_key("client-id", CAPTURE_ID)
+    state = receipt(objects)
+    state.update(no_match_checks=["2026-10-01T00:00:00.000Z"] * 8, task_id="task-1")
+    capture_clients._save(settings, key, state)
+    retired = []
+
+    class Retirement:
+        def unavailable(self, client_id, state):
+            retired.append(state["reason"])
+            if len(retired) == 1:
+                raise RuntimeError("hub unavailable")
+
+    from datetime import timedelta
+
+    for moment in (NOW, NOW + timedelta(days=1)):
+        capture_clients.drain(
+            settings,
+            lambda *args: pytest.fail("exhausted capture searched Spotify"),
+            moment,
+            tasks=Retirement(),
+        )
+    assert retired == ["unavailable", "unavailable"]
+    assert receipt(objects)["task_closed"] is True and queued(objects) == []

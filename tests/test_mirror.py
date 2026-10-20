@@ -58,6 +58,9 @@ class FakeSpotify:
     def __init__(self):
         self.item_calls = []
 
+    def get_track(self, tid, market):
+        return {"id": tid, "uri": f"spotify:track:{tid}"}
+
     def get_playlists(self):
         return PLAYLISTS
 

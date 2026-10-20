@@ -5,6 +5,35 @@ in Spotify from rules over that catalog, deployed on
 [Modal](https://modal.com) from the `modal-service` template. Full design:
 `docs/superpowers/specs/2026-09-08-music-sync-redesign-design.md`.
 
+## Spotify availability
+
+Soma retains the catalog, recording identifiers, likes, first-seen times and intended
+playlist membership when Spotify cannot serve a recording. No local-file delivery
+or downloader is required. Missing captures are checked daily for up to seven
+completed no-match checks. The receipt and original recognition metadata survive
+with reason `unavailable`, no next retry and a canceled reconciliation task.
+Rate limits and transport failures do not count as no-match checks. Repeating the
+same capture submission does not restart an exhausted search; an explicit new
+capture can start a new attempt.
+
+Reconciliation checks missing known playlist items and likes against fresh Spotify
+availability before treating their absence as a user removal. Unavailable or
+ambiguous items pause content changes to that playlist and retain its catalog
+membership. A freshly playable missing recording, without a retained outage, is
+an ordinary user removal. The retained outage state lets Music Sync restore
+membership and likes when the recording becomes available again. Smart playlist
+contents are freshly audited once per UTC day, even if their snapshot is unchanged;
+other runs reuse safe recorded orders. Spotify Retry-After still stops the run.
+
+Daily availability checks seek an alternative using the same ISRC. Automatic
+replacement requires a fresh playable track with consistent title, artists and
+known duration within two seconds of the catalog recording. Original-album
+profiles take preference; unknown identity or competing ambiguous versions stay
+flagged. Different recordings, covers and remixes require an explicit selection
+using their own identifiers. Existing recording identifiers and catalog metadata
+are retained. Explicit preview/digest-guarded operator packages use their actual
+Spotify observations to verify intentional removals and normalization.
+
 ## Layout
 
 ```
@@ -62,7 +91,7 @@ Playlists come in three kinds:
   their capture history.
 - **curated** - every other playlist the user edits by hand. The reconciler
   preserves membership independently of likes. Duplicate keepers and
-  replacement aliases require review.
+  ambiguous replacement aliases require review.
 - **smart** - membership = a rule over the pool (every liked song), fully
   materialized each run, ordered newest first by when each song came your way
   (the same time New songs uses; songs without one follow, the most recently
