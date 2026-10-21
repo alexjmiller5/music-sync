@@ -635,3 +635,24 @@ def test_existing_exhausted_capture_retries_task_retirement_without_spotify(sett
         )
     assert retired == ["unavailable", "unavailable"]
     assert receipt(objects)["task_closed"] is True and queued(objects) == []
+
+
+def test_already_exhausted_capture_retires_before_its_old_daily_timer(settings, objects):
+    from datetime import timedelta
+
+    capture_clients.accept(settings, "client-id", PAYLOAD, NOW)
+    key = capture_clients._receipt_key("client-id", CAPTURE_ID)
+    state = receipt(objects)
+    state.update(
+        status="not_added",
+        reason="no_match",
+        no_match_checks=["2026-10-01T00:00:00.000Z"] * 8,
+        retry_at=capture_clients._iso(NOW + timedelta(days=1)),
+    )
+    capture_clients._save(settings, key, state)
+    result = capture_clients.drain(
+        settings, lambda *args: pytest.fail("exhausted capture searched Spotify"), NOW
+    )
+    assert result["processed"] == 1
+    assert receipt(objects)["reason"] == "unavailable"
+    assert receipt(objects)["retry_at"] is None and queued(objects) == []
