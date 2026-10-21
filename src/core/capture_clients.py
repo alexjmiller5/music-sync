@@ -353,7 +353,11 @@ def drain(
         if state is None or "payload" not in state or ("isrc" in state and not _task_open(state)):
             archive.delete(settings, marker)
             continue
-        if state.get("retry_at") and _parse(state["retry_at"]) > now:
+        exhausted = (
+            state.get("reason") == "no_match"
+            and len(state.get("no_match_checks", [])) >= NO_MATCH_LIMIT
+        )
+        if state.get("retry_at") and _parse(state["retry_at"]) > now and not exhausted:
             # A no-match someone picked a version for is checked now, not tomorrow.
             resolved = getattr(tasks, "resolved", None)
             if not (state.get("reason") == "no_match" and resolved and resolved(client_id, state)):
