@@ -656,3 +656,32 @@ def test_already_exhausted_capture_retires_before_its_old_daily_timer(settings, 
     assert result["processed"] == 1
     assert receipt(objects)["reason"] == "unavailable"
     assert receipt(objects)["retry_at"] is None and queued(objects) == []
+
+
+def test_later_provider_cooldown_is_never_shortened(settings, monkeypatch):
+    import gzip
+    import json
+    from datetime import datetime, timezone
+
+    import httpx
+    from core import archive, capture_clients
+
+    held = "2030-01-02T00:00:00.000Z"
+    objects = {
+        capture_clients.SPOTIFY_GATE_KEY: gzip.compress(json.dumps({"retry_at": held}).encode())
+    }
+    monkeypatch.setattr(archive, "get", lambda s, key: objects.get(key))
+    monkeypatch.setattr(archive, "put", lambda s, key, value: objects.__setitem__(key, value))
+    response = httpx.Response(
+        429,
+        headers={"Retry-After": "10"},
+        request=httpx.Request("GET", "https://api.spotify.com/v1/me"),
+    )
+    exc = httpx.HTTPStatusError("limited", request=response.request, response=response)
+    assert (
+        capture_clients.defer_spotify(settings, exc, datetime(2030, 1, 1, tzinfo=timezone.utc))
+        == held
+    )
+    assert json.loads(gzip.decompress(objects[capture_clients.SPOTIFY_GATE_KEY])) == {
+        "retry_at": held
+    }
