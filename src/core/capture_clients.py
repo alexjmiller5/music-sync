@@ -324,6 +324,29 @@ def _backoff(attempts: int) -> timedelta:
     return timedelta(seconds=min(3600, 60 * 2**attempts))
 
 
+def spotify_retry_at(settings: Settings, now: datetime) -> str | None:
+    gate = _load(settings, SPOTIFY_GATE_KEY)
+    return gate["retry_at"] if gate and _parse(gate["retry_at"]) > now else None
+
+
+def defer_spotify(
+    settings: Settings, exc: BaseException | None, now: datetime, *, save: bool = True
+) -> str | None:
+    wait, spotify = _retry_after(exc)
+    if not spotify:
+        return None
+    until = now + timedelta(seconds=wait)
+    # Gate timestamps have millisecond precision; never round the provider's floor down.
+    until += timedelta(microseconds=(-until.microsecond) % 1000)
+    retry_at = _iso(until)
+    held = spotify_retry_at(settings, now)
+    if held and _parse(held) > _parse(retry_at):
+        retry_at = held
+    if save:
+        _save(settings, SPOTIFY_GATE_KEY, {"retry_at": retry_at})
+    return retry_at
+
+
 def _task_open(state: dict) -> bool:
     """A reconcile task exists and has not been closed after the capture was added."""
     return bool(state.get("task_id")) and not state.get("task_closed")
@@ -341,9 +364,9 @@ def drain(
     `tasks.close(client_id, state)` completes it once a later check adds the song.
     """
     summary = {"processed": 0, "added": 0, "deferred_until": None}
-    gate = _load(settings, SPOTIFY_GATE_KEY)
-    if gate and _parse(gate["retry_at"]) > now:
-        summary["deferred_until"] = gate["retry_at"]
+    retry_at = spotify_retry_at(settings, now)
+    if retry_at:
+        summary["deferred_until"] = retry_at
         return summary
     due = []
     for marker in archive.keys(settings, QUEUE_PREFIX + "/"):
@@ -425,10 +448,10 @@ def _drain_one(settings, step, client_id, capture_id, now, summary, tasks=None) 
         archive.delete(settings, _queue_key(client_id, capture_id))
         return False
     except Exception as exc:
-        wait, spotify = _retry_after(exc.__cause__ if isinstance(exc, DeliveryFailure) else exc)
-        if spotify:
-            retry_at = _iso(now + timedelta(seconds=wait))
-            _save(settings, SPOTIFY_GATE_KEY, {"retry_at": retry_at})
+        cause = exc.__cause__ if isinstance(exc, DeliveryFailure) else exc
+        wait, _ = _retry_after(cause)
+        retry_at = defer_spotify(settings, cause, now)
+        if retry_at:
             record(retry_at=retry_at, attempts=attempts + 1, reason=None)
             return True
         delay = max(_backoff(attempts), timedelta(seconds=wait or 0))

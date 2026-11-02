@@ -76,6 +76,11 @@ runs in tests, locally, or on any future platform.
   (status and `ai_completed` only: Reflex stamps the close date; an owner-closed one is
   left alone). The marker stays until that close succeeds. A capture can land while a reconcile is still reading; the
   next reconcile observes that membership.
+- Deployed reconciliation shares capture's provider cooldown. A pre-apply Spotify 429
+  returns and flags an absolute `retry_at`, retaining it in the same gate.
+  Later reconciles (including dry previews) return that not-before time without
+  Spotify calls or duplicate flags; a shorter cooldown never replaces a later
+  one. Dry previews report a newly observed cooldown without persisting it.
 - `writes=False` selects observation-only planning before enforcement. Import
   actual liked values and full memberships; never persist hypothetical New songs arrangement,
   auto-like, rule or expiry changes during review. Pending curation intents

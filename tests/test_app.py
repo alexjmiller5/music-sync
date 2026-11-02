@@ -962,6 +962,7 @@ def test_reconcile_response_exposes_quiet_review_items(settings, monkeypatch):
 
     reviews = [{"id": "curation-unlike:recording", "reason": "unliked_while_curated"}]
     monkeypatch.setattr(config, "Settings", lambda: settings)
+    monkeypatch.setattr("core.archive.get", lambda *args: None)
     monkeypatch.setattr("core.workspaces.settings_for", lambda base, workspace: base)
     monkeypatch.setattr(
         run, "reconcile", lambda *args, **kw: RunLog(dry_run=True, review_items=reviews)
@@ -1203,3 +1204,82 @@ def test_exhausted_capture_http_receipt_never_restarts_delivery(capture_api, mon
     repeat = post("/capture-consumer", CONSUMER_BODY, token)
     assert repeat.status_code == 422 and repeat.json()["reason"] == "unavailable"
     assert repeat.json()["retry_at"] is None and len(post.spawned) == count
+
+
+def test_reconcile_reports_and_retains_spotify_cooldown_without_repeating_requests(
+    settings, monkeypatch
+):
+    import gzip
+    import json
+    from datetime import datetime, timezone
+
+    import httpx
+    from core import archive, capture_clients, config, run
+
+    objects, calls, filed = {}, [], []
+    monkeypatch.setattr(config, "Settings", lambda: settings)
+    monkeypatch.setattr(archive, "get", lambda s, key: objects.get(key))
+    monkeypatch.setattr(archive, "put", lambda s, key, value: objects.__setitem__(key, value))
+    monkeypatch.setattr(app, "_flag_quietly", lambda s, f, e: filed.append(e))
+    monkeypatch.setenv("RECONCILE_ENABLED", "1")
+
+    def limited(*args, **kwargs):
+        calls.append(kwargs)
+        response = httpx.Response(
+            429,
+            headers={"Retry-After": "43099"},
+            request=httpx.Request("GET", "https://api.spotify.com/v1/me?private=query"),
+            text="private response",
+        )
+        raise httpx.HTTPStatusError(
+            "private exception", request=response.request, response=response
+        )
+
+    monkeypatch.setattr(run, "reconcile", limited)
+    before = datetime.now(timezone.utc).timestamp()
+    out = app.worker.get_raw_f()("reconcile", {})
+    until = datetime.fromisoformat(out["retry_at"]).timestamp()
+    assert before + 43099 <= until <= datetime.now(timezone.utc).timestamp() + 43099.001
+    assert out["errors"] == [f"Spotify rate limited; retry not before {out['retry_at']}"]
+    assert "private" not in str(out)
+    assert json.loads(gzip.decompress(objects[capture_clients.SPOTIFY_GATE_KEY])) == {
+        "retry_at": out["retry_at"]
+    }
+    assert filed == [out["errors"]]
+    assert app.worker.get_raw_f()("reconcile", {}) == out
+    assert app.worker.get_raw_f()("reconcile", {"dry_run": True}) == out
+    assert len(calls) == 1 and len(filed) == 1
+    assert (
+        capture_clients.drain(
+            settings, lambda *args: pytest.fail("Spotify called"), datetime.now(timezone.utc)
+        )["deferred_until"]
+        == out["retry_at"]
+    )
+
+    objects[capture_clients.SPOTIFY_GATE_KEY] = gzip.compress(
+        json.dumps({"retry_at": "2000-01-01T00:00:00+00:00"}).encode()
+    )
+    app.worker.get_raw_f()("reconcile", {})
+    assert len(calls) == 2
+
+
+def test_reconcile_dry_run_reports_spotify_cooldown_without_saving_or_filing(settings, monkeypatch):
+    import httpx
+    from core import config, run
+
+    monkeypatch.setattr(config, "Settings", lambda: settings)
+    monkeypatch.setattr("core.archive.get", lambda *args: None)
+    monkeypatch.setattr("core.archive.put", lambda *args: pytest.fail("dry-run write"))
+    monkeypatch.setattr(app, "_flag_quietly", lambda *args: pytest.fail("dry-run flag"))
+
+    def limited(*args, **kwargs):
+        response = httpx.Response(
+            429,
+            headers={"Retry-After": "21579"},
+            request=httpx.Request("GET", "https://api.spotify.com/v1/me"),
+        )
+        raise httpx.HTTPStatusError("limited", request=response.request, response=response)
+
+    monkeypatch.setattr(run, "reconcile", limited)
+    out = app.worker.get_raw_f()("reconcile", {"dry_run": True})
+    assert out["retry_at"] in out["errors"][0]

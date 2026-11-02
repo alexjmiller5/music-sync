@@ -27,15 +27,32 @@ secrets = [modal.Secret.from_name(APP_NAME)]
 
 
 def _run(dry_run: bool, workspace: str = "default") -> dict:
-    from core import run, workspaces
+    from datetime import datetime, timezone
+
+    from core import capture_clients, run, workspaces
     from core.config import Settings
 
     settings = workspaces.settings_for(Settings(), workspace)
     if not dry_run and not workspaces.reconcile_enabled(settings):
         return {"skipped": True}
     try:
+        retry_at = capture_clients.spotify_retry_at(settings, datetime.now(timezone.utc))
+        if retry_at:
+            return {
+                "errors": [f"Spotify rate limited; retry not before {retry_at}"],
+                "retry_at": retry_at,
+            }
         log = run.reconcile(settings, dry_run=dry_run, deadline=_budget())
     except Exception as exc:
+        retry_at = capture_clients.defer_spotify(
+            settings, exc, datetime.now(timezone.utc), save=not dry_run
+        )
+        if retry_at:
+            errors = [f"Spotify rate limited; retry not before {retry_at}"]
+            structlog.get_logger().warning("reconcile_deferred", retry_at=retry_at)
+            if not dry_run:
+                _flag_quietly(settings, [], errors)
+            return {"errors": errors, "retry_at": retry_at}
         # A stage failure before a run log exists (catalog contract, mirror load,
         # Spotify pull, archive) still reaches the flag destination. Only the
         # category is reported: exception text can carry response data.
