@@ -1,5 +1,7 @@
 """Retained raw pulls through soma; recovery checkpoints in project-owned R2."""
 
+import gzip
+import json
 from contextlib import closing
 from datetime import datetime
 from hashlib import sha256
@@ -80,6 +82,41 @@ def delete(settings: Settings, key: str, s3: BaseClient | None = None) -> None:
 
 # Outside raw/ so raw-backup lifecycle expiration cannot discard retry evidence.
 PENDING_KEY = "music-sync/pending-reconcile.json.gz"
+SPOTIFY_GATE_KEY = "music-sync/capture-spotify-gate.json.gz"
+
+
+def extend_spotify_gate(settings: Settings, retry_at: str) -> str:
+    """Atomically extend the shared provider floor, across worker and capture drain."""
+    client = _shared(settings)
+    for _ in range(8):
+        try:
+            response = client.get_object(Bucket=settings.r2_bucket, Key=SPOTIFY_GATE_KEY)
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "NoSuchKey":
+                raise
+            condition = {"IfNoneMatch": "*"}
+        else:
+            with closing(response["Body"]) as body:
+                held = json.loads(gzip.decompress(body.read()))["retry_at"]
+            if datetime.fromisoformat(held) >= datetime.fromisoformat(retry_at):
+                return held
+            condition = {"IfMatch": response["ETag"]}
+        try:
+            client.put_object(
+                Bucket=settings.r2_bucket,
+                Key=SPOTIFY_GATE_KEY,
+                Body=gzip.compress(json.dumps({"retry_at": retry_at}, sort_keys=True).encode()),
+                ContentType="application/gzip",
+                **condition,
+            )
+            return retry_at
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] not in (
+                "PreconditionFailed",
+                "ConditionalRequestConflict",
+            ):
+                raise
+    raise RuntimeError("Spotify cooldown changed repeatedly; defer delivery")
 
 
 def pending_key(settings: Settings) -> str:

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import pytest
 
 from core import capture_clients
+from tests.gate_store import GateStore
 
 
 CAPTURE_ID = "3d2ed84e-9413-4a4a-a7e1-c596201bf84d"
@@ -21,6 +22,8 @@ SELECTED = {"id": "track", "external_ids": {"isrc": "USAAA2600001"}}
 @pytest.fixture
 def objects(monkeypatch):
     stored = {}
+    store = GateStore(stored)
+    monkeypatch.setattr(capture_clients.archive, "_shared", lambda settings: store)
 
     monkeypatch.setattr(capture_clients.archive, "get", lambda settings, key: stored.get(key))
     monkeypatch.setattr(
@@ -670,6 +673,8 @@ def test_later_provider_cooldown_is_never_shortened(settings, monkeypatch):
     objects = {
         capture_clients.SPOTIFY_GATE_KEY: gzip.compress(json.dumps({"retry_at": held}).encode())
     }
+    store = GateStore(objects)
+    monkeypatch.setattr(archive, "_shared", lambda s: store)
     monkeypatch.setattr(archive, "get", lambda s, key: objects.get(key))
     monkeypatch.setattr(archive, "put", lambda s, key, value: objects.__setitem__(key, value))
     response = httpx.Response(

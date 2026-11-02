@@ -200,3 +200,90 @@ def test_operations_reuse_one_client_per_credential(settings, monkeypatch):
     assert created == [1]
     archive.put(settings.model_copy(update={"r2_api_token": "other"}), "music-sync/c.json.gz", b"z")
     assert created == [1, 1]
+
+
+def test_spotify_gate_create_uses_sdk_if_none_match_and_rereads_a_conflict(settings, s3):
+    import json
+    from botocore.stub import ANY
+
+    held = "2030-01-02T00:00:00.000Z"
+    body = BytesIO(gzip.compress(json.dumps({"retry_at": held}).encode()))
+    params = {"Bucket": "bucket", "Key": archive.SPOTIFY_GATE_KEY}
+    with Stubber(s3) as stub:
+        stub.add_client_error(
+            "get_object", "NoSuchKey", http_status_code=404, expected_params=params
+        )
+        stub.add_client_error(
+            "put_object",
+            "PreconditionFailed",
+            http_status_code=412,
+            expected_params={
+                **params,
+                "Body": ANY,
+                "ContentType": "application/gzip",
+                "IfNoneMatch": "*",
+            },
+        )
+        stub.add_response("get_object", {"Body": body, "ETag": '"winner"'}, params)
+        assert archive.extend_spotify_gate(settings, "2030-01-01T01:00:00.000Z") == held
+        stub.assert_no_pending_responses()
+    assert body.closed
+
+
+def test_spotify_gate_update_uses_sdk_etag_and_rereads_a_conflict(settings, s3):
+    import json
+    from botocore.stub import ANY
+
+    params = {"Bucket": "bucket", "Key": archive.SPOTIFY_GATE_KEY}
+    bodies = [
+        BytesIO(gzip.compress(json.dumps({"retry_at": stamp}).encode()))
+        for stamp in ("2030-01-01T00:00:00.000Z", "2030-01-01T00:01:00.000Z")
+    ]
+    target = "2030-01-01T01:00:00.000Z"
+    with Stubber(s3) as stub:
+        stub.add_response("get_object", {"Body": bodies[0], "ETag": '"old"'}, params)
+        stub.add_client_error(
+            "put_object",
+            "ConditionalRequestConflict",
+            http_status_code=409,
+            expected_params={
+                **params,
+                "Body": ANY,
+                "ContentType": "application/gzip",
+                "IfMatch": '"old"',
+            },
+        )
+        stub.add_response("get_object", {"Body": bodies[1], "ETag": '"new"'}, params)
+        stub.add_response(
+            "put_object",
+            {"ETag": '"saved"'},
+            {**params, "Body": ANY, "ContentType": "application/gzip", "IfMatch": '"new"'},
+        )
+        assert archive.extend_spotify_gate(settings, target) == target
+        stub.assert_no_pending_responses()
+    assert all(b.closed for b in bodies)
+
+
+@pytest.mark.parametrize("operation", ["get_object", "put_object"])
+@pytest.mark.parametrize("code,status", [("AccessDenied", 403), ("InternalError", 500)])
+def test_spotify_gate_does_not_retry_unknown_or_permission_errors(
+    settings, s3, operation, code, status
+):
+    with Stubber(s3) as stub:
+        if operation == "put_object":
+            stub.add_client_error("get_object", "NoSuchKey", http_status_code=404)
+        stub.add_client_error(operation, code, http_status_code=status)
+        with pytest.raises(ClientError) as error:
+            archive.extend_spotify_gate(settings, "2030-01-01T01:00:00.000Z")
+        assert error.value.response["Error"]["Code"] == code
+        stub.assert_no_pending_responses()
+
+
+def test_spotify_gate_bounds_definitive_conflict_retries(settings, s3):
+    with Stubber(s3) as stub:
+        for _ in range(8):
+            stub.add_client_error("get_object", "NoSuchKey", http_status_code=404)
+            stub.add_client_error("put_object", "PreconditionFailed", http_status_code=412)
+        with pytest.raises(RuntimeError, match="cooldown changed repeatedly"):
+            archive.extend_spotify_gate(settings, "2030-01-01T01:00:00.000Z")
+        stub.assert_no_pending_responses()
