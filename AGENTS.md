@@ -80,7 +80,10 @@ runs in tests, locally, or on any future platform.
   returns and flags an absolute `retry_at`, retaining it in the same gate.
   Later reconciles (including dry previews) return that not-before time without
   Spotify calls or duplicate flags; a shorter cooldown never replaces a later
-  one. Dry previews report a newly observed cooldown without persisting it.
+  one. The worker and drain extend that one gate with R2 ETag conditional writes
+  (create-only when absent); definite write conflicts re-read before retrying,
+  while unknown failures stop delivery. Dry previews report a newly observed
+  cooldown without persisting it.
 - `writes=False` selects observation-only planning before enforcement. Import
   actual liked values and full memberships; never persist hypothetical New songs arrangement,
   auto-like, rule or expiry changes during review. Pending curation intents

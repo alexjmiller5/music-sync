@@ -21,7 +21,7 @@ RECEIPTS_PREFIX = "music-sync/capture-receipts"
 # One empty marker per capture still owed Spotify or catalog work, so a drain
 # lists only open work. The gate holds Spotify's Retry-After for every client.
 QUEUE_PREFIX = "music-sync/capture-queue"
-SPOTIFY_GATE_KEY = "music-sync/capture-spotify-gate.json.gz"
+SPOTIFY_GATE_KEY = archive.SPOTIFY_GATE_KEY
 NO_MATCH_RECHECK = timedelta(days=1)
 NO_MATCH_LIMIT = 7
 _REQUIRED_PAYLOAD_FIELDS = {"capture_id", "title", "artist", "apple_music_id", "shazam_url"}
@@ -313,7 +313,10 @@ def _retry_after(exc: BaseException | None) -> tuple[float | None, bool]:
     """A rate-limited service's Retry-After, and whether that service is Spotify."""
     if not isinstance(exc, httpx.HTTPStatusError) or exc.response.status_code not in (429, 503):
         return None, False
-    spotify = str(exc.request.url.host).endswith("spotify.com") and exc.response.status_code == 429
+    host = str(exc.request.url.host)
+    spotify = (
+        host == "spotify.com" or host.endswith(".spotify.com")
+    ) and exc.response.status_code == 429
     try:
         return max(0.0, float(exc.response.headers.get("Retry-After", "300"))), spotify
     except ValueError:
@@ -339,11 +342,11 @@ def defer_spotify(
     # Gate timestamps have millisecond precision; never round the provider's floor down.
     until += timedelta(microseconds=(-until.microsecond) % 1000)
     retry_at = _iso(until)
+    if save:
+        return archive.extend_spotify_gate(settings, retry_at)
     held = spotify_retry_at(settings, now)
     if held and _parse(held) > _parse(retry_at):
         retry_at = held
-    if save:
-        _save(settings, SPOTIFY_GATE_KEY, {"retry_at": retry_at})
     return retry_at
 
 

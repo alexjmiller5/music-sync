@@ -6,6 +6,7 @@ import pytest
 from core import soma_flags  # noqa: F401
 
 from tests.test_metadata_replay import KEY, STAMP, replay_env as replay_env
+from tests.gate_store import GateStore
 
 
 CAPTURE_ID = "3d2ed84e-9413-4a4a-a7e1-c596201bf84d"
@@ -91,6 +92,8 @@ def capture_api(settings, monkeypatch):
     from core import archive, capture_clients, config
 
     objects = {}
+    store = GateStore(objects)
+    monkeypatch.setattr(archive, "_shared", lambda settings: store)
     monkeypatch.setattr(config, "Settings", lambda: settings)
     monkeypatch.setattr(archive, "get", lambda settings, key: objects.get(key))
     monkeypatch.setattr(
@@ -1217,6 +1220,8 @@ def test_reconcile_reports_and_retains_spotify_cooldown_without_repeating_reques
     from core import archive, capture_clients, config, run
 
     objects, calls, filed = {}, [], []
+    store = GateStore(objects)
+    monkeypatch.setattr(archive, "_shared", lambda s: store)
     monkeypatch.setattr(config, "Settings", lambda: settings)
     monkeypatch.setattr(archive, "get", lambda s, key: objects.get(key))
     monkeypatch.setattr(archive, "put", lambda s, key, value: objects.__setitem__(key, value))
