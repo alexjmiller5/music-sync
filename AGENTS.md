@@ -273,6 +273,10 @@ runs in tests, locally, or on any future platform.
 - **Smart playlist order**: every smart playlist is ordered newest first by the
   same came-your-way time as New songs (`new_songs.order`, curated_at applied);
   songs without one follow, newest `first_seen` first, then ISRC. Membership
+  rules with `latest_likes: N` instead select at most N liked songs with known
+  like dates after all filters, ordered by actual like instant then ISRC,
+  descending. Rule references reuse that capped set.
+  Other smart playlists keep came-your-way ordering. Membership
   (rule, pinned/expiry, duplicate guard) is decided exactly as before. When the
   final order differs from the observed one (removals alone never do), the plan
   adds one `arrange_items` op carrying the observed order as `current`; it covers

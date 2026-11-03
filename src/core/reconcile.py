@@ -551,14 +551,14 @@ def plan(
                 )
             )
             actual.pop((pid, isrc))
-        # Order: newest first by when each song came your way (core/new_songs.py). One
+        # Order: latest-like rules use like time; others use came-your-way time. One
         # arrangement from the observed order covers the adds and removes above, placing
         # each new match at its position instead of appending it.
         if any(not it.isrc for it in lp.items):
             flags.append(f"{p.name}: holds an item without an ISRC; its order is left alone")
         else:
             final = {isrc: view.songs[isrc] for (q, isrc) in actual if q == pid}
-            uris = [actual[(pid, isrc)].uri for isrc in new_songs.order(final, curated_at)]
+            uris = [actual[(pid, isrc)].uri for isrc in rules.order(final, p.rule, curated_at)]
             current, kept = [it.uri for it in lp.items], set(uris)
             # Removals alone keep the others' order; any add is placed by the arrangement.
             if uris != [u for u in current if u in kept]:

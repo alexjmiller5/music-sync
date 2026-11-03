@@ -444,8 +444,13 @@ converts an owned playlist; `just rules curated <id>` classifies a new
 playlist; `just rules clear <id>` turns a smart playlist back into a curated
 one. Rules are JSON v1 over liked songs (`first_year`, `deezer_genres_any`,
 `mb_tags_any`, `genre_any`, `in_playlist_ids_any`, `not_in_playlist_ids`,
-`matches_rule_ids_any`, `not_matches_rule_ids`, `captured_by`, `liked_after`)
-and reference playlists by stable ID. Spotify's Web API may list a playlist it
+`matches_rule_ids_any`, `not_matches_rule_ids`, `captured_by`, `liked_after`,
+`latest_likes`) and reference playlists by stable ID. `latest_likes` is a positive
+integer cap applied after the other filters, using known like timestamps newest
+first with descending ISRC ties. For example, `{"v":1,"latest_likes":100}` selects
+the latest 100 liked recordings; it excludes songs whose like date is unknown.
+Referenced rules retain their caps. Other smart rules keep came-your-way ordering.
+Spotify's Web API may list a playlist it
 created as public even when asked for a private one, and ignores a later switch
 to private; make a new smart playlist private in the Spotify app if it should
 stay off your profile. A predicate shared by several playlists
