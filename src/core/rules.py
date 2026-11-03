@@ -9,6 +9,7 @@ import json
 import re
 import sqlite3
 
+from core import new_songs
 from core.model import Mirror
 
 KEYS = {
@@ -23,6 +24,7 @@ KEYS = {
     "not_in_playlist_ids",
     "captured_by",
     "liked_after",
+    "latest_likes",
     "matches_rule_ids_any",
     "not_matches_rule_ids",
 }
@@ -46,6 +48,10 @@ def validate(rule: dict) -> None:
     unknown = set(rule) - KEYS
     if unknown:
         raise RuleError(f"unknown keys: {sorted(unknown)}")
+    if "latest_likes" in rule and not (
+        type(rule["latest_likes"]) is int and rule["latest_likes"] > 0
+    ):
+        raise RuleError("latest_likes: positive integer required")
     for k in (
         "deezer_genres_any",
         "mb_tags_any",
@@ -192,11 +198,21 @@ def to_sql(
         )
     if "liked_after" in rule:
         parts.append(f"s.liked_at >= {_q(rule['liked_after'])}")
-    return "(" + " AND ".join(parts) + ")" if parts else "(1=1)"
+    predicate = "(" + " AND ".join(parts) + ")" if parts else "(1=1)"
+    if "latest_likes" in rule:
+        return (
+            "s.id IN (SELECT id FROM songs s WHERE s.liked = 1 "
+            f"AND s.liked_at IS NOT NULL AND {predicate} "
+            "ORDER BY julianday(s.liked_at) DESC, s.id DESC "
+            f"LIMIT {rule['latest_likes']})"
+        )
+    return predicate
 
 
 def describe(rule: dict, synced: str, playlist_names: dict[str, str] | None = None) -> str:
     seg = ["smart"]
+    if "latest_likes" in rule:
+        seg.append(f"latest {rule['latest_likes']} likes")
     for key, label in (
         ("in_playlist_ids_any", "in: "),
         ("not_in_playlist_ids", "not in: "),
@@ -294,3 +310,13 @@ def evaluate(
             continue
         out[p.id] = {r[0] for r in db.execute(sql)}
     return out
+
+
+def order(songs: dict, rule: dict, curated_at: dict | None = None) -> list[str]:
+    if "latest_likes" in rule:
+        timed = {i: s for i, s in songs.items() if s.liked_at}
+        untimed = {i: s for i, s in songs.items() if not s.liked_at}
+        return sorted(
+            timed, key=lambda i: (new_songs.at(timed[i].liked_at), i), reverse=True
+        ) + new_songs.order(untimed, curated_at)
+    return new_songs.order(songs, curated_at)
