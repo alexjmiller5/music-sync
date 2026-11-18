@@ -12,6 +12,9 @@ Only `app.py` imports `modal` - it is the deployment shim (image, secrets,
 cron, endpoints). This keeps the logic portable: the same `core` package
 runs in tests, locally, or on any future platform.
 
+- The six-hour cron submits a durable worker call and returns its call ID.
+  The serialized worker owns execution and its timeout; time waiting in its queue
+  does not consume a synchronous cron wait budget.
 - Spotify uses its own Music Sync developer app and OAuth refresh grant. Never
   reuse a terminal client or another service's client credentials. Development
   Mode quota is shared across the owning developer account, even with separate apps.

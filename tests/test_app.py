@@ -23,11 +23,11 @@ def test_import_has_no_side_effects():
     assert app._run is not None
 
 
-def test_reconcile_cron_skips_when_not_enabled(monkeypatch):
+def test_reconcile_worker_skips_when_not_enabled(monkeypatch):
     monkeypatch.setattr(app.capture_drain, "spawn", lambda *args: None)
     monkeypatch.setattr(app.worker, "remote", app.worker.get_raw_f())
     monkeypatch.delenv("RECONCILE_ENABLED", raising=False)
-    assert app.reconcile_cron.get_raw_f()() == {"skipped": True}
+    assert app.worker.get_raw_f()("reconcile", {"all_workspaces": True}) == {"skipped": True}
 
 
 def test_flag_quietly_swallows_a_filing_failure(settings, monkeypatch):
@@ -813,7 +813,9 @@ def test_transient_refusal_keeps_the_normal_retry(capture_api, monkeypatch):
 def test_reconcile_cron_also_starts_a_capture_drain(monkeypatch):
     spawned = []
     monkeypatch.setattr(app.capture_drain, "spawn", lambda *args: spawned.append(args))
-    monkeypatch.setattr(app.worker, "remote", lambda *args: {"skipped": True})
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(app.worker, "spawn", lambda *args: SimpleNamespace(object_id="fc-test"))
     app.reconcile_cron.get_raw_f()()
     assert spawned == [()]
 
@@ -1288,3 +1290,22 @@ def test_reconcile_dry_run_reports_spotify_cooldown_without_saving_or_filing(set
     monkeypatch.setattr(run, "reconcile", limited)
     out = app.worker.get_raw_f()("reconcile", {"dry_run": True})
     assert out["retry_at"] in out["errors"][0]
+
+
+def test_cron_dispatch_does_not_wait_in_worker_queue(monkeypatch):
+    from types import SimpleNamespace
+
+    calls = []
+    monkeypatch.setattr(app.capture_drain, "spawn", lambda *args: None)
+    monkeypatch.setattr(
+        app.worker,
+        "spawn",
+        lambda *args: calls.append(args) or SimpleNamespace(object_id="fc-test"),
+    )
+
+    def blocked(*args):
+        raise AssertionError("cron must not wait for the serialized worker")
+
+    monkeypatch.setattr(app.worker, "remote", blocked)
+    assert app.reconcile_cron.get_raw_f()() == {"call_id": "fc-test"}
+    assert calls == [("reconcile", {"all_workspaces": True})]

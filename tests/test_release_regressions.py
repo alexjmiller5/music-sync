@@ -539,7 +539,14 @@ def test_all_entrypoints_share_one_serial_modal_worker(monkeypatch):
             calls.append(operation)
             return app.worker.get_raw_f()(operation, body)
 
+    from types import SimpleNamespace
+
+    def spawn(operation, body=None):
+        remote(operation, body)
+        return SimpleNamespace(object_id="fc-test")
+
     monkeypatch.setattr(app.worker, "remote", remote)
+    monkeypatch.setattr(app.worker, "spawn", spawn)
     monkeypatch.setenv("RECONCILE_ENABLED", "1")
     monkeypatch.setattr(app, "_run", lambda **kw: {"reconciled": True})
     monkeypatch.setattr(app, "_workspace_ids", lambda: ["default"])
@@ -554,7 +561,7 @@ def test_all_entrypoints_share_one_serial_modal_worker(monkeypatch):
         results = list(pool.map(lambda pair: pair[0](*pair[1]), inputs))
     assert calls.count("reconcile") == 2 and calls.count("capture") == 2
     assert results == [
-        {"default": {"reconciled": True}},  # the cron reconciles each workspace
+        {"call_id": "fc-test"},  # the cron submits the same serialized worker
         {"reconciled": True},
         {"captured": {"id": 1}},
         {"captured": {"id": 2}},
