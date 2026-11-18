@@ -129,7 +129,8 @@ runs in tests, locally, or on any future platform.
   A supplied ISRC is normalized, searched directly and must
   match the returned recording. Without one, capture requires normalized exact
   title and artist identity; it never strips version suffixes or accepts an
-  artist-free title match.
+  artist-free title match. Exact metadata matches with different ISRCs remain
+  unresolved rather than letting Spotify search order choose a recording.
 - R2 object reads/writes use boto3's S3 API with bucket-scoped permissions.
   `R2_ACCESS_KEY_ID` is the token ID; the S3 secret is derived in memory as
   SHA-256 of `R2_API_TOKEN`. Only `NoSuchKey` means a missing object; other
