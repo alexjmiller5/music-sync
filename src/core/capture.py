@@ -20,11 +20,15 @@ def _exact_norm(s: str) -> str:
 
 def best_match(title: str, artist: str, tracks: list[dict]) -> dict | None:
     title, artist = _exact_norm(title), _exact_norm(artist)
+    matches = []
     for tr in tracks:
         names = [_exact_norm(x.get("name", "")) for x in tr.get("artists") or []]
         if _exact_norm(tr.get("name", "")) == title and artist in names:
-            return tr
-    return None
+            matches.append(tr)
+    # Search rank cannot choose between distinct recordings with the same labels.
+    if len({(tr.get("external_ids") or {}).get("isrc") for tr in matches}) > 1:
+        return None
+    return matches[0] if matches else None
 
 
 def _iso(dt: datetime) -> str:

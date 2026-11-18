@@ -271,6 +271,25 @@ def test_capture_no_match_and_missing_fields(settings):
     )
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+def test_capture_does_not_guess_between_recordings_with_identical_metadata(settings, reverse):
+    tracks = [
+        track("recording-a", "Song", "Artist", isrc="USAAA2600001"),
+        track("recording-b", "Song", "Artist", isrc="USAAA2600002"),
+    ]
+    sp, hub = FakeSpotify(tracks[::-1] if reverse else tracks), FakeHub(INBOX)
+    result = capture.capture({"title": "Song", "artist": "Artist"}, sp, hub, settings, NOW)
+    assert result["ok"] is False
+    assert result["isrc"] is None
+    assert sp.calls == []
+    assert hub.pushed == []
+
+
+def test_best_match_keeps_aliases_of_one_recording():
+    tracks = [track("alias-a", "Song", "Artist"), track("alias-b", "Song", "Artist")]
+    assert capture.best_match("Song", "Artist", tracks) == tracks[0]
+
+
 def test_capture_trims_inbox(settings):
     items = [
         {
