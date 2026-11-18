@@ -135,7 +135,9 @@ def worker(operation: str, body: dict | None = None):
 def reconcile_cron():
     # Hourly backstop for captures waiting on a Retry-After or their daily recheck.
     _spawn_drain()
-    return worker.remote("reconcile", {"all_workspaces": True})
+    # Queue time and worker execution have separate budgets.
+    call = worker.spawn("reconcile", {"all_workspaces": True})
+    return {"call_id": call.object_id}
 
 
 @app.function(image=image, timeout=WORKER_TIMEOUT)
