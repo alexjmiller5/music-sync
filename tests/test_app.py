@@ -205,13 +205,22 @@ def test_capture_is_accepted_at_once_and_delivered_by_the_drain(capture_api, mon
     }
 
 
+@pytest.mark.parametrize("received_time", ["2030-01-01T00:00:00.000Z", "2030-01-01T00:00:00.123Z"])
 def test_queue_delivery_uses_the_receipt_time_and_never_the_worker_mirror_cache(
-    capture_api, monkeypatch
+    capture_api, monkeypatch, received_time
 ):
     import gzip
     import json
     from core import capture as capture_mod, capture_clients
+    from datetime import datetime
 
+    accept = capture_clients.accept
+    received = datetime.fromisoformat(received_time.replace("Z", "+00:00"))
+    monkeypatch.setattr(
+        capture_clients,
+        "accept",
+        lambda settings, client, payload, now: accept(settings, client, payload, received),
+    )
     post, objects = capture_api
     token = issue_capture_token(post)["token"]
     monkeypatch.setattr(capture_mod, "resolve_track", lambda *args: {"id": "selected"})
@@ -227,7 +236,7 @@ def test_queue_delivery_uses_the_receipt_time_and_never_the_worker_mirror_cache(
     received_at = json.loads(gzip.decompress(receipt))["received_at"]
     post.drain(later(30))
     assert seen["use_cache"] is False
-    assert seen["now"].isoformat().replace("+00:00", "")[:23] == received_at.rstrip("Z")
+    assert seen["now"] == datetime.fromisoformat(received_at.replace("Z", "+00:00"))
 
 
 def test_status_is_private_to_the_client_that_sent_the_capture(capture_api):
