@@ -265,3 +265,19 @@ def test_retained_files_go_through_the_file_api_with_their_type():
     assert seen[0] == ("PUT", "/v1/files/raw/spotify-covers/P/a.jpg", "image/jpeg", b"img")
     with pytest.raises(HubError, match="403"):
         make(lambda req: httpx.Response(403, text="insufficient scope")).get_file("raw/x")
+
+
+def test_post_failure_diagnostic_names_the_operation_without_row_values():
+    client = make(lambda req: httpx.Response(500, text="private response"))
+    with pytest.raises(HubError) as failure:
+        client.insert_rows("records", [{"id": "private row"}])
+    assert failure.value.diagnostic == {"category": "http", "status": 500}
+    assert failure.value.route == "/v1/rows/insert"
+
+
+@pytest.mark.parametrize("method,route", [("catalog", "/v1/catalog"), ("get_file", "/v1/files")])
+def test_read_failures_name_only_the_operation(method, route):
+    client = make(lambda req: httpx.Response(500, text="private response"))
+    with pytest.raises(HubError) as failure:
+        getattr(client, method)(*(["private-key"] if method == "get_file" else []))
+    assert failure.value.route == route

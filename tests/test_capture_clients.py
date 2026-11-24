@@ -699,7 +699,7 @@ def test_delivery_failure_logs_cause_without_payload(settings, objects, capsys):
 
     def fail(*args):
         raise capture_clients.DeliveryFailure(CAPTURE_ID, "added") from HubError(
-            "private response body", category="http", status=500
+            "private response body", category="http", status=500, route="/v1/rows/insert"
         )
 
     capture_clients.drain(settings, fail, NOW)
@@ -707,4 +707,5 @@ def test_delivery_failure_logs_cause_without_payload(settings, objects, capsys):
     assert "capture_delivery_failed" in output
     assert "HubError" in output
     assert "500" in output
+    assert "/v1/rows/insert" in output
     assert "private response body" not in output

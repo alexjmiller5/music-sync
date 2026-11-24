@@ -128,7 +128,7 @@ runs in tests, locally, or on any future platform.
   without enabling enforcement. It fills existing songs only and checkpoints
   remaining provenance with song patches. Retained source market is used only
   when explicitly present in the archive; otherwise evidence market is null.
-- Capture delivery failures log only the cause class, hub status and retained
+- Capture delivery failures log only the cause class, hub operation/status and retained
   Spotify outcome; exception messages and capture payloads stay out of logs.
 - Consumer capture accepts five required string fields plus an optional ISRC.
   A supplied ISRC is normalized, searched directly and must

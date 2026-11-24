@@ -458,6 +458,7 @@ def _drain_one(settings, step, client_id, capture_id, now, summary, tasks=None) 
             "capture_delivery_failed",
             error_type=type(cause).__name__,
             status=getattr(cause, "diagnostic", {}).get("status"),
+            route=getattr(cause, "route", None),
             spotify_outcome=getattr(exc, "outcome", None),
         )
         wait, _ = _retry_after(cause)

@@ -14,9 +14,10 @@ USER_AGENT = "music-sync/0.1 (+https://github.com/alexjmiller5/music-sync)"
 
 
 class HubError(RuntimeError):
-    def __init__(self, message, *, category="hub", status=None):
+    def __init__(self, message, *, category="hub", status=None, route=None):
         super().__init__(message)
         self.diagnostic = {"category": category}
+        self.route = route
         if status is not None:
             self.diagnostic["status"] = status
 
@@ -48,12 +49,17 @@ class Hub:
         try:
             r = self._http.post(f"{self.base}{route}", json=body, headers=self._headers)
         except httpx.HTTPError as e:
-            raise HubError(f"hub unreachable: {type(e).__name__}", category="transport") from e
+            raise HubError(
+                f"hub unreachable: {type(e).__name__}", category="transport", route=route
+            ) from e
         if r.status_code >= 400:
             if r.status_code == 409:
                 raise RevisionConflict("hub row revision changed")
             raise HubError(
-                f"hub HTTP {r.status_code}: {r.text[:300]}", category="http", status=r.status_code
+                f"hub HTTP {r.status_code}: {r.text[:300]}",
+                category="http",
+                status=r.status_code,
+                route=route,
             )
         return r.json()
 
@@ -149,9 +155,9 @@ class Hub:
         try:
             r = self._http.get(f"{self.base}/v1/catalog", headers=self._headers)
         except httpx.HTTPError as e:
-            raise HubError(f"hub unreachable: {type(e).__name__}") from e
+            raise HubError(f"hub unreachable: {type(e).__name__}", route="/v1/catalog") from e
         if r.status_code >= 400:
-            raise HubError(f"hub HTTP {r.status_code}: {r.text[:300]}")
+            raise HubError(f"hub HTTP {r.status_code}: {r.text[:300]}", route="/v1/catalog")
         return r.json()
 
     def get_file(self, key: str) -> bytes | None:
@@ -171,12 +177,17 @@ class Hub:
                 content=data,
             )
         except httpx.HTTPError as e:
-            raise HubError(f"hub unreachable: {type(e).__name__}", category="transport") from e
+            raise HubError(
+                f"hub unreachable: {type(e).__name__}", category="transport", route="/v1/files"
+            ) from e
         if method == "GET" and r.status_code == 404:
             return None
         if r.status_code >= 400:
             raise HubError(
-                f"hub HTTP {r.status_code}: {r.text[:300]}", category="http", status=r.status_code
+                f"hub HTTP {r.status_code}: {r.text[:300]}",
+                category="http",
+                status=r.status_code,
+                route="/v1/files",
             )
         return r.content
 
