@@ -690,3 +690,21 @@ def test_later_provider_cooldown_is_never_shortened(settings, monkeypatch):
     assert json.loads(gzip.decompress(objects[capture_clients.SPOTIFY_GATE_KEY])) == {
         "retry_at": held
     }
+
+
+def test_delivery_failure_logs_cause_without_payload(settings, objects, capsys):
+    from core.hub import HubError
+
+    capture_clients.accept(settings, "client-id", PAYLOAD, NOW)
+
+    def fail(*args):
+        raise capture_clients.DeliveryFailure(CAPTURE_ID, "added") from HubError(
+            "private response body", category="http", status=500
+        )
+
+    capture_clients.drain(settings, fail, NOW)
+    output = capsys.readouterr().out
+    assert "capture_delivery_failed" in output
+    assert "HubError" in output
+    assert "500" in output
+    assert "private response body" not in output

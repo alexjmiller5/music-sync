@@ -452,6 +452,14 @@ def _drain_one(settings, step, client_id, capture_id, now, summary, tasks=None) 
         return False
     except Exception as exc:
         cause = exc.__cause__ if isinstance(exc, DeliveryFailure) else exc
+        import structlog
+
+        structlog.get_logger().error(
+            "capture_delivery_failed",
+            error_type=type(cause).__name__,
+            status=getattr(cause, "diagnostic", {}).get("status"),
+            spotify_outcome=getattr(exc, "outcome", None),
+        )
         wait, _ = _retry_after(cause)
         retry_at = defer_spotify(settings, cause, now)
         if retry_at:
