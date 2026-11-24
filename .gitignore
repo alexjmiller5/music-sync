@@ -12,3 +12,5 @@ sandbox_config.json
 
 # Added by ggshield
 .cache_ggshield
+
+.wrangler/
