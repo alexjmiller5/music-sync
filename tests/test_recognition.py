@@ -155,3 +155,15 @@ def test_history_import_normalizes_isrc_case_and_rejects_invalid(settings, objec
     assert hub.tables["provenance"][0]["to_ref"] == "USAAA2600001"
     with pytest.raises(ValueError, match="ISRC"):
         recognition.import_history(settings, hub, history(1, isrc="not-an-isrc"), NOW)
+
+
+def test_song_projection_excludes_other_target_kinds_with_the_same_id(settings, objects):
+    stamp = "2026-10-09T12:00:00.000Z"
+    hub = StoringHub(INBOX)
+    edge = recognition._edge("current", "I", stamp, "current")
+    event = {"received_at": stamp}
+    hub.tables["provenance"] = [
+        {**recognition._edge("other", "I", stamp, "other"), "to_kind": "books"}
+    ]
+    objects["other"] = gzip.compress(json.dumps({"event": event}).encode())
+    assert recognition.song_projection(settings, hub, "I", edge, event)["shazam_count"] == 1

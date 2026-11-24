@@ -157,7 +157,12 @@ def song_projection(settings, hub, isrc, edge, event):
     rows = hub.pull(
         "provenance",
         PROV_COLS,
-        where={"to_ref": isrc, "rel": "evidence_of", "asserted_by": "music-sync"},
+        where={
+            "to_kind": "songs",
+            "to_ref": isrc,
+            "rel": "evidence_of",
+            "asserted_by": "music-sync",
+        },
     )
     return projections(settings, [*rows, edge], {edge["from_ref"]: event})[0]
 
