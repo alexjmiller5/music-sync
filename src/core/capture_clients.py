@@ -454,10 +454,26 @@ def _drain_one(settings, step, client_id, capture_id, now, summary, tasks=None) 
         cause = exc.__cause__ if isinstance(exc, DeliveryFailure) else exc
         import structlog
 
+        response = cause.response if isinstance(cause, httpx.HTTPStatusError) else None
+        service = None
+        if response is not None:
+            host = response.request.url.host
+            service = (
+                "spotify"
+                if host == "api.spotify.com"
+                else "hub"
+                if host == httpx.URL(settings.soma_hub_url).host
+                else "other"
+            )
         structlog.get_logger().error(
             "capture_delivery_failed",
             error_type=type(cause).__name__,
-            status=getattr(cause, "diagnostic", {}).get("status"),
+            status=(
+                response.status_code
+                if response is not None
+                else getattr(cause, "diagnostic", {}).get("status")
+            ),
+            service=service,
             route=getattr(cause, "route", None),
             overloaded="D1 DB is overloaded" in str(cause),
             spotify_outcome=getattr(exc, "outcome", None),

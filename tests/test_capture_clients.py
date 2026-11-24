@@ -713,3 +713,36 @@ def test_delivery_failure_logs_cause_without_payload(settings, objects, capsys):
     assert "/v1/rows/insert" in output
     assert "overloaded=True" in output
     assert "private response body" not in output
+
+
+@pytest.mark.parametrize("service", ["hub", "spotify", "other"])
+def test_delivery_http_failure_logs_only_status_and_service(settings, objects, capsys, service):
+    import httpx
+
+    capture_clients.accept(settings, "client-id", PAYLOAD, NOW)
+    base = {
+        "hub": settings.soma_hub_url,
+        "spotify": "https://api.spotify.com",
+        "other": "https://unknown.example",
+    }[service]
+    request = httpx.Request("GET", base.rstrip("/") + "/private-record?token=private-query")
+    response = httpx.Response(502, request=request, text="private response body")
+
+    def fail(*args):
+        raise capture_clients.DeliveryFailure(CAPTURE_ID, "added") from httpx.HTTPStatusError(
+            "private exception details", request=request, response=response
+        )
+
+    capture_clients.drain(settings, fail, NOW)
+    output = capsys.readouterr().out
+    assert "status=502" in output
+    assert f"service={service}" in output
+    for private in (
+        "private-record",
+        "private-query",
+        "private response body",
+        "private exception details",
+        "unknown.example",
+    ):
+        assert private not in output
+    assert receipt(objects)["attempts"] == 1
