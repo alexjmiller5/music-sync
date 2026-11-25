@@ -292,7 +292,7 @@ def test_new_provider_cooldown_is_retained_and_not_retried(settings, store, monk
     sp.get_recent_likes = limited
     held = []
     monkeypatch.setattr(
-        capture_clients, "defer_spotify", lambda *a: held.append(a) or "2030-01-02T00:02:00Z"
+        capture_clients, "defer_spotify", lambda *a, **kw: held.append(a) or "2030-01-02T00:02:00Z"
     )
     out = quick_likes.run(settings, spotify=sp, now=NOW)
     assert out["retry_at"] == "2030-01-02T00:02:00Z" and len(calls) == 1 and len(held) == 1
@@ -412,3 +412,23 @@ def test_review_hold_does_not_poll_again_and_positive_evidence_can_finish(settin
 def test_small_scheduler_delay_does_not_turn_full_tick_into_light_poll():
     assert quick_likes.cron_operation(NOW.replace(hour=7, minute=41, second=5)) == "reconcile"
     assert quick_likes.cron_operation(NOW.replace(hour=7, minute=55)) == "quick_likes"
+
+
+def test_read_only_429_check_cannot_extend_persisted_gate(settings, store, monkeypatch):
+    import httpx
+    from core import capture_clients
+
+    sp = RecentSpotify(page(item()))
+    saved = []
+
+    def limited(market):
+        req = httpx.Request("GET", "https://api.spotify.com/v1/me/tracks")
+        resp = httpx.Response(429, request=req, headers={"Retry-After": "120"})
+        raise httpx.HTTPStatusError("limited", request=req, response=resp)
+
+    sp.get_recent_likes = limited
+    monkeypatch.setattr(
+        capture_clients, "defer_spotify", lambda *a, **kw: saved.append(kw.get("save")) or "later"
+    )
+    assert quick_likes.run(settings, spotify=sp, now=NOW, dry_run=True)["retry_at"] == "later"
+    assert saved == [False] and store == {}

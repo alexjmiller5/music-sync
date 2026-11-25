@@ -210,7 +210,7 @@ def run(
         _save(settings, archive.pending_key(settings), pending)
         return _deliver(settings, spotify, hub, pending, now)
     except httpx.HTTPStatusError as exc:
-        retry = capture_clients.defer_spotify(settings, exc, now)
+        retry = capture_clients.defer_spotify(settings, exc, now, save=not dry_run)
         return {"error": "provider", "status": exc.response.status_code, "retry_at": retry}
 
 
