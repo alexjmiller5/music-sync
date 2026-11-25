@@ -508,7 +508,8 @@ def test_capture_revalidates_fresh_inbox_before_fifo(settings, archive_store, mo
     assert [call[0] for call in sp.calls] == ["add"]
 
 
-def test_all_entrypoints_share_one_serial_modal_worker(monkeypatch):
+@pytest.mark.parametrize("cron_operation", ["reconcile", "quick_likes"])
+def test_all_entrypoints_share_one_serial_modal_worker(monkeypatch, cron_operation):
     import app
     from concurrent.futures import ThreadPoolExecutor
     from threading import Lock
@@ -547,6 +548,11 @@ def test_all_entrypoints_share_one_serial_modal_worker(monkeypatch):
 
     monkeypatch.setattr(app.worker, "remote", remote)
     monkeypatch.setattr(app.worker, "spawn", spawn)
+    from core import quick_likes
+
+    monkeypatch.setattr(quick_likes, "cron_operation", lambda now: cron_operation)
+    monkeypatch.setattr(app, "_quick_likes", lambda body: {"quick": True})
+    monkeypatch.setattr(app.capture_drain, "spawn", lambda *a: None)
     monkeypatch.setenv("RECONCILE_ENABLED", "1")
     monkeypatch.setattr(app, "_run", lambda **kw: {"reconciled": True})
     monkeypatch.setattr(app, "_workspace_ids", lambda: ["default"])
@@ -559,7 +565,9 @@ def test_all_entrypoints_share_one_serial_modal_worker(monkeypatch):
     ]
     with ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(lambda pair: pair[0](*pair[1]), inputs))
-    assert calls.count("reconcile") == 2 and calls.count("capture") == 2
+    assert calls.count("reconcile") == 1 + (cron_operation == "reconcile")
+    assert calls.count("quick_likes") == (cron_operation == "quick_likes")
+    assert calls.count("capture") == 2
     assert results == [
         {"call_id": "fc-test"},  # the cron submits the same serialized worker
         {"reconciled": True},
@@ -1165,3 +1173,15 @@ def test_outage_preserves_catalog_across_runs_and_restores_delivery(settings, ar
     assert hub.tables["songs"][A]["first_seen"] == T
     assert hub.tables["playlist_songs"][f"P:{A}"]["added_at"] == T
     assert not hub.tables["playlist_songs"][f"P:{A}"]["deleted_at"]
+
+
+def test_successful_full_sync_reanchors_quick_window_without_an_extra_poll(settings, archive_store):
+    from core import quick_likes
+
+    settings.quick_likes_enabled = True
+    sp, hub = Spotify(), Store()
+    out = execute(settings, sp, hub)
+    assert not out.errors
+    assert quick_likes._load(settings, quick_likes.key(settings)) == {
+        "a": "2026-09-07T00:00:00.000+00:00"
+    }

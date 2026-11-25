@@ -134,3 +134,32 @@ def test_flag_task_binding_roundtrips_through_workspace_without_notion_credentia
     assert loaded.flags_task_config == binding and loaded.notion_token == ""
     workspaces.save(settings, "friend", flags_task_config=None)
     assert workspaces.settings_for(settings, "friend").flags_task_config is None
+
+
+def test_quick_likes_is_opt_in_and_false_is_not_truthy(settings, monkeypatch):
+    from core import workspaces
+
+    registry = {}
+    monkeypatch.setattr(workspaces, "_registry", lambda s: registry)
+    monkeypatch.setattr(workspaces, "_write", lambda s, r: registry.update(r))
+    assert workspaces.settings_for(settings, "default").quick_likes_enabled is False
+    workspaces.save(settings, "default", quick_likes_enabled="true")
+    assert workspaces.settings_for(settings, "default").quick_likes_enabled is True
+    workspaces.save(settings, "default", quick_likes_enabled="false")
+    assert workspaces.settings_for(settings, "default").quick_likes_enabled is False
+
+
+def test_operator_check_likes_uses_read_only_runtime_operation(monkeypatch, capsys):
+    import modal
+    import runpy
+    from types import SimpleNamespace
+
+    calls = []
+    monkeypatch.setattr(
+        modal.Function,
+        "from_name",
+        lambda *a: SimpleNamespace(remote=lambda *a: calls.append(a) or {"valid": True}),
+    )
+    cli = runpy.run_path("scripts/workspace.py")
+    assert cli["main"](["check-likes", "default"]) == 0
+    assert calls == [("quick_likes", {"workspace": "default", "dry_run": True})]

@@ -4,7 +4,7 @@ import gzip
 import json
 import re
 from uuid import uuid4
-from datetime import datetime
+from datetime import datetime, timezone
 
 from core import archive, metadata, new_songs, recognition
 from core import mirror as mirror_mod
@@ -103,6 +103,9 @@ def capture(
     record_outcome=None,
     client_id: str | None = None,
     use_cache: bool = True,
+    liked_at: str | None = None,
+    like_source_ref: str | None = None,
+    like_locator: str | None = None,
 ) -> dict:
     """Queue delivery reads only inbox context on bounded-query hubs; older hubs
     retain the incremental mirror path without writing the shared worker cache."""
@@ -110,8 +113,22 @@ def capture(
     if not title or not artist:
         return {"ok": False, "message": "title and artist required", "isrc": None}
     recognition.validate_time(payload.get("recognized_at"))
+    recognition.validate_time(liked_at)
     pending = archive.get(settings, archive.pending_key(settings))
-    if pending and json.loads(gzip.decompress(pending)):
+    retained = json.loads(gzip.decompress(pending)) if pending else None
+    own_like = None
+    if liked_at and retained and retained.get("intent") == "quick_likes" and resolved_track:
+        own_like = next(
+            (
+                e
+                for e in retained.get("events", [])
+                if not e.get("done")
+                and e["item"]["track"]["id"] == resolved_track.get("id")
+                and new_songs.at(e["item"]["added_at"]) == new_songs.at(liked_at)
+            ),
+            None,
+        )
+    if retained and not own_like:
         return {
             "ok": False,
             "message": "Pending recovery; retry after the original operation completes",
@@ -187,6 +204,16 @@ def capture(
                         if key in payload
                     },
                     "received_at": _iso(now),
+                    **(
+                        {
+                            "source": "spotify_like",
+                            "liked_at": liked_at,
+                            "source_ref": like_source_ref,
+                            "source_locator": like_locator,
+                        }
+                        if liked_at
+                        else {}
+                    ),
                     "market": settings.spotify_market,
                 }
             ).encode()
@@ -199,9 +226,12 @@ def capture(
         source_ref=source_ref,
         market=settings.spotify_market,
     )
-    event_edge, event = recognition.retain_event(
-        settings, payload, now, source_ref, isrc, client_id
-    )
+    if liked_at:
+        event_edge, event = None, {"received_at": liked_at}
+    else:
+        event_edge, event = recognition.retain_event(
+            settings, payload, now, source_ref, isrc, client_id
+        )
     now_s = _iso(now)
 
     curated_at = new_songs.first_curated(
@@ -216,6 +246,23 @@ def capture(
         return (song and new_songs.came_at(song, curated_at.get(it.isrc))) or it.added_at or now_s
 
     known = m.songs.get(isrc)
+    if liked_at:
+        liked_at = (
+            new_songs.at(liked_at)
+            .astimezone(timezone.utc)
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z")
+        )
+        if (
+            known
+            and known.liked_at
+            and new_songs.at(known.liked_at) >= new_songs.at(liked_at)
+            and (not own_like or own_like.get("outcome") not in {"unknown", "added"})
+        ):
+            return {"ok": True, "isrc": isrc, "skipped": "already_observed"}
+        if curated_at.get(isrc) and new_songs.at(curated_at[isrc]) <= new_songs.at(liked_at):
+            hub.push("songs", [{"id": isrc, "liked": 1, "liked_at": liked_at}])
+            return {"ok": True, "isrc": isrc, "skipped": "curated_like"}
     heard = max(
         (
             t
@@ -247,7 +294,7 @@ def capture(
     # The visible Shazam summary is recomputed from every retained event, so a
     # retried capture with the same identity never counts twice.
     # Written only once the catalog carries the summary columns.
-    if set(recognition.PROJECTION) <= song_columns:
+    if not liked_at and set(recognition.PROJECTION) <= song_columns:
         shazam = recognition.song_projection(settings, hub, isrc, event_edge, event)
         for row in song_rows:
             if row["id"] == isrc:
@@ -256,9 +303,16 @@ def capture(
         else:
             base = {} if isrc in m.songs else {"liked": 0, "liked_at": None, "first_seen": now_s}
             song_rows.append({**base, **shazam})
+    if liked_at:
+        target = next((r for r in song_rows if r["id"] == isrc), None)
+        if target is None:
+            target = {"id": isrc}
+            song_rows.append(target)
+        target.update(liked=1, liked_at=liked_at)
     if song_rows:
         hub.push("songs", song_rows)
-    hub.insert_rows("provenance", [event_edge])
+    if event_edge is not None:
+        hub.insert_rows("provenance", [event_edge])
     if len(matches) < 2:
         hub.push(
             "playlist_songs",
@@ -278,16 +332,26 @@ def capture(
         "provenance",
         [
             {
-                "id": f"shazam:{ref}:{isrc}",
-                "from_kind": "shazam",
-                "from_ref": ref,
+                "id": f"spotify-like:{payload['capture_id']}:{isrc}"
+                if liked_at
+                else f"shazam:{ref}:{isrc}",
+                "from_kind": "spotify_like" if liked_at else "shazam",
+                "from_ref": (like_source_ref or source_ref) if liked_at else ref,
                 "to_kind": "songs",
                 "to_ref": isrc,
                 "rel": "imported_from",
                 "asserted_by": "music-sync",
                 "detail": {
                     "created_row": 1 if created else 0,
-                    "shazam_url": payload.get("shazam_url"),
+                    **(
+                        {
+                            "liked_at": liked_at,
+                            "source_locator": like_locator,
+                            "capture_archive": source_ref,
+                        }
+                        if liked_at
+                        else {"shazam_url": payload.get("shazam_url")}
+                    ),
                 },
             },
             *(a.row for a in observations if a.kind == "edge"),

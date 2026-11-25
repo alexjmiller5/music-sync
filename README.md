@@ -37,7 +37,7 @@ Spotify observations to verify intentional removals and normalization.
 ## Layout
 
 ```
-app.py            Modal shim - one serialized worker, 6-hourly trigger and HTTPS endpoints
+app.py            Modal shim - one serialized worker, quarter-hour trigger and HTTPS endpoints
 src/core/         business logic (plain Python, portable, no Modal imports)
   spotify_client.py  Spotify Web API client (post-2026-02 Development Mode endpoint set)
   hub.py              soma hub HTTP client (pull, push, derive)
@@ -130,7 +130,7 @@ require Modal proxy auth (`Modal-Key` / `Modal-Secret` headers). The consumer
 capture endpoint uses an app-issued Bearer token instead.
 
 **`POST /reconcile`** - runs the reconciler on demand (same logic as the
-6-hourly cron). Body:
+four daily full-sync ticks). Body:
 
 ```json
 {"dry_run": false}
@@ -265,7 +265,7 @@ failure before the capture is stored returns `503`.
 The drain honors Spotify's `Retry-After` for the whole queue (a `429` stops it and
 nothing calls Spotify until then), backs other failures off from one minute to an
 hour, waits while a reconcile recovery is pending, and runs after every accepted
-capture, on status reads that find a capture due, and with the 6-hourly reconcile cron.
+capture, on status reads that find a capture due, and with the quarter-hour cron.
 
 Validated deliveries also report a `spotify_outcome` bound to the same
 `capture_id`, independently of completion of catalog maintenance:
@@ -417,7 +417,7 @@ still apply). The live catalog is not asserted to have changed: follow the
 ## Operating
 
 **Normal use.** Spotify is the editing interface: like songs, edit curated
-playlists, Shazam with Cochlea. With `RECONCILE_ENABLED=1` the cron (every 6 hours, 01:40/07:40/13:40/19:40 UTC;
+playlists, Shazam with Cochlea. With `RECONCILE_ENABLED=1` full reconciliation (every 6 hours, 01:40/07:40/13:40/19:40 UTC;
 Spotify's Development Mode quota cannot sustain an hourly full read)
 mirrors those changes into soma, likes newly curated songs, materializes
 smart playlists and trims the inbox. Nothing about the catalog is edited by hand.
@@ -758,3 +758,32 @@ Binding shape for the Soma `tasks` table:
 
 Review exceptions use the same binding, one create-only row per exception with
 a stable ID. Neither path schedules a reminder or notification.
+
+
+## Recent-like checks
+
+Full reconciliation runs four times daily at 01:40, 07:40, 13:40 and 19:40 UTC.
+The same cron slot also ticks at minutes 10, 25, 40 and 55. Other ticks can check
+one recent saved-tracks page for workspaces that opt in, with the existing
+reconciliation activation switch enabled. Capture remains event-driven.
+
+Validate before enabling using the supported operator interface:
+
+```sh
+just workspace check-likes default
+printf 'quick_likes_enabled=true\n' | just workspace set default
+```
+
+Use `quick_likes_enabled=false` through the same interface to stop new quick work.
+A disabled workspace's retained recovery is preserved. The first eligible page
+establishes a baseline without replaying old likes. Subsequent new saves can reach
+New songs before the next full sync. A partial page never removes likes; large
+bursts, malformed/non-overlapping windows and arbitrary removals wait for full sync.
+Cooldowns and busy serialized work can delay the fifteen-minute target.
+
+Changed observations are durably archived and checkpointed. An uncertain add is
+never blindly repeated; absent positive live inbox evidence stops for review.
+`just workspace retry-likes default` only revisits retained work with that same
+guard. It does not start a new poll when nothing is pending. No test likes are
+needed for enrollment or validation. Existing recording/version and curation
+policies remain unchanged; a like is not a Shazam recognition.

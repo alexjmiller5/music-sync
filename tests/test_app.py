@@ -1317,4 +1317,45 @@ def test_cron_dispatch_does_not_wait_in_worker_queue(monkeypatch):
 
     monkeypatch.setattr(app.worker, "remote", blocked)
     assert app.reconcile_cron.get_raw_f()() == {"call_id": "fc-test"}
-    assert calls == [("reconcile", {"all_workspaces": True})]
+    assert calls[0][0] in {"reconcile", "quick_likes"}
+    assert calls[0][1]["all_workspaces"] is True
+
+
+@pytest.mark.parametrize("operation", ["reconcile", "quick_likes"])
+def test_quarter_hour_cron_dispatches_the_right_serialized_operation(monkeypatch, operation):
+    from types import SimpleNamespace
+    from core import quick_likes
+
+    calls = []
+    monkeypatch.setattr(quick_likes, "cron_operation", lambda now: operation)
+    monkeypatch.setattr(app.capture_drain, "spawn", lambda *a: None)
+    monkeypatch.setattr(
+        app.worker, "spawn", lambda *a: calls.append(a) or SimpleNamespace(object_id="fc-test")
+    )
+    assert app.reconcile_cron.get_raw_f()() == {"call_id": "fc-test"}
+    assert calls[0][0] == operation and calls[0][1]["all_workspaces"] is True
+    assert ("scheduled_at" in calls[0][1]) == (operation == "quick_likes")
+
+
+def test_quick_likes_worker_uses_workspace_settings_and_explicit_dry_run(settings, monkeypatch):
+    from core import config, workspaces, quick_likes
+
+    seen = []
+    monkeypatch.setattr(config, "Settings", lambda: settings)
+    monkeypatch.setattr(workspaces, "settings_for", lambda base, wid: base)
+    monkeypatch.setattr(quick_likes, "run", lambda s, **kw: seen.append(kw) or {"valid": True})
+    result = app.worker.get_raw_f()("quick_likes", {"dry_run": True, "workspace": "default"})
+    assert result == {"valid": True} and seen[0]["dry_run"] is True
+
+
+def test_quick_like_cron_still_requires_reconciliation_activation(settings, monkeypatch):
+    from core import config, workspaces, quick_likes
+
+    settings.quick_likes_enabled = True
+    monkeypatch.setattr(config, "Settings", lambda: settings)
+    monkeypatch.setattr(workspaces, "settings_for", lambda base, wid: base)
+    monkeypatch.setattr(workspaces, "reconcile_enabled", lambda s: False)
+    monkeypatch.setattr(
+        quick_likes, "run", lambda *a, **kw: pytest.fail("disabled reconciliation polled")
+    )
+    assert app.worker.get_raw_f()("quick_likes", {})["skipped"] == "reconciliation_disabled"

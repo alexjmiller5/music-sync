@@ -4,6 +4,8 @@
     uv run scripts/workspace.py show <id>
     uv run scripts/workspace.py set <id>            # KEY=VALUE lines on stdin
     uv run scripts/workspace.py connect-link <id>   # prints a one-time Connect Spotify link
+    uv run scripts/workspace.py check-likes <id>    # read-only recent-like validation
+    uv run scripts/workspace.py retry-likes <id>    # retry retained review with live presence
     uv run scripts/workspace.py remove <id>         # deletes a non-default workspace record
 
 `default` is the operator's own workspace, configured by env. Any other one is
@@ -38,6 +40,20 @@ def main(argv: list[str]) -> int:
             print("\n".join(admin(action="list")["workspaces"]))
         case ["show", wid]:
             print(json.dumps(admin(action="show", workspace=wid), indent=2, sort_keys=True))
+        case ["check-likes", wid]:
+            print(
+                json.dumps(
+                    worker.remote("quick_likes", {"workspace": wid, "dry_run": True}),
+                    sort_keys=True,
+                )
+            )
+        case ["retry-likes", wid]:
+            print(
+                json.dumps(
+                    worker.remote("quick_likes", {"workspace": wid, "retry_review": True}),
+                    sort_keys=True,
+                )
+            )
         case ["set", wid]:
             fields = {}
             for line in sys.stdin.read().splitlines():

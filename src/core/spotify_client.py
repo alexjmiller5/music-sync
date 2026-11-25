@@ -35,7 +35,14 @@ class SpotifyAuthError(RuntimeError):
 
 
 class SpotifyClient:
-    def __init__(self, settings: Settings, http: httpx.Client | None = None):
+    def __init__(
+        self,
+        settings: Settings,
+        http: httpx.Client | None = None,
+        *,
+        max_429_retries=MAX_429_RETRIES,
+    ):
+        self._max_429_retries = max_429_retries
         self._s = settings
         self._http = http or httpx.Client(timeout=30)
         self._token: str | None = None
@@ -70,7 +77,7 @@ class SpotifyClient:
                 continue
             if resp.status_code == 429:
                 consecutive_429s += 1
-                if consecutive_429s > MAX_429_RETRIES:
+                if consecutive_429s > self._max_429_retries:
                     resp.raise_for_status()
                 wait = float(resp.headers.get("Retry-After", "1"))
                 log.warning("spotify_rate_limited", retry_after=wait)
@@ -145,6 +152,10 @@ class SpotifyClient:
             f"{API}/v1/playlists/{playlist_id}/items",
             {"limit": 50, "market": market, "fields": ITEM_FIELDS},
         )
+
+    def get_recent_likes(self, market: str) -> dict:
+        """One partial page; callers must never interpret absence as an unlike."""
+        return self._get(f"{API}/v1/me/tracks", {"limit": 50, "offset": 0, "market": market})
 
     def get_liked(self, market: str) -> list[dict]:
         items = self._paginate(f"{API}/v1/me/tracks", {"limit": 50, "market": market})

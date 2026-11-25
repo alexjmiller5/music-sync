@@ -43,6 +43,10 @@ def reconcile_run(
     today = now.date().isoformat()
     saved = archive.get(settings, archive.pending_key(settings))
     pending = json.loads(gzip.decompress(saved)) if saved else None
+    if pending and pending.get("intent") == "quick_likes":
+        return actions.RunLog(
+            dry_run=dry_run, skipped=["Pending quick-like recovery must finish first"]
+        )
     if pending and pending.get("intent") == "metadata_replay":
         return actions.RunLog(
             dry_run=dry_run,
@@ -291,6 +295,13 @@ def reconcile_run(
             # The run's changes are applied; retained batches retry on the next run.
             log.error("flag_delivery_failed", error_type=type(exc).__name__)
             out.errors.append(f"flag delivery failed after the run finished: {type(exc).__name__}")
+    if not dry_run and not pending and not out.errors and settings.quick_likes_enabled:
+        from core import quick_likes
+
+        try:
+            quick_likes.anchor(settings, live.raw["liked"])
+        except Exception as exc:
+            log.warning("quick_likes_anchor_failed", error_type=type(exc).__name__)
     return out
 
 

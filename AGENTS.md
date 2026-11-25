@@ -12,7 +12,8 @@ Only `app.py` imports `modal` - it is the deployment shim (image, secrets,
 cron, endpoints). This keeps the logic portable: the same `core` package
 runs in tests, locally, or on any future platform.
 
-- The six-hour cron submits a durable worker call and returns its call ID.
+- The quarter-hour cron submits a durable worker call and returns its call ID.
+  Full sync runs at 01:40/07:40/13:40/19:40 UTC; other ticks are opt-in recent-like checks.
   The serialized worker owns execution and its timeout; time waiting in its queue
   does not consume a synchronous cron wait budget.
 - Spotify uses its own Music Sync developer app and OAuth refresh grant. Never
@@ -59,7 +60,7 @@ runs in tests, locally, or on any future platform.
   and answers 202 without Spotify or hub I/O; `GET /<capture_id>` reports its
   status. `capture_drain` (its own function, one container, one input; started
   after each accepted capture, by status reads that find one due and by the
-  6-hourly reconcile cron) delivers markers oldest first through the old synchronous
+  quarter-hour cron) delivers markers oldest first through the old synchronous
   `deliver` step, outside the worker. When the hub advertises bounded row queries,
   capture reads inbox/curated playlist definitions and only the songs, memberships
   (including deleted curation) and observation evidence for the selected recording
@@ -494,6 +495,33 @@ for the Modal CI pair and saves both fields through JSON stdin. The operator
 opens the stderr approval URL in the configured remote browser session and
 approves the displayed code. No local browser opens or token cache is written.
 R2 provisioning retains its `--field` interface and manifest order.
+
+## Recent likes
+
+- `quick_likes_enabled` is an opt-in workspace field, false by default. The existing
+  reconciliation activation switch must also permit mutations. The same serialized
+  worker handles quick and full sync. Quick ticks older than 15 minutes skip.
+- `core/quick_likes.py` reads at most the first 50 saved tracks, validates complete
+  page shape, unique recording identities and descending aware timestamps, and
+  compares track ID plus saved time. First use creates a baseline without replay.
+  Non-overlap or malformed windows stop; a successful full observation reanchors
+  the window without extra Spotify reads. Absence is never an unlike or dismissal.
+- Only positive saves enter existing New songs ordering/cap behavior. Curated
+  auto-like chronology and already observed saves do not reintroduce dismissed songs.
+  Like observations never create Shazam events or update Shazam projection columns.
+- State lives under `music-sync/quick-likes/`; changed partial raw pages are marked
+  `coverage=partial` below the approved `raw/spotify-pull/quick-likes/` file prefix.
+  Pending `intent=quick_likes` freezes events and outcomes in the existing recovery
+  key. Full sync and consumer capture wait for that intent. Baseline advances after
+  all event maintenance finishes; a partial songs write is not delivery completion.
+- Unknown or acknowledged attempts require positive live inbox evidence before
+  recovery. Missing evidence retains `review_required` and stops automatic retries;
+  `just workspace retry-likes <id>` only retries existing work, with the same live
+  guard, never blindly re-adds. It cannot start a fresh poll without pending work.
+- `just workspace check-likes <id>` performs one read-only page validation even
+  while disabled; it never seeds a baseline or mutates catalog/playlists. A shared
+  cooldown or any pending recovery holds this check. Polling stops on 429 without
+  immediate retry and atomically extends the existing shared gate.
 
 ## Spotify availability preservation
 

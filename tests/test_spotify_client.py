@@ -413,3 +413,24 @@ def test_a_cover_is_uploaded_as_base64_jpeg_and_read_back(settings, mocker):
         base64.b64encode(b"\xff\xd8\xffjpeg"),
     )
     assert calls[1][:2] == ("GET", "/v1/playlists/P/images")
+
+
+def test_recent_like_page_is_single_read_and_zero_retry_mode_stops_429(settings, mocker):
+    calls = []
+
+    def handler(req):
+        if req.url.path == "/api/token":
+            return token_resp()
+        calls.append(req)
+        assert req.method == "GET" and req.url.path == "/v1/me/tracks"
+        assert req.url.params["limit"] == "50" and req.url.params["offset"] == "0"
+        return httpx.Response(429, headers={"Retry-After": "1"})
+
+    sleep = mocker.patch("core.spotify_client.time.sleep")
+    client = SpotifyClient(
+        settings, http=httpx.Client(transport=httpx.MockTransport(handler)), max_429_retries=0
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        client.get_recent_likes("US")
+    assert len(calls) == 1
+    sleep.assert_not_called()

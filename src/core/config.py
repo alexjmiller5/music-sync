@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     # Which workspace these settings act for (core/workspaces.py); set by
     # workspaces.settings_for, never by env.
     workspace: str = "default"
+    quick_likes_enabled: bool = False
     flags_task_config: dict | None = None
     # Soma task binding for "Reconcile capture" tasks; falls back to flags_task_config.
     capture_task_config: dict | None = None

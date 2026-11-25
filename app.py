@@ -95,6 +95,8 @@ def _workspace_ids() -> list[str]:
 def worker(operation: str, body: dict | None = None):
     """One queue for the entire read/archive/plan/apply cycle across all callers."""
     body = body or {}
+    if operation == "quick_likes":
+        return _quick_likes(body)
     if operation == "capture":
         return _capture(body)
     if operation == "capture_access":
@@ -130,14 +132,48 @@ def worker(operation: str, body: dict | None = None):
     return _run(dry_run=dry_run)
 
 
-# Every 6 hours (UTC): Spotify's Development Mode quota cannot sustain an hourly full read.
-@app.function(image=image, schedule=modal.Cron("40 1,7,13,19 * * *"), timeout=WORKER_TIMEOUT)
+# One cron slot: four full reads daily, opt-in one-page checks on the other ticks.
+@app.function(image=image, schedule=modal.Cron("10,25,40,55 * * * *"), timeout=WORKER_TIMEOUT)
 def reconcile_cron():
-    # Six-hour backstop for captures waiting on a Retry-After or their daily recheck.
+    from datetime import datetime, timezone
+    from core import quick_likes
+
     _spawn_drain()
-    # Queue time and worker execution have separate budgets.
-    call = worker.spawn("reconcile", {"all_workspaces": True})
+    now = datetime.now(timezone.utc)
+    operation = quick_likes.cron_operation(now)
+    body = {"all_workspaces": True}
+    if operation == "quick_likes":
+        body["scheduled_at"] = now.isoformat()
+    call = worker.spawn(operation, body)
     return {"call_id": call.object_id}
+
+
+def _quick_likes(body):
+    from core import quick_likes, workspaces
+    from core.config import Settings
+
+    base = Settings()
+
+    def one(workspace):
+        settings = workspaces.settings_for(base, workspace)
+        if body.get("dry_run") is not True and not workspaces.reconcile_enabled(settings):
+            return {"skipped": "reconciliation_disabled"}
+        try:
+            result = quick_likes.run(
+                settings,
+                dry_run=body.get("dry_run") is True,
+                retry_review=body.get("retry_review") is True,
+                scheduled_at=body.get("scheduled_at"),
+            )
+            structlog.get_logger().info("quick_likes_done", **result)
+            return result
+        except Exception as exc:
+            structlog.get_logger().error("quick_likes_failed", error_type=type(exc).__name__)
+            return {"error": type(exc).__name__}
+
+    if body.get("all_workspaces") is True:
+        return {wid: one(wid) for wid in workspaces.ids(base)}
+    return one(body.get("workspace", "default"))
 
 
 @app.function(image=image, timeout=WORKER_TIMEOUT)

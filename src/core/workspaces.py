@@ -34,6 +34,7 @@ def _task_binding(value):
 
 
 USER_FIELDS = {
+    "quick_likes_enabled": lambda v: str(v).lower() in {"1", "true", "yes"},
     "spotify_refresh_token": str,
     "spotify_market": str,
     "soma_hub_url": str,
