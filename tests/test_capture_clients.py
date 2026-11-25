@@ -746,3 +746,22 @@ def test_delivery_http_failure_logs_only_status_and_service(settings, objects, c
     ):
         assert private not in output
     assert receipt(objects)["attempts"] == 1
+
+
+def test_spotify_ack_timing_is_logged_without_capture_payload(
+    settings, objects, capsys, monkeypatch
+):
+    capture_clients.accept(settings, "client-id", PAYLOAD, NOW)
+    monkeypatch.setattr(capture_clients.time, "monotonic", iter([10.0, 10.25]).__next__)
+
+    def perform(payload, selected, record):
+        record("unknown")
+        record("added")
+        return {"ok": True, "isrc": SELECTED["external_ids"]["isrc"]}
+
+    capture_clients.deliver(settings, "client-id", PAYLOAD, lambda body: SELECTED, perform)
+    output = capsys.readouterr().out
+    assert "capture_spotify_confirmed" in output and "delivery_seconds=0.25" in output
+    assert "receipt_age_seconds=" in output
+    for private in (PAYLOAD["title"], PAYLOAD["artist"], PAYLOAD["shazam_url"], CAPTURE_ID):
+        assert private not in output

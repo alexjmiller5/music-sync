@@ -579,3 +579,48 @@ def test_a_playlists_current_image_comes_from_the_listing_without_another_reques
     live = mirror.live_from_raw(raw, "alexmiller", Mirror({}, {}, {}, [], set()))
     assert live.playlists[PLAYLISTS[0]["id"]].image_url == "https://i.scdn.co/image/big"
     assert live.playlists[PLAYLISTS[1]["id"]].image_url is None
+
+
+@pytest.mark.parametrize("count", [0, 201])
+def test_capture_context_chunks_identities_and_does_not_load_unrelated_tables(count):
+    from tests.test_capture import ScopedHub, INBOX
+
+    hub = ScopedHub(INBOX)
+    hub.queries = []
+    ids = {f"USAAA{i:07d}" for i in range(count)}
+    context = mirror.capture_mirror(hub, INBOX, ids)
+    assert context.songs == {} and context.observations == []
+    assert len(hub.queries) == (0 if count == 0 else 6)
+    for table, predicate, _ in hub.queries:
+        identity = predicate["and"][-1] if table == "provenance" else predicate
+        assert 0 < len(identity["value"]) <= 200
+        assert set(identity["value"]) <= ids
+
+
+def test_capture_context_preserves_prior_field_evidence_and_filters_tombstones():
+    from tests.test_capture import ScopedHub, INBOX
+
+    hub = ScopedHub(INBOX, songs=[{"id": "song", "liked": 0}, {"id": "gone", "deleted_at": "gone"}])
+    hub.queries = []
+    evidence = {
+        "id": "observation",
+        "to_ref": "song",
+        "to_kind": "songs",
+        "from_kind": "takeout",
+        "rel": "evidence_of",
+        "asserted_by": "music-sync",
+        "detail": json.dumps(
+            {
+                "kind": "spotify_observation",
+                "field": "title",
+                "value": "title",
+                "track_id": "track",
+                "observed_at": "time",
+            }
+        ),
+    }
+    hub.tables["provenance"] = [evidence, {**evidence, "id": "removed", "deleted_at": "gone"}]
+    m = mirror.capture_mirror(hub, INBOX, {"song", "gone"})
+    assert set(m.songs) == {"song"}
+    assert [r["id"] for r in m.observations] == ["observation"]
+    assert m.observations[0]["detail"]["track_id"] == "track"

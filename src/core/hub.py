@@ -86,6 +86,109 @@ class Hub:
             seen.add(cursor)
             body["after"] = cursor
 
+    def pull_many(self, table, columns, key, values, where):
+        """Exhaust disjoint equality slices through the existing four-item read batch."""
+        pending = [
+            {
+                "table": table,
+                "columns": columns,
+                "since": "",
+                "limit": 200,
+                "where": {**where, key: value},
+            }
+            for value in dict.fromkeys(values)
+        ]
+        rows, identities, cursors = [], set(), {}
+        while pending:
+            batch, pending = pending[:4], pending[4:]
+            result = self.read("/v1/rows/pull", {"batch": batch})
+            pages = result.get("batch") if isinstance(result, dict) else None
+            if not isinstance(pages, list) or len(pages) != len(batch):
+                raise HubError("incomplete batch receipt", category="pagination_receipt")
+            for request, page in zip(batch, pages, strict=True):
+                if (
+                    not isinstance(page, dict)
+                    or not isinstance(page.get("rows"), list)
+                    or "next_cursor" not in page
+                ):
+                    raise HubError("incomplete slice receipt", category="pagination_receipt")
+                for row in page["rows"]:
+                    if (
+                        not isinstance(row, dict)
+                        or not isinstance(row.get("id"), str)
+                        or not set(columns) <= row.keys()
+                        or row["id"] in identities
+                    ):
+                        raise HubError("invalid slice row", category="pagination_receipt")
+                    identities.add(row["id"])
+                    rows.append(row)
+                cursor = page["next_cursor"]
+                if cursor is not None:
+                    seen = cursors.setdefault(request["where"][key], set())
+                    if (
+                        not isinstance(cursor, str)
+                        or not cursor
+                        or cursor in seen
+                        or not page["rows"]
+                    ):
+                        raise HubError("invalid slice cursor", category="pagination_cursor")
+                    seen.add(cursor)
+                    pending.append({**request, "after": cursor})
+        return rows
+
+    def supports_queries(self) -> bool:
+        try:
+            response = self._http.get(f"{self.base}/v1/session", headers=self._headers)
+        except httpx.HTTPError as exc:
+            raise HubError("hub session unavailable", route="/v1/session") from exc
+        if response.status_code >= 400:
+            raise HubError(
+                "hub session unavailable",
+                category="http",
+                status=response.status_code,
+                route="/v1/session",
+            )
+        return response.json().get("capabilities", {}).get("row_query") == "bounded-v1"
+
+    def query(self, table, columns, filter=None):
+        """Exhaust a bounded predicate query; malformed/overlapping pages stop delivery."""
+        if "id" not in columns:
+            raise ValueError("query projection must include id")
+        body = {
+            "table": table,
+            "columns": columns,
+            "limit": 200,
+            "order": [{"column": "id", "direction": "asc"}],
+        }
+        if filter is not None:
+            body["filter"] = filter
+        rows, cursors, identities = [], set(), set()
+        while True:
+            page = self.read("/v1/rows/query", body)
+            if (
+                not isinstance(page, dict)
+                or not isinstance(page.get("rows"), list)
+                or "next_cursor" not in page
+            ):
+                raise HubError("incomplete query receipt", category="pagination_receipt")
+            for row in page["rows"]:
+                if (
+                    not isinstance(row, dict)
+                    or not isinstance(row.get("id"), str)
+                    or not set(columns) <= row.keys()
+                    or row["id"] in identities
+                ):
+                    raise HubError("invalid query row", category="pagination_receipt")
+                identities.add(row["id"])
+                rows.append(row)
+            cursor = page["next_cursor"]
+            if cursor is None:
+                return rows
+            if not isinstance(cursor, str) or not cursor or cursor in cursors or not page["rows"]:
+                raise HubError("invalid query cursor", category="pagination_cursor")
+            cursors.add(cursor)
+            body["cursor"] = cursor
+
     def _read_page(self, body):
         return self.read("/v1/rows/pull", body)
 

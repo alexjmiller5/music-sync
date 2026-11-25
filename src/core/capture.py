@@ -104,8 +104,8 @@ def capture(
     client_id: str | None = None,
     use_cache: bool = True,
 ) -> dict:
-    """`use_cache=False` (queue delivery outside the worker) starts from the worker's
-    incremental mirror cache, pulling only what arrived since, and never writes it."""
+    """Queue delivery reads only inbox context on bounded-query hubs; older hubs
+    retain the incremental mirror path without writing the shared worker cache."""
     title, artist = (payload.get("title") or "").strip(), (payload.get("artist") or "").strip()
     if not title or not artist:
         return {"ok": False, "message": "title and artist required", "isrc": None}
@@ -138,17 +138,26 @@ def capture(
     isrc = resolved.isrc
     if not isrc:
         return {"ok": False, "message": f"{title} by {artist} has no ISRC on Spotify", "isrc": None}
-    cache = mirror_mod.load_cache(settings)
-    m = mirror_mod.load_mirror(
-        hub,
-        cache=cache,
-        checkpoint=(lambda: mirror_mod.save_cache(settings, cache)) if use_cache else None,
-    )
+    scoped = not use_cache and getattr(hub, "supports_queries", lambda: False)()
+    if scoped:
+        playlists = mirror_mod.capture_playlists(hub)
+        m = mirror_mod._from_rows({"songs": [], "playlists": playlists, "playlist_songs": []}, [])
+    else:
+        cache = mirror_mod.load_cache(settings)
+        m = mirror_mod.load_mirror(
+            hub,
+            cache=cache,
+            checkpoint=(lambda: mirror_mod.save_cache(settings, cache)) if use_cache else None,
+        )
     inbox = next((p for p in m.playlists.values() if p.kind == "inbox"), None)
     if not inbox:
         return {"ok": False, "message": "no inbox playlist in soma", "isrc": isrc}
     raw_items = spotify.get_playlist_items(inbox.id, settings.spotify_market)
     observed_items = [mirror_mod.item_from_raw(r) for r in raw_items]
+    if scoped:
+        m = mirror_mod.capture_mirror(
+            hub, playlists, {isrc, *(it.isrc for it in observed_items if it.isrc)}
+        )
     mirror_mod.validate_recording_aliases([resolved, *observed_items])
     matches = [it for it in observed_items if it.isrc == isrc]
     existing = matches[0] if matches else None

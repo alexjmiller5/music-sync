@@ -141,7 +141,6 @@ def load_mirror(
     week is rebuilt from scratch (purges never appear in deltas). `checkpoint`
     persists the cache after each step so a cold load survives a timeout.
     """
-    revisions = {}
     now = time.time() if now is None else now
     if cache is not None and now - cache.get("refreshed_at", 0) > FULL_REFRESH_SECONDS:
         cache.clear()
@@ -192,6 +191,11 @@ def load_mirror(
                     checkpoint()
             provenance += slot["rows"].values()
         rows = {table: list(cache["tables"][table].values()) for table in columns}
+    return _from_rows(rows, provenance)
+
+
+def _from_rows(rows, provenance):
+    revisions = {}
     for table, got in [*rows.items(), ("provenance", provenance)]:
         revisions.setdefault(table, {}).update(
             {row["id"]: {key: row.get(key) for key in ("updated_at", "hub_at")} for row in got}
@@ -245,6 +249,44 @@ def load_mirror(
         ):
             observations.append({**r, "detail": detail})
     return Mirror(songs, playlists, memberships, deleted, captures, observations, revisions)
+
+
+def capture_playlists(hub) -> list[dict]:
+    """Only inbox/curated identities are needed for capture ordering."""
+    return hub.query(
+        "playlists", PLAYLIST_COLS, {"column": "kind", "op": "in", "value": ["inbox", "curated"]}
+    )
+
+
+def capture_mirror(hub, playlists: list[dict], isrcs: set[str]) -> Mirror:
+    """Fresh context for the live inbox and selected recording, independent of cache age."""
+    rows = {"playlists": playlists, "songs": [], "playlist_songs": []}
+    evidence = []
+    ids = sorted(isrcs)
+    for start in range(0, len(ids), 200):
+        chunk = ids[start : start + 200]
+        for table, columns, key in (
+            ("songs", SONG_COLS, "id"),
+            ("playlist_songs", MEMBER_COLS, "isrc"),
+        ):
+            rows[table].extend(
+                hub.query(table, columns, {"column": key, "op": "in", "value": chunk})
+            )
+        evidence.extend(
+            hub.pull_many(
+                "provenance",
+                PROV_COLS,
+                "to_ref",
+                chunk,
+                {
+                    "to_kind": "songs",
+                    "rel": "evidence_of",
+                    "asserted_by": "music-sync",
+                    "from_kind": "takeout",
+                },
+            )
+        )
+    return _from_rows(rows, evidence)
 
 
 def item_from_raw(raw: dict) -> LiveItem:

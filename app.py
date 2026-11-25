@@ -133,7 +133,7 @@ def worker(operation: str, body: dict | None = None):
 # Every 6 hours (UTC): Spotify's Development Mode quota cannot sustain an hourly full read.
 @app.function(image=image, schedule=modal.Cron("40 1,7,13,19 * * *"), timeout=WORKER_TIMEOUT)
 def reconcile_cron():
-    # Hourly backstop for captures waiting on a Retry-After or their daily recheck.
+    # Six-hour backstop for captures waiting on a Retry-After or their daily recheck.
     _spawn_drain()
     # Queue time and worker execution have separate budgets.
     call = worker.spawn("reconcile", {"all_workspaces": True})

@@ -281,3 +281,120 @@ def test_read_failures_name_only_the_operation(method, route):
     with pytest.raises(HubError) as failure:
         getattr(client, method)(*(["private-key"] if method == "get_file" else []))
     assert failure.value.route == route
+
+
+def test_bounded_query_capability_and_pages_use_authenticated_read_protocol():
+    bodies = []
+    predicate = {"column": "id", "op": "in", "value": ["a", "b"]}
+
+    def handler(req):
+        assert req.headers["Authorization"] == "Bearer tok"
+        if req.url.path == "/v1/session":
+            return httpx.Response(200, json={"capabilities": {"row_query": "bounded-v1"}})
+        assert req.url.path == "/v1/rows/query"
+        body = json.loads(req.content)
+        bodies.append(body)
+        return httpx.Response(
+            200,
+            json={
+                "rows": [{"id": "a" if len(bodies) == 1 else "b"}],
+                "next_cursor": "page2" if len(bodies) == 1 else None,
+            },
+        )
+
+    hub = make(handler)
+    assert hub.supports_queries()
+    assert hub.query("songs", ["id"], predicate) == [{"id": "a"}, {"id": "b"}]
+    assert bodies[0] == {
+        "table": "songs",
+        "columns": ["id"],
+        "filter": predicate,
+        "order": [{"column": "id", "direction": "asc"}],
+        "limit": 200,
+    }
+    assert bodies[1] == {**bodies[0], "cursor": "page2"}
+
+
+@pytest.mark.parametrize("capabilities", [{}, {"row_query": "future-v2"}])
+def test_older_hub_does_not_advertise_supported_query(capabilities):
+    assert not make(
+        lambda req: httpx.Response(200, json={"capabilities": capabilities})
+    ).supports_queries()
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        {"rows": [], "next_cursor": "same"},
+        {"rows": [{"id": "a"}], "next_cursor": "same"},
+        {"rows": [{"id": "a"}]},
+        {"rows": "bad", "next_cursor": None},
+        {"rows": [{"id": "a"}, {"id": "a"}], "next_cursor": None},
+    ],
+)
+def test_bounded_query_rejects_incomplete_or_repeated_pages(page):
+    calls = []
+
+    def handler(req):
+        calls.append(req)
+        assert len(calls) <= 3
+        return httpx.Response(200, json=page)
+
+    with pytest.raises(HubError):
+        make(handler).query("songs", ["id"])
+
+
+def test_targeted_pull_batches_exhaust_each_record_without_broad_evidence_reads():
+    calls = []
+
+    def handler(req):
+        body = json.loads(req.content)
+        assert req.url.path == "/v1/rows/pull" and "batch" in body
+        calls.append(body["batch"])
+        pages = []
+        for item in body["batch"]:
+            assert item["since"] == ""
+            assert item["where"]["to_kind"] == "songs"
+            ref = item["where"]["to_ref"]
+            more = ref == "a" and not item.get("after")
+            pages.append(
+                {
+                    "rows": [{"id": ref + ("2" if item.get("after") else "1")}],
+                    "next_cursor": ref + "1" if more else None,
+                }
+            )
+        return httpx.Response(200, json={"batch": pages})
+
+    assert make(handler).pull_many(
+        "provenance", ["id"], "to_ref", ["a", "b"], {"to_kind": "songs"}
+    ) == [{"id": "a1"}, {"id": "b1"}, {"id": "a2"}]
+    assert len(calls) == 2 and [len(c) for c in calls] == [2, 1]
+    assert calls[1][0]["after"] == "a1"
+
+
+@pytest.mark.parametrize(
+    "reply", [{}, {"batch": []}, {"batch": [{"rows": [], "next_cursor": "bad"}]}]
+)
+def test_targeted_pull_rejects_incomplete_batch_receipts(reply):
+    with pytest.raises(HubError):
+        make(lambda req: httpx.Response(200, json=reply)).pull_many(
+            "provenance", ["id"], "to_ref", ["a"], {"to_kind": "songs"}
+        )
+
+
+@pytest.mark.parametrize("mode", ["query", "slice"])
+def test_distinct_rows_cannot_hide_a_repeated_page_cursor(mode):
+    calls = []
+
+    def handler(req):
+        calls.append(req)
+        assert len(calls) < 4
+        page = {"rows": [{"id": str(len(calls))}], "next_cursor": "repeated"}
+        return httpx.Response(200, json=page if mode == "query" else {"batch": [page]})
+
+    h = make(handler)
+    with pytest.raises(HubError, match="cursor"):
+        if mode == "query":
+            h.query("songs", ["id"])
+        else:
+            h.pull_many("provenance", ["id"], "to_ref", ["a"], {"to_kind": "songs"})

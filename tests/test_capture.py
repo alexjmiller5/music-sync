@@ -235,7 +235,7 @@ def test_capture_outside_the_worker_resumes_the_mirror_cache_but_never_writes_it
     assert [route for route, _ in reads] == ["/v1/cursor"]
 
 
-def test_capture_already_in_inbox(settings):
+def test_capture_already_in_inbox(settings, capture_path):
     hub = FakeHub(
         INBOX,
         songs=[{"id": "USUM71703861", "liked": 0, "deleted_at": None}],
@@ -290,7 +290,7 @@ def test_best_match_keeps_aliases_of_one_recording():
     assert capture.best_match("Song", "Artist", tracks) == tracks[0]
 
 
-def test_capture_trims_inbox(settings):
+def test_capture_trims_inbox(settings, capture_path):
     items = [
         {
             "added_at": f"2026-08-{i + 1:02d}T00:00:00.000Z",
@@ -325,7 +325,7 @@ def test_capture_trims_inbox(settings):
             assert "spotify:track:9" not in call[2]
 
 
-def test_capture_never_evicts_an_inbox_song_the_catalog_has_not_imported(settings):
+def test_capture_never_evicts_an_inbox_song_the_catalog_has_not_imported(settings, capture_path):
     items = [
         {
             "added_at": f"2026-08-{i + 1:02d}T00:00:00.000Z",
@@ -351,7 +351,9 @@ def test_capture_never_evicts_an_inbox_song_the_catalog_has_not_imported(setting
 
 
 @pytest.mark.parametrize("known", [False, True])
-def test_capture_first_write_keeps_resolved_and_expiring_metadata(settings, mocker, known):
+def test_capture_first_write_keeps_resolved_and_expiring_metadata(
+    settings, mocker, known, capture_path
+):
     tr = track("resolved", "Title", "Artist", isrc="USAAA2600001")
     tr.update(duration_ms=123456, linked_from={"id": "original"})
     old = {
@@ -409,7 +411,7 @@ def test_capture_first_write_keeps_resolved_and_expiring_metadata(settings, mock
     assert origin["rel"] == "imported_from" and origin["detail"]["created_row"] == int(not known)
 
 
-def test_known_capture_refreshes_metadata_even_when_already_in_inbox(settings):
+def test_known_capture_refreshes_metadata_even_when_already_in_inbox(settings, capture_path):
     tr = track("observed", "Title", "Artist", isrc="USAAA2600001")
     sp = FakeSpotify([tr], [{"added_at": "2020-01-01T00:00:00Z", "item": tr}])
     hub = FakeHub(INBOX, songs=[{"id": "USAAA2600001", "liked": 1, "title": "Stale title"}])
@@ -563,7 +565,7 @@ def test_changed_recognition_payload_cannot_overwrite_retained_event(settings, m
 
 
 def test_event_insert_failure_retries_same_evidence_without_another_spotify_add(
-    settings, monkeypatch
+    settings, monkeypatch, capture_path
 ):
     from datetime import timedelta
 
@@ -593,7 +595,7 @@ def test_event_insert_failure_retries_same_evidence_without_another_spotify_add(
     assert len([c for c in sp.calls if c[0] == "add"]) == 1
 
 
-def test_a_capture_lands_in_new_songs_at_its_listening_time(settings):
+def test_a_capture_lands_in_new_songs_at_its_listening_time(settings, capture_path):
     # New songs is newest first; a capture heard between two songs goes between them.
     newer = {
         "added_at": "2026-09-08T00:00:00.000Z",
@@ -657,3 +659,136 @@ def test_a_pick_whose_recording_does_not_match_its_row_is_ignored(settings):
     # The pick is refused, so the ordinary exact search decides.
     assert capture.resolve_track(payload, sp, settings, hub=hub)["id"] == "searched"
     assert sp.searches == [("metadata", "Song", "Artist", "US")]
+
+
+class ScopedHub(FakeHub):
+    def pull_many(self, table, columns, key, values, where):
+        return self.query(
+            table,
+            columns,
+            {
+                "and": [
+                    *({"column": k, "op": "eq", "value": v} for k, v in where.items()),
+                    {"column": key, "op": "in", "value": list(values)},
+                ]
+            },
+        )
+
+    def supports_queries(self):
+        return True
+
+    def query(self, table, columns, filter=None):
+        def matches(row, predicate):
+            if "and" in predicate:
+                return all(matches(row, p) for p in predicate["and"])
+            value = row.get(predicate["column"])
+            return (
+                value in predicate["value"]
+                if predicate["op"] == "in"
+                else value == predicate["value"]
+            )
+
+        assert filter is not None, "capture may not scan an entire table"
+        rows = [r for r in self.tables[table] if matches(r, filter)]
+        self.__dict__.setdefault("queries", []).append((table, filter, [r["id"] for r in rows]))
+        assert all(r["id"] != "unrelated" for r in rows)
+        return [{c: r.get(c) for c in columns} for r in rows]
+
+    def pull(self, table, columns, since="", where=None):
+        assert where and (where.get("to_ref") or where.get("resolves_capture")), "broad mirror read"
+        return super().pull(table, columns, since, where)
+
+
+def test_queued_capture_uses_only_inbox_context_and_retains_deleted_curation(settings, mocker):
+    from core import mirror
+
+    old = "USAAA2600001"
+    sp = FakeSpotify(
+        [track("new", "Song", "Artist")],
+        inbox_items=[
+            {"added_at": "2026-09-07T00:00:00.000Z", "item": track("old", "Old", "Artist", old)}
+        ],
+    )
+    hub = ScopedHub(
+        [*INBOX, {"id": "curated", "kind": "curated"}],
+        songs=[
+            {
+                "id": old,
+                "liked": 1,
+                "liked_at": "2026-09-07T00:00:00.000Z",
+                "shazam_last_at": "2026-09-01T00:00:00.000Z",
+            },
+            {"id": "unrelated"},
+        ],
+        memberships=[
+            {
+                "id": "curated:" + old,
+                "playlist_id": "curated",
+                "isrc": old,
+                "added_at": "2026-08-01T00:00:00.000Z",
+                "deleted_at": "gone",
+            }
+        ],
+    )
+    hub.tables["provenance"] = [
+        {
+            "id": "unrelated",
+            "to_kind": "songs",
+            "to_ref": "unrelated",
+            "rel": "evidence_of",
+            "asserted_by": "music-sync",
+        }
+    ]
+    hub.queries = []
+    cache = mocker.patch.object(
+        mirror, "load_cache", side_effect=AssertionError("mirror cache read")
+    )
+    save = mocker.patch.object(
+        mirror, "save_cache", side_effect=AssertionError("mirror cache write")
+    )
+    outcome = []
+    result = capture.capture(
+        {"title": "Song", "artist": "Artist", "recognized_at": "2026-09-05T00:00:00.000Z"},
+        sp,
+        hub,
+        settings,
+        NOW,
+        use_cache=False,
+        record_outcome=outcome.append,
+    )
+    assert result["ok"] is True and sp.positions == [0]
+    assert outcome == ["unknown", "added"]
+    assert {q[0] for q in hub.queries} == {"playlists", "songs", "playlist_songs", "provenance"}
+    assert len(hub.queries) == 4
+    cache.assert_not_called()
+    save.assert_not_called()
+
+
+def test_scoped_context_failure_stops_before_spotify_add(settings):
+    from core.hub import HubError
+
+    hub = ScopedHub(INBOX)
+    hub.queries = []
+
+    def unavailable(*args, **kw):
+        raise HubError("query unavailable")
+
+    hub.query = unavailable
+    sp = FakeSpotify([track("new", "Song", "Artist")])
+    with pytest.raises(HubError, match="query unavailable"):
+        capture.capture(
+            {"title": "Song", "artist": "Artist"}, sp, hub, settings, NOW, use_cache=False
+        )
+    assert sp.calls == []
+
+
+@pytest.fixture(params=["worker", "queued"])
+def capture_path(request, monkeypatch):
+    if request.param == "queued":
+        original = capture.capture
+        monkeypatch.setattr(
+            capture, "capture", lambda *a, **kw: original(*a, **{**kw, "use_cache": False})
+        )
+        monkeypatch.setattr(FakeHub, "supports_queries", lambda self: True, raising=False)
+        monkeypatch.setattr(FakeHub, "query", ScopedHub.query, raising=False)
+        monkeypatch.setattr(FakeHub, "pull_many", ScopedHub.pull_many, raising=False)

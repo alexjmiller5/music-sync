@@ -60,9 +60,13 @@ runs in tests, locally, or on any future platform.
   status. `capture_drain` (its own function, one container, one input; started
   after each accepted capture, by status reads that find one due and by the
   6-hourly reconcile cron) delivers markers oldest first through the old synchronous
-  `deliver` step, outside the worker. It starts from the worker's mirror cache,
-  pulling only rows that arrived since, and never writes it back (a concurrent
-  writer could leave its cursor ahead of its rows), waits while pending intent (reconcile, replay or package checkpoint)
+  `deliver` step, outside the worker. When the hub advertises bounded row queries,
+  capture reads inbox/curated playlist definitions and only the songs, memberships
+  (including deleted curation) and observation evidence for the selected recording
+  and live inbox. Evidence uses indexed equality slices in four-item read batches;
+  the generic row-query API excludes provenance. Capture never opens the broad mirror
+  cache on this path. Older hubs retain incremental mirror reads without writing
+  the worker's shared cache. The drain waits while pending intent (reconcile, replay or package checkpoint)
   exists without any Spotify call, gates the whole queue on Spotify's
   429 Retry-After (`music-sync/capture-spotify-gate.json.gz`), rechecks a
   `no_match` daily for at most seven completed checks, then retains reason
@@ -130,6 +134,8 @@ runs in tests, locally, or on any future platform.
   when explicitly present in the archive; otherwise evidence market is null.
 - Capture delivery failures log only the cause class, hub operation/status, HTTP service category, overload flag and retained
   Spotify outcome; exception messages and capture payloads stay out of logs.
+  `capture_spotify_confirmed` reports delivery duration and receipt age at durable
+  Spotify acknowledgement, without capture IDs, names or payloads.
 - Consumer capture accepts five required string fields plus an optional ISRC.
   A supplied ISRC is normalized, searched directly and must
   match the returned recording. Without one, capture requires normalized exact

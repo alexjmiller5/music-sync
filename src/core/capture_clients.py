@@ -173,6 +173,7 @@ def deliver(settings: Settings, client_id: str, payload: dict, select, perform) 
     capture_id = payload["capture_id"]
     key = f"{RECEIPTS_PREFIX}/{client_id}/{capture_id}.json.gz"
     digest = _payload_hash(payload)
+    started = time.monotonic()
     state = _load(settings, key)
     if state is not None:
         if not hmac.compare_digest(state["payload_hash"], digest):
@@ -199,6 +200,19 @@ def deliver(settings: Settings, client_id: str, payload: dict, select, perform) 
         outcome = value
         state["spotify_outcome"] = value
         _save(settings, key, state)
+        if value == "added":
+            import structlog
+
+            age = (
+                (datetime.now(timezone.utc) - _parse(state["received_at"])).total_seconds()
+                if state.get("received_at")
+                else None
+            )
+            structlog.get_logger().info(
+                "capture_spotify_confirmed",
+                delivery_seconds=round(time.monotonic() - started, 3),
+                receipt_age_seconds=round(age, 3) if age is not None else None,
+            )
 
     try:
         if "selected_track" not in state:
